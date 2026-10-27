@@ -1,0 +1,234 @@
+diff --git a/node_modules/epubjs/.bun-tag-237f2dbf06f6a883 b/.bun-tag-237f2dbf06f6a883
+new file mode 100644
+index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
+diff --git a/node_modules/epubjs/.bun-tag-51b9c0f8d4be2558 b/.bun-tag-51b9c0f8d4be2558
+new file mode 100644
+index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
+diff --git a/src/managers/continuous/index.js b/src/managers/continuous/index.js
+index d61f8f76c215589ddc2c5e1fde4262db76585de8..54b8972776d9a853010f5636a323da21626d5a7f 100644
+--- a/src/managers/continuous/index.js
++++ b/src/managers/continuous/index.js
+@@ -49,6 +49,29 @@ class ContinuousViewManager extends DefaultViewManager {
+ 		this.scrollLeft = 0;
+ 	}
+ 
++	getScrollPosition() {
++		let dir = this.settings.direction === "rtl" && this.settings.rtlScrollType === "default" ? -1 : 1;
++
++		if(!this.settings.fullsize) {
++			return {
++				top: this.container.scrollTop,
++				left: this.container.scrollLeft
++			};
++		}
++
++		return {
++			top: window.scrollY * dir,
++			left: window.scrollX * dir
++		};
++	}
++
++	syncScrollPosition() {
++		let {top, left} = this.getScrollPosition();
++		this.scrollTop = top;
++		this.scrollLeft = left;
++		return {top, left};
++	}
++
+ 	display(section, target){
+ 		return DefaultViewManager.prototype.display.call(this, section, target)
+ 			.then(function () {
+@@ -197,12 +220,9 @@ class ContinuousViewManager extends DefaultViewManager {
+ 		var promises = [];
+ 		for (var i = 0; i < viewsLength; i++) {
+ 			view = views[i];
+-
+ 			isVisible = this.isVisible(view, offset, offset, container);
+ 
+ 			if(isVisible === true) {
+-				// console.log("visible " + view.index, view.displayed);
+-
+ 				if (!view.displayed) {
+ 					let displayed = view.display(this.request)
+ 						.then(function (view) {
+@@ -211,20 +231,22 @@ class ContinuousViewManager extends DefaultViewManager {
+ 							view.hide();
+ 						});
+ 					promises.push(displayed);
+-				} else {
++				} else if (
++					(view.element && view.element.style.visibility !== "visible") ||
++					(view.iframe && view.iframe.style.visibility !== "visible")
++				) {
+ 					view.show();
+ 				}
+ 				visible.push(view);
+ 			} else {
+-				this.q.enqueue(view.destroy.bind(view));
+-				// console.log("hidden " + view.index, view.displayed);
+-
+-				clearTimeout(this.trimTimeout);
+-				this.trimTimeout = setTimeout(function(){
+-					this.q.enqueue(this.trim.bind(this));
+-				}.bind(this), 250);
++				if (
++					view.displayed &&
++					(view.element && view.element.style.visibility !== "hidden")
++				) {
++					view.hide();
++				}
++				this.scheduleTrim(350);
+ 			}
+-
+ 		}
+ 
+ 		if(promises.length){
+@@ -236,7 +258,17 @@ class ContinuousViewManager extends DefaultViewManager {
+ 			updating.resolve();
+ 			return updating.promise;
+ 		}
++	}
+ 
++	scheduleTrim(delay = 250) {
++		clearTimeout(this.trimTimeout);
++		this.trimTimeout = setTimeout(function(){
++			if ((this.scrollDeltaVert || 0) > 2 || (this.scrollDeltaHorz || 0) > 2) {
++				this.scheduleTrim(120);
++				return;
++			}
++			this.q.enqueue(this.trim.bind(this));
++		}.bind(this), delay);
+ 	}
+ 
+ 	check(_offsetLeft, _offsetTop){
+@@ -256,7 +288,8 @@ class ContinuousViewManager extends DefaultViewManager {
+ 
+ 		var bounds = this._bounds; // bounds saved this until resize
+ 
+-		let offset = horizontal ? this.scrollLeft : this.scrollTop;
++		let {top, left} = this.syncScrollPosition();
++		let offset = horizontal ? left : top;
+ 		let visibleLength = horizontal ? Math.floor(bounds.width) : bounds.height;
+ 		let contentLength = horizontal ? this.container.scrollWidth : this.container.scrollHeight;
+ 		let writingMode = (this.writingMode && this.writingMode.indexOf("vertical") === 0) ? "vertical" : "horizontal";
+@@ -415,20 +448,17 @@ class ContinuousViewManager extends DefaultViewManager {
+ 		var scroller;
+ 
+ 		this.tick = requestAnimationFrame;
+-
+-		let dir = this.settings.direction === "rtl" && this.settings.rtlScrollType === "default" ? -1 : 1;
+-
+ 		this.scrollDeltaVert = 0;
+ 		this.scrollDeltaHorz = 0;
+ 
++		let {top, left} = this.syncScrollPosition();
++		this.prevScrollTop = top;
++		this.prevScrollLeft = left;
++
+ 		if(!this.settings.fullsize) {
+ 			scroller = this.container;
+-			this.scrollTop = this.container.scrollTop;
+-			this.scrollLeft = this.container.scrollLeft;
+ 		} else {
+ 			scroller = window;
+-			this.scrollTop = window.scrollY * dir;
+-			this.scrollLeft = window.scrollX * dir;
+ 		}
+ 
+ 		this._onScroll = this.onScroll.bind(this);
+@@ -454,32 +484,16 @@ class ContinuousViewManager extends DefaultViewManager {
+ 	}
+ 
+ 	onScroll(){
+-		let scrollTop;
+-		let scrollLeft;
+-		let dir = this.settings.direction === "rtl" && this.settings.rtlScrollType === "default" ? -1 : 1;
+-
+-		if(!this.settings.fullsize) {
+-			scrollTop = this.container.scrollTop;
+-			scrollLeft = this.container.scrollLeft;
+-		} else {
+-			scrollTop = window.scrollY * dir;
+-			scrollLeft = window.scrollX * dir;
+-		}
+-
+-		this.scrollTop = scrollTop;
+-		this.scrollLeft = scrollLeft;
++		let {top: scrollTop, left: scrollLeft} = this.syncScrollPosition();
+ 
+ 		if(!this.ignore) {
+-
+ 			this._scrolled();
+-
+ 		} else {
+ 			this.ignore = false;
+ 		}
+ 
+ 		this.scrollDeltaVert += Math.abs(scrollTop-this.prevScrollTop);
+ 		this.scrollDeltaHorz += Math.abs(scrollLeft-this.prevScrollLeft);
+-
+ 		this.prevScrollTop = scrollTop;
+ 		this.prevScrollLeft = scrollLeft;
+ 
+@@ -490,17 +504,18 @@ class ContinuousViewManager extends DefaultViewManager {
+ 		}.bind(this), 150);
+ 
+ 		clearTimeout(this.afterScrolled);
+-
+ 		this.didScroll = false;
+-
+ 	}
+ 
+ 	scrolled() {
+ 
+-		this.q.enqueue(function() {
++		let scrolledTask = this.q.enqueue(function() {
+ 			return this.check();
+ 		}.bind(this));
+ 
++		this.scrolledRequestId = (this.scrolledRequestId || 0) + 1;
++		let requestId = this.scrolledRequestId;
++
+ 		this.emit(EVENTS.MANAGERS.SCROLL, {
+ 			top: this.scrollTop,
+ 			left: this.scrollLeft
+@@ -508,16 +523,20 @@ class ContinuousViewManager extends DefaultViewManager {
+ 
+ 		clearTimeout(this.afterScrolled);
+ 		this.afterScrolled = setTimeout(function () {
+-
+-			// Don't report scroll if we are about the snap
+-			if (this.snapper && this.snapper.supportsTouch && this.snapper.needsSnap()) {
+-				return;
+-			}
+-
+-			this.emit(EVENTS.MANAGERS.SCROLLED, {
+-				top: this.scrollTop,
+-				left: this.scrollLeft
+-			});
++			Promise.resolve(scrolledTask)
++				.catch(function () {})
++				.then(function() {
++					if (requestId !== this.scrolledRequestId) {
++						return;
++					}
++					if (this.snapper && this.snapper.supportsTouch && this.snapper.needsSnap()) {
++						return;
++					}
++					this.emit(EVENTS.MANAGERS.SCROLLED, {
++						top: this.scrollTop,
++						left: this.scrollLeft
++					});
++				}.bind(this));
+ 
+ 		}.bind(this), this.settings.afterScrolledTimeout);
+ 	}
+@@ -580,6 +599,8 @@ class ContinuousViewManager extends DefaultViewManager {
+ 	}
+ 
+ 	destroy(){
++		clearTimeout(this.trimTimeout);
++		clearTimeout(this.scrollTimeout);
+ 		super.destroy();
+ 
+ 		if (this.snapper) {

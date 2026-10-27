@@ -10,10 +10,13 @@
     "tauri": "tauri"
   },
   "dependencies": {
-    "react": "^19.1.0",
-    "react-dom": "^19.1.0",
     "@tauri-apps/api": "^2",
-    "@tauri-apps/plugin-opener": "^2"
+    "@tauri-apps/plugin-dialog": "^2.8.3",
+    "@tauri-apps/plugin-opener": "^2",
+    "epubjs": "0.3.93",
+    "pdfjs-dist": "6.4.299",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0"
   },
   "devDependencies": {
     "@types/react": "^19.1.8",
@@ -22,5 +25,8 @@
     "typescript": "~6.0.3",
     "vite": "^8.0.16",
     "@tauri-apps/cli": "^2"
+  },
+  "patchedDependencies": {
+    "epubjs@0.3.93": "patches/epubjs@0.3.93.patch"
   }
 }

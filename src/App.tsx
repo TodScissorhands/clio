@@ -1,51 +1,110 @@
-import { useState } from "react";
-import reactLogo from "./assets/react.svg";
-import { invoke } from "@tauri-apps/api/core";
+import { useCallback, useRef, useState } from "react";
+import PdfReader from "./reader/PdfReader";
+import { EpubReader } from "./epub/EpubReader";
+import { openEpubBook } from "./epub/engine";
+import type { EpubBook } from "./epub/engine";
+import type { ReaderFileSource } from "./platform/tauriReaderFiles";
+import { isTauriRuntime, pickNativeReaderFile } from "./platform/tauriReaderFiles";
 import "./App.css";
 
-function App() {
-  const [greetMsg, setGreetMsg] = useState("");
-  const [name, setName] = useState("");
+type EpubSource = Extract<ReaderFileSource, { kind: "epub" }>;
+type PdfSource = Extract<ReaderFileSource, { kind: "pdf" }>;
 
-  async function greet() {
-    // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-    setGreetMsg(await invoke("greet", { name }));
-  }
+function App() {
+  const [nightMode, setNightMode] = useState(() => window.matchMedia("(prefers-color-scheme: dark)").matches);
+  const [activeEpub, setActiveEpub] = useState<EpubBook | null>(null);
+  const [pendingPdfSource, setPendingPdfSource] = useState<PdfSource | null>(null);
+  const [openError, setOpenError] = useState("");
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const previousFocusRef = useRef<(() => void) | null>(null);
+  const toggleNightMode = useCallback(() => setNightMode((current) => !current), []);
+  const openEpub = useCallback(async (source: EpubSource) => {
+    const book = await openEpubBook(source.bytes);
+    setPendingPdfSource(null);
+    setActiveEpub(book);
+  }, []);
+  const clearPendingPdfSource = useCallback(() => setPendingPdfSource(null), []);
+  const openReaderSource = useCallback(async (source: ReaderFileSource) => {
+    setOpenError("");
+    if (source.kind === "epub") {
+      await openEpub(source);
+    } else {
+      setPendingPdfSource(source);
+      setActiveEpub(null);
+    }
+  }, [openEpub]);
+  const restoreFocus = useCallback(() => {
+    requestAnimationFrame(() => previousFocusRef.current?.());
+  }, []);
+  const openDocument = useCallback((restoreReaderFocus?: () => void) => {
+    const active = document.activeElement;
+    const previous = active instanceof HTMLElement ? active : null;
+    previousFocusRef.current = restoreReaderFocus ?? (previous ? () => previous.focus() : null);
+    setOpenError("");
+    if (!isTauriRuntime()) {
+      fileInputRef.current?.click();
+      return;
+    }
+    void (async () => {
+      try {
+        const source = await pickNativeReaderFile();
+        if (source) await openReaderSource(source);
+      } catch (cause) {
+        setOpenError(cause instanceof Error ? cause.message : String(cause));
+      } finally {
+        restoreFocus();
+      }
+    })();
+  }, [openReaderSource, restoreFocus]);
 
   return (
-    <main className="container">
-      <h1>Welcome to Tauri + React</h1>
-
-      <div className="row">
-        <a href="https://vite.dev" target="_blank">
-          <img src="/vite.svg" className="logo vite" alt="Vite logo" />
-        </a>
-        <a href="https://tauri.app" target="_blank">
-          <img src="/tauri.svg" className="logo tauri" alt="Tauri logo" />
-        </a>
-        <a href="https://react.dev" target="_blank">
-          <img src={reactLogo} className="logo react" alt="React logo" />
-        </a>
-      </div>
-      <p>Click on the Tauri, Vite, and React logos to learn more.</p>
-
-      <form
-        className="row"
-        onSubmit={(e) => {
-          e.preventDefault();
-          greet();
+    <main className="clio-app" data-night-mode={nightMode ? "true" : "false"}>
+      <input
+        ref={fileInputRef}
+        className="visually-hidden"
+        type="file"
+        accept="application/pdf,.pdf,application/epub+zip,.epub"
+        onChange={(event) => {
+          const file = event.currentTarget.files?.[0];
+          event.currentTarget.value = "";
+          if (!file) {
+            restoreFocus();
+            return;
+          }
+          const extension = file.name.split(".").pop()?.toLowerCase();
+          if (extension !== "pdf" && extension !== "epub") {
+            setOpenError("Choose a PDF or EPUB file.");
+            restoreFocus();
+            return;
+          }
+          void file.arrayBuffer()
+            .then((buffer) => openReaderSource({
+              kind: extension,
+              name: file.name,
+              path: null,
+              bytes: new Uint8Array(buffer),
+            }))
+            .catch((cause: unknown) => {
+              setOpenError(cause instanceof Error ? cause.message : String(cause));
+            })
+            .finally(restoreFocus);
         }}
-      >
-        <input
-          id="greet-input"
-          onChange={(e) => setName(e.currentTarget.value)}
-          placeholder="Enter a name..."
-        />
-        <button type="submit">Greet</button>
-      </form>
-      <p>{greetMsg}</p>
+      />
+      {openError && <div className="error-banner" role="alert">
+        <span>{openError}</span>
+        <button className="text-button" onClick={() => setOpenError("")}>Dismiss</button>
+      </div>}
+      {activeEpub
+        ? <EpubReader book={activeEpub} onClose={() => setActiveEpub(null)} onOpenDocument={openDocument} />
+        : <PdfReader
+            onToggleNightMode={toggleNightMode}
+            onOpenDocument={openDocument}
+            initialSource={pendingPdfSource}
+            onInitialSourceConsumed={clearPendingPdfSource}
+          />}
     </main>
   );
 }
 
 export default App;
+
