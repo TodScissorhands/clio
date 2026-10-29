@@ -51,7 +51,7 @@ index d61f8f76c215589ddc2c5e1fde4262db76585de8..54b8972776d9a853010f5636a323da21
  				if (!view.displayed) {
  					let displayed = view.display(this.request)
  						.then(function (view) {
-@@ -211,20 +231,22 @@ class ContinuousViewManager extends DefaultViewManager {
+@@ -211,20 +231,16 @@ class ContinuousViewManager extends DefaultViewManager {
  							view.hide();
  						});
  					promises.push(displayed);
@@ -71,19 +71,13 @@ index d61f8f76c215589ddc2c5e1fde4262db76585de8..54b8972776d9a853010f5636a323da21
 -				this.trimTimeout = setTimeout(function(){
 -					this.q.enqueue(this.trim.bind(this));
 -				}.bind(this), 250);
-+				if (
-+					view.displayed &&
-+					(view.element && view.element.style.visibility !== "hidden")
-+				) {
-+					view.hide();
-+				}
 +				this.scheduleTrim(350);
  			}
 -
  		}
  
  		if(promises.length){
-@@ -236,7 +258,17 @@ class ContinuousViewManager extends DefaultViewManager {
+@@ -236,7 +252,17 @@ class ContinuousViewManager extends DefaultViewManager {
  			updating.resolve();
  			return updating.promise;
  		}
@@ -101,7 +95,7 @@ index d61f8f76c215589ddc2c5e1fde4262db76585de8..54b8972776d9a853010f5636a323da21
  	}
  
  	check(_offsetLeft, _offsetTop){
-@@ -256,7 +288,8 @@ class ContinuousViewManager extends DefaultViewManager {
+@@ -256,7 +282,8 @@ class ContinuousViewManager extends DefaultViewManager {
  
  		var bounds = this._bounds; // bounds saved this until resize
  
@@ -111,7 +105,121 @@ index d61f8f76c215589ddc2c5e1fde4262db76585de8..54b8972776d9a853010f5636a323da21
  		let visibleLength = horizontal ? Math.floor(bounds.width) : bounds.height;
  		let contentLength = horizontal ? this.container.scrollWidth : this.container.scrollHeight;
  		let writingMode = (this.writingMode && this.writingMode.indexOf("vertical") === 0) ? "vertical" : "horizontal";
-@@ -415,20 +448,17 @@ class ContinuousViewManager extends DefaultViewManager {
+@@ -314,3 +341,6 @@ class ContinuousViewManager extends DefaultViewManager {
+ 		let promises = newViews.map((view) => {
+-			return view.display(this.request);
++			return view.display(this.request).then((v) => {
++				v.show();
++				return v;
++			});
+ 		});
+@@ -340,23 +370,65 @@ class ContinuousViewManager extends DefaultViewManager {
+ 	trim(){
+-		var task = new defer();
+-		var displayed = this.views.displayed();
+-		var first = displayed[0];
+-		var last = displayed[displayed.length-1];
+-		var firstIndex = this.views.indexOf(first);
+-		var lastIndex = this.views.indexOf(last);
+-		var above = this.views.slice(0, firstIndex);
+-		var below = this.views.slice(lastIndex+1);
+-
+-		// Erase all but last above
+-		for (var i = 0; i < above.length-1; i++) {
+-			this.erase(above[i], above);
+-		}
+-
+-		// Erase all except first below
+-		for (var j = 1; j < below.length; j++) {
+-			this.erase(below[j]);
+-		}
+-
+-		task.resolve();
+-		return task.promise;
+-	}
++		var task = new defer();
++		var views = this.views.all().slice();
++		var container = this.bounds();
++		var horizontal = this.settings.axis === "horizontal";
++		var viewportStart = horizontal ? container.left : container.top;
++		var viewportEnd = horizontal ? container.right : container.bottom;
++		var firstVisible = -1;
++		var lastVisible = -1;
++
++		if (!Number.isFinite(viewportStart) || !Number.isFinite(viewportEnd) || viewportEnd <= viewportStart) {
++			task.resolve();
++			return task.promise;
++		}
++
++		for (var i = 0; i < views.length; i++) {
++			var view = views[i];
++
++			if (!view.displayed || !view.expanded || view._expanding) {
++				task.resolve();
++				return task.promise;
++			}
++
++			var position = view.position();
++			var start = horizontal ? position.left : position.top;
++			var end = horizontal ? position.right : position.bottom;
++
++			if (!Number.isFinite(position.left) || !Number.isFinite(position.top) ||
++				!Number.isFinite(position.right) || !Number.isFinite(position.bottom)) {
++				task.resolve();
++				return task.promise;
++			}
++
++			if (end <= start) {
++				continue;
++			}
++
++			if (end > viewportStart && start < viewportEnd) {
++				if (firstVisible === -1) {
++					firstVisible = i;
++				}
++				lastVisible = i;
++			}
++		}
++
++		if (firstVisible === -1) {
++			task.resolve();
++			return task.promise;
++		}
++
++		// Keep one adjacent section on each side for direction reversals.
++		var keepFirst = Math.max(0, firstVisible - 1);
++		var keepLast = Math.min(views.length - 1, lastVisible + 1);
++
++		for (var above = 0; above < keepFirst; above++) {
++			this.erase(views[above], true);
++		}
++
++		for (var below = views.length - 1; below > keepLast; below--) {
++			this.erase(views[below]);
++		}
++
++		task.resolve();
++		return task.promise;
++	}
+@@ -399,14 +471,15 @@ class ContinuousViewManager extends DefaultViewManager {
+ 	addEventListeners(stage){
+ 
+-		window.addEventListener("unload", function(e){
++		this._onUnload = function(e){
+ 			this.ignore = true;
+ 			// this.scrollTo(0,0);
+ 			this.destroy();
+-		}.bind(this));
++		}.bind(this);
++		window.addEventListener("unload", this._onUnload);
+ 
+ 		this.addScrollListeners();
+ 
+ 		if (this.isPaginated && this.settings.snap) {
+ 			this.snapper = new Snap(this, this.settings.snap && (typeof this.settings.snap === "object") && this.settings.snap);
+ 		}
+ 	}
+@@ -415,20 +488,17 @@ class ContinuousViewManager extends DefaultViewManager {
  		var scroller;
  
  		this.tick = requestAnimationFrame;
@@ -136,7 +244,22 @@ index d61f8f76c215589ddc2c5e1fde4262db76585de8..54b8972776d9a853010f5636a323da21
  		}
  
  		this._onScroll = this.onScroll.bind(this);
-@@ -454,32 +484,16 @@ class ContinuousViewManager extends DefaultViewManager {
+@@ -443,12 +513,14 @@ class ContinuousViewManager extends DefaultViewManager {
+ 	removeEventListeners(){
+ 		var scroller;
+ 
+ 		if(!this.settings.fullsize) {
+ 			scroller = this.container;
+ 		} else {
+ 			scroller = window;
+ 		}
+ 
+ 		scroller.removeEventListener("scroll", this._onScroll);
++		window.removeEventListener("unload", this._onUnload);
+ 		this._onScroll = undefined;
++		this._onUnload = undefined;
+ 	}
+@@ -454,32 +526,16 @@ class ContinuousViewManager extends DefaultViewManager {
  	}
  
  	onScroll(){
@@ -170,7 +293,7 @@ index d61f8f76c215589ddc2c5e1fde4262db76585de8..54b8972776d9a853010f5636a323da21
  		this.prevScrollTop = scrollTop;
  		this.prevScrollLeft = scrollLeft;
  
-@@ -490,17 +504,18 @@ class ContinuousViewManager extends DefaultViewManager {
+@@ -490,17 +546,18 @@ class ContinuousViewManager extends DefaultViewManager {
  		}.bind(this), 150);
  
  		clearTimeout(this.afterScrolled);
@@ -192,7 +315,7 @@ index d61f8f76c215589ddc2c5e1fde4262db76585de8..54b8972776d9a853010f5636a323da21
  		this.emit(EVENTS.MANAGERS.SCROLL, {
  			top: this.scrollTop,
  			left: this.scrollLeft
-@@ -508,16 +523,20 @@ class ContinuousViewManager extends DefaultViewManager {
+@@ -508,16 +565,20 @@ class ContinuousViewManager extends DefaultViewManager {
  
  		clearTimeout(this.afterScrolled);
  		this.afterScrolled = setTimeout(function () {
@@ -223,7 +346,7 @@ index d61f8f76c215589ddc2c5e1fde4262db76585de8..54b8972776d9a853010f5636a323da21
  
  		}.bind(this), this.settings.afterScrolledTimeout);
  	}
-@@ -580,6 +599,8 @@ class ContinuousViewManager extends DefaultViewManager {
+@@ -580,6 +641,8 @@ class ContinuousViewManager extends DefaultViewManager {
  	}
  
  	destroy(){
