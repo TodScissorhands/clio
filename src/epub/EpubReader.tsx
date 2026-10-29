@@ -17,7 +17,33 @@ type EpubReaderProps = {
   onClose: () => void;
   onOpenDocument: (restoreFocus?: () => void) => void;
 };
-type SpineSection = { index: number; href?: string; linear: boolean };
+export type SpineSection = { index: number; href?: string; linear: boolean };
+
+export function normalizeSpineLinear(linear: unknown): boolean {
+  if (typeof linear === "boolean") return linear;
+  if (typeof linear === "string") return linear.trim().toLowerCase() === "yes";
+  return true;
+}
+
+export function findAdjacentLinearSection(
+  spine: SpineSection[],
+  currentIndex: number,
+  direction: -1 | 1,
+): SpineSection | null {
+  const currentPosition = spine.findIndex((section) => section.index === currentIndex);
+  if (currentPosition < 0) return null;
+  for (
+    let position = currentPosition + direction;
+    position >= 0 && position < spine.length;
+    position += direction
+  ) {
+    const section = spine[position];
+    if (section.linear && typeof section.href === "string" && section.href.trim()) {
+      return section;
+    }
+  }
+  return null;
+}
 type EpubLayoutMode = "paged" | "continuous";
 type ViewportSize = { width: number; height: number };
 
@@ -110,14 +136,9 @@ export function EpubReader({ book, onClose, onOpenDocument }: EpubReaderProps) {
 
   const navigateSpine = useCallback((direction: -1 | 1) => {
     if (currentSpineIndex === null) return;
-    const currentPosition = spineItems.findIndex((section) => section.index === currentSpineIndex);
-    if (currentPosition < 0) return;
-    for (let position = currentPosition + direction; position >= 0 && position < spineItems.length; position += direction) {
-      const section = spineItems[position];
-      if (section.linear === false || typeof section.href !== "string" || !section.href.trim()) continue;
-      navigateToHref(section.href);
-      return;
-    }
+    const target = findAdjacentLinearSection(spineItems, currentSpineIndex, direction);
+    if (!target?.href) return;
+    navigateToHref(target.href);
   }, [currentSpineIndex, navigateToHref, spineItems]);
   const scrollContinuous = useCallback((direction: -1 | 1, amount: "page" | "line") => {
     const container = viewportRef.current?.querySelector<HTMLElement>(".epub-container");
@@ -384,11 +405,17 @@ export function EpubReader({ book, onClose, onOpenDocument }: EpubReaderProps) {
       .then(async (navigation) => {
         if (!active) return;
         const spine: SpineSection[] = [];
-        book.spine.each((section: SpineSection) => spine.push(section));
+        book.spine.each((section: { index: number; href?: string; linear?: unknown }) => {
+          spine.push({
+            index: section.index,
+            href: section.href,
+            linear: normalizeSpineLinear(section.linear),
+          });
+        });
         const tocTargets = flattenToc(navigation.toc, book);
         const targets = tocTargets.length > 0
           ? tocTargets
-          : spine.filter((section) => section.linear !== false && typeof section.href === "string" && section.href.trim())
+          : spine.filter((section) => section.linear && typeof section.href === "string" && section.href.trim())
             .map((section) => ({ href: section.href!, label: `Section ${section.index + 1}`, depth: 0 }));
         setChapters(targets);
         setSpineItems(spine);
