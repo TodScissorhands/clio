@@ -1,7 +1,7 @@
 export const ZOOM_FACTOR = 1.05;
 export const MIN_ZOOM = 0.5;
 export const MAX_ZOOM = 3;
-export const SPREAD_GAP = 16;
+export const SPREAD_GAP = 4;
 export const MIN_SPREAD_PAGE_WIDTH = 280;
 
 export type PageSize = { width: number; height: number };

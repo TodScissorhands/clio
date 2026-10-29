@@ -47,7 +47,7 @@ describe("PDF fractional fit scales", () => {
       .toBeCloseTo(1100 / 792, 10);
 
     const pages = [portrait, landscape, { width: 612, height: 1000 }];
-    const spreadScale = (1100 - 16) / (612 + 792);
+    const spreadScale = (1100 - 4) / (612 + 792);
     expect(calculateFitScale("fit-spread", pages, "spread", available, 1))
       .toBeCloseTo(spreadScale, 10);
     expect(calculateFitScale("fit-width", pages, "spread", available, 2))
@@ -117,5 +117,49 @@ describe("PDF scale tolerance and viewport size delta", () => {
     expect(hasViewportSizeChanged(base, { width: 799, height: 600 })).toBe(true);
     expect(hasViewportSizeChanged(base, { width: 800, height: 601 })).toBe(true);
     expect(hasViewportSizeChanged(base, { width: 800, height: 599 })).toBe(true);
+  });
+});
+
+describe("PDF viewport padding measurement (Phase 2)", () => {
+  test("measures 8px normal outer padding correctly", () => {
+    const originalGetComputedStyle = globalThis.getComputedStyle;
+    globalThis.getComputedStyle = (() => ({
+      paddingLeft: "8px",
+      paddingRight: "8px",
+      paddingTop: "8px",
+      paddingBottom: "8px",
+    }) as CSSStyleDeclaration) as typeof globalThis.getComputedStyle;
+    const viewer = {
+      clientWidth: 1200,
+      clientHeight: 800,
+      querySelector: () => ({}),
+    } as unknown as HTMLDivElement;
+
+    try {
+      expect(measureAvailableViewport(viewer)).toEqual({ width: 1184, height: 784 });
+    } finally {
+      globalThis.getComputedStyle = originalGetComputedStyle;
+    }
+  });
+
+  test("measures 4px narrow outer padding correctly (<960px breakpoint)", () => {
+    const originalGetComputedStyle = globalThis.getComputedStyle;
+    globalThis.getComputedStyle = (() => ({
+      paddingLeft: "4px",
+      paddingRight: "4px",
+      paddingTop: "4px",
+      paddingBottom: "4px",
+    }) as CSSStyleDeclaration) as typeof globalThis.getComputedStyle;
+    const viewer = {
+      clientWidth: 800,
+      clientHeight: 600,
+      querySelector: () => ({}),
+    } as unknown as HTMLDivElement;
+
+    try {
+      expect(measureAvailableViewport(viewer)).toEqual({ width: 792, height: 592 });
+    } finally {
+      globalThis.getComputedStyle = originalGetComputedStyle;
+    }
   });
 });

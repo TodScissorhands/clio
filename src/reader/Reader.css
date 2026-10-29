@@ -19,10 +19,15 @@
   scrollbar-width: thin;
 }
 
+.document-viewport:has(.continuous-presentation) {
+  scrollbar-gutter: stable;
+  overflow-y: scroll;
+}
+
 .pdfViewer {
-  padding: 24px 24px 28px;
+  padding: 8px;
   --page-bg-color: #FAFBFC;
-  --page-margin: 0 auto 16px;
+  --page-margin: 0 auto 8px;
   --page-border: 0;
 }
 
@@ -35,25 +40,58 @@
   min-height: 100%;
 }
 
+.pdfViewer.continuous-presentation {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  align-items: safe center;
+  width: 100%;
+  min-height: 100%;
+}
+
 .pdfViewer.paged-presentation > .page,
 .pdfViewer.paged-presentation > .spread {
   flex: 0 0 auto;
 }
 
-.pdfViewer.paged-presentation.removePageBorders .page {
-  margin-bottom: 0;
+.pdfViewer .page,
+.pdfViewer.removePageBorders .page {
+  margin: 0 auto 8px;
+  background-color: var(--page-bg-color, #FAFBFC);
 }
 
-.pdfViewer.paged-presentation > .spread {
+.pdfViewer.paged-presentation .page,
+.pdfViewer.paged-presentation.removePageBorders .page {
+  margin: 0;
+}
+
+.pdfViewer.paged-presentation .spread {
+  margin: 0;
+}
+
+.pdfViewer .spread {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 4px;
   margin-inline: 0;
 }
 
-.pdfViewer .page {
-  background: #FAFBFC;
+.pdfViewer .spread .page,
+.pdfViewer.removePageBorders .spread .page {
+  margin: 0;
+}
+
+.pdfViewer .canvasWrapper {
+  background-color: inherit;
 }
 
 .clio-app[data-night-mode="true"] .pdfViewer {
   --page-bg-color: #050607;
+}
+
+.clio-app[data-night-mode="true"] .pdfViewer .page {
+  background-color: var(--page-bg-color, #050607);
 }
 
 .clio-app[data-night-mode="true"] .pdfViewer .canvasWrapper canvas {
@@ -242,12 +280,11 @@
   cursor: pointer;
 }
 
-@media (max-width: 600px) {
+@media (max-width: 960px) {
   .pdfViewer {
-    padding: 14px 24px 22px;
-    --page-margin: 0 auto 12px;
+    padding: 4px;
+    --page-margin: 0 auto 8px;
   }
-
   .status-bar {
     gap: 9px;
     padding: 0 8px;
