@@ -1,11 +1,5 @@
-diff --git a/node_modules/epubjs/.bun-tag-237f2dbf06f6a883 b/.bun-tag-237f2dbf06f6a883
-new file mode 100644
-index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
-diff --git a/node_modules/epubjs/.bun-tag-51b9c0f8d4be2558 b/.bun-tag-51b9c0f8d4be2558
-new file mode 100644
-index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
 diff --git a/src/managers/continuous/index.js b/src/managers/continuous/index.js
-index d61f8f76c215589ddc2c5e1fde4262db76585de8..54b8972776d9a853010f5636a323da21626d5a7f 100644
+index d61f8f76c215589ddc2c5e1fde4262db76585de8..e03e07bfcde69ca52acabe30de96ffafcff38a37 100644
 --- a/src/managers/continuous/index.js
 +++ b/src/managers/continuous/index.js
 @@ -49,6 +49,29 @@ class ContinuousViewManager extends DefaultViewManager {
@@ -105,7 +99,9 @@ index d61f8f76c215589ddc2c5e1fde4262db76585de8..54b8972776d9a853010f5636a323da21
  		let visibleLength = horizontal ? Math.floor(bounds.width) : bounds.height;
  		let contentLength = horizontal ? this.container.scrollWidth : this.container.scrollHeight;
  		let writingMode = (this.writingMode && this.writingMode.indexOf("vertical") === 0) ? "vertical" : "horizontal";
-@@ -314,3 +341,6 @@ class ContinuousViewManager extends DefaultViewManager {
+@@ -312,7 +339,10 @@ class ContinuousViewManager extends DefaultViewManager {
+ 		
+ 
  		let promises = newViews.map((view) => {
 -			return view.display(this.request);
 +			return view.display(this.request).then((v) => {
@@ -113,9 +109,12 @@ index d61f8f76c215589ddc2c5e1fde4262db76585de8..54b8972776d9a853010f5636a323da21
 +				return v;
 +			});
  		});
-@@ -340,23 +370,65 @@ class ContinuousViewManager extends DefaultViewManager {
+ 
+ 		if(newViews.length){
+@@ -339,22 +369,64 @@ class ContinuousViewManager extends DefaultViewManager {
+ 
  	trim(){
--		var task = new defer();
+ 		var task = new defer();
 -		var displayed = this.views.displayed();
 -		var first = displayed[0];
 -		var last = displayed[displayed.length-1];
@@ -128,16 +127,6 @@ index d61f8f76c215589ddc2c5e1fde4262db76585de8..54b8972776d9a853010f5636a323da21
 -		for (var i = 0; i < above.length-1; i++) {
 -			this.erase(above[i], above);
 -		}
--
--		// Erase all except first below
--		for (var j = 1; j < below.length; j++) {
--			this.erase(below[j]);
--		}
--
--		task.resolve();
--		return task.promise;
--	}
-+		var task = new defer();
 +		var views = this.views.all().slice();
 +		var container = this.bounds();
 +		var horizontal = this.settings.axis === "horizontal";
@@ -180,7 +169,10 @@ index d61f8f76c215589ddc2c5e1fde4262db76585de8..54b8972776d9a853010f5636a323da21
 +				lastVisible = i;
 +			}
 +		}
-+
+ 
+-		// Erase all except first below
+-		for (var j = 1; j < below.length; j++) {
+-			this.erase(below[j]);
 +		if (firstVisible === -1) {
 +			task.resolve();
 +			return task.promise;
@@ -196,12 +188,11 @@ index d61f8f76c215589ddc2c5e1fde4262db76585de8..54b8972776d9a853010f5636a323da21
 +
 +		for (var below = views.length - 1; below > keepLast; below--) {
 +			this.erase(views[below]);
-+		}
-+
-+		task.resolve();
-+		return task.promise;
-+	}
-@@ -399,14 +471,15 @@ class ContinuousViewManager extends DefaultViewManager {
+ 		}
+ 
+ 		task.resolve();
+@@ -398,11 +470,12 @@ class ContinuousViewManager extends DefaultViewManager {
+ 
  	addEventListeners(stage){
  
 -		window.addEventListener("unload", function(e){
@@ -215,10 +206,6 @@ index d61f8f76c215589ddc2c5e1fde4262db76585de8..54b8972776d9a853010f5636a323da21
  
  		this.addScrollListeners();
  
- 		if (this.isPaginated && this.settings.snap) {
- 			this.snapper = new Snap(this, this.settings.snap && (typeof this.settings.snap === "object") && this.settings.snap);
- 		}
- 	}
 @@ -415,20 +488,17 @@ class ContinuousViewManager extends DefaultViewManager {
  		var scroller;
  
@@ -244,22 +231,13 @@ index d61f8f76c215589ddc2c5e1fde4262db76585de8..54b8972776d9a853010f5636a323da21
  		}
  
  		this._onScroll = this.onScroll.bind(this);
-@@ -443,12 +513,14 @@ class ContinuousViewManager extends DefaultViewManager {
- 	removeEventListeners(){
- 		var scroller;
- 
- 		if(!this.settings.fullsize) {
- 			scroller = this.container;
- 		} else {
- 			scroller = window;
+@@ -450,36 +520,22 @@ class ContinuousViewManager extends DefaultViewManager {
  		}
  
  		scroller.removeEventListener("scroll", this._onScroll);
 +		window.removeEventListener("unload", this._onUnload);
  		this._onScroll = undefined;
 +		this._onUnload = undefined;
- 	}
-@@ -454,32 +526,16 @@ class ContinuousViewManager extends DefaultViewManager {
  	}
  
  	onScroll(){
