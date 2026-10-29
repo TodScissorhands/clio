@@ -430,35 +430,46 @@ export function PdfReader({
   }, [effectiveViewMode, getPdfReadingViewport]);
 
 
-  const isPdfZoomedIn = useCallback(() => {
+  const getCurrentPageGroupBounds = useCallback((): RectBounds | null => {
     const viewer = pdfViewerRef.current;
-    const viewport = getPdfReadingViewport();
-    if (!viewer || !viewport || !viewer.pagesCount) return false;
+    if (!viewer || !viewer.pagesCount) return null;
     const pageIndex = Math.max(0, viewer.currentPageNumber - 1);
     const pageGroup = getPageGroupIndices(viewer.pagesCount, effectiveViewMode)
       .find((group) => group.includes(pageIndex)) ?? [pageIndex];
-    const rects = pageGroup.flatMap((index) => {
-      const page = pageElementsRef.current[index] ?? viewer.getPageView(index)?.div;
-      return page ? [page.getBoundingClientRect()] : [];
-    });
-    if (!rects.length) return false;
-    const left = Math.min(...rects.map((rect) => rect.left));
-    const right = Math.max(...rects.map((rect) => rect.right));
-    const top = Math.min(...rects.map((rect) => rect.top));
-    const bottom = Math.max(...rects.map((rect) => rect.bottom));
-    return isPageZoomedIn({ width: right - left, height: bottom - top }, viewport);
-  }, [effectiveViewMode, getPdfReadingViewport]);
+    const pages = pageGroup.map((index) =>
+      pageElementsRef.current[index] ?? viewer.getPageView(index)?.div ?? null,
+    );
+    return getPageElementBounds(pages);
+  }, [effectiveViewMode]);
 
-  const panPdf = useCallback((direction: PdfPanDirection) => {
+  const isPdfZoomedIn = useCallback(() => {
+    const viewport = getPdfReadingViewport();
+    const bounds = getCurrentPageGroupBounds();
+    if (!viewport || !bounds) return false;
+    return isPageZoomedIn({ width: bounds.right - bounds.left, height: bounds.bottom - bounds.top }, viewport);
+  }, [getCurrentPageGroupBounds, getPdfReadingViewport]);
+
+  const panPdf = useCallback((direction: PdfPanDirection): boolean => {
     const container = viewerRef.current;
-    if (!container) return;
+    const viewport = getPdfReadingViewport();
+    const bounds = getCurrentPageGroupBounds();
+    if (!container || !viewport || !bounds) return false;
     const distance = 40;
+    const isVertical = direction === "up" || direction === "down";
+    const dir: -1 | 1 = direction === "up" || direction === "left" ? -1 : 1;
+    const delta = isVertical
+      ? getPagePanDelta(bounds.top, bounds.bottom, viewport.top, viewport.bottom, dir, distance)
+      : getPagePanDelta(bounds.left, bounds.right, viewport.left, viewport.right, dir, distance);
+    if (Math.abs(delta) <= 0.5) return false;
+    const previousScroll = isVertical ? container.scrollTop : container.scrollLeft;
     container.scrollBy({
-      left: direction === "left" ? -distance : direction === "right" ? distance : 0,
-      top: direction === "up" ? -distance : direction === "down" ? distance : 0,
+      left: isVertical ? 0 : delta,
+      top: isVertical ? delta : 0,
       behavior: "auto",
     });
-  }, []);
+    const moved = Math.abs((isVertical ? container.scrollTop : container.scrollLeft) - previousScroll);
+    return moved > 0.5;
+  }, [getCurrentPageGroupBounds, getPdfReadingViewport]);
   const scrollPdfContinuous = useCallback((direction: PdfPanDirection) => {
     const distance = 48;
     viewerRef.current?.scrollBy({
@@ -468,32 +479,33 @@ export function PdfReader({
     });
   }, []);
 
-  const panPdfPage = useCallback((direction: -1 | 1) => {
+  const panPdfPage = useCallback((direction: -1 | 1): boolean => {
     const container = viewerRef.current;
-    const viewer = pdfViewerRef.current;
     const viewport = getPdfReadingViewport();
-    const pageNumber = viewer?.currentPageNumber ?? pageNumberRef.current;
-    const page = pageElementsRef.current[pageNumber - 1];
-    if (!container || !viewport || !page) return false;
-    const rect = page.getBoundingClientRect();
-    const delta = getPagePanDelta(rect.top, rect.bottom, viewport.top, viewport.bottom, direction, viewport.height * 0.85);
-    if (!delta) return false;
+    const bounds = getCurrentPageGroupBounds();
+    if (!container || !viewport || !bounds) return false;
+    const delta = getPagePanDelta(
+      bounds.top,
+      bounds.bottom,
+      viewport.top,
+      viewport.bottom,
+      direction,
+      viewport.height * 0.85,
+    );
+    if (Math.abs(delta) <= 0.5) return false;
     const previousTop = container.scrollTop;
     container.scrollBy({ top: delta, behavior: "auto" });
-    return container.scrollTop !== previousTop;
-  }, [getPdfReadingViewport]);
+    return Math.abs(container.scrollTop - previousTop) > 0.5;
+  }, [getCurrentPageGroupBounds, getPdfReadingViewport]);
 
   const scrollPdfToPageEdge = useCallback((edge: "top" | "bottom") => {
     const container = viewerRef.current;
-    const viewer = pdfViewerRef.current;
     const viewport = getPdfReadingViewport();
-    const pageNumber = viewer?.currentPageNumber ?? pageNumberRef.current;
-    const page = pageElementsRef.current[pageNumber - 1];
-    if (!container || !viewport || !page) return;
-    const rect = page.getBoundingClientRect();
-    const delta = edge === "top" ? rect.top - viewport.top : rect.bottom - viewport.bottom;
+    const bounds = getCurrentPageGroupBounds();
+    if (!container || !viewport || !bounds) return;
+    const delta = edge === "top" ? bounds.top - viewport.top : bounds.bottom - viewport.bottom;
     container.scrollBy({ top: delta, behavior: "auto" });
-  }, [getPdfReadingViewport]);
+  }, [getCurrentPageGroupBounds, getPdfReadingViewport]);
 
   const registerActiveMatchElement = useCallback((index: number, element: HTMLDivElement | null) => {
     if (index !== activeMatchRef.current) return;
@@ -678,7 +690,7 @@ export function PdfReader({
             onRenderError={handlePageRenderError}
           />
           {overlay !== "commands" && <footer className="status-bar" aria-live="polite">
-            <span>{document ? `Page ${pageNumber} / ${totalPages}` : "o Open PDF or EPUB"}</span>
+            <span>{document ? `Page ${pageNumber} / ${totalPages}` : "Ctrl+O Open PDF or EPUB"}</span>
             {overlay === "search" && <>
               <span className="status-prefix">/</span>
               <input

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { canNavigatePagedWheel, getAdjacentPageNumber, getPagePanDelta, getPagedWheelDirection, isPageZoomedIn } from "../src/reader/layout";
-import { filterReaderCommands, resolveContinuousPdfNavigationAction, resolvePdfNavigationAction } from "../src/reader/interactions";
+import { READER_COMMANDS, filterReaderCommands, resolveContinuousPdfNavigationAction, resolvePdfNavigationAction } from "../src/reader/interactions";
 
 describe("PDF paged-mode wheel navigation", () => {
   test("maps vertical wheel direction and leaves native or modified scrolling alone", () => {
@@ -49,16 +49,27 @@ describe("PDF keyboard navigation", () => {
     expect(resolvePdfNavigationAction("PageUp", false, false)).toEqual({ kind: "navigate", direction: -1 });
   });
 
-  test("uppercase J and K always navigate; Home and End depend on page fit", () => {
+  test("uppercase J and K always navigate; Home and End navigate document edges regardless of zoom", () => {
     for (const zoomedIn of [false, true]) {
       expect(resolvePdfNavigationAction("J", true, zoomedIn)).toEqual({ kind: "navigate", direction: 1 });
       expect(resolvePdfNavigationAction("K", true, zoomedIn)).toEqual({ kind: "navigate", direction: -1 });
+      expect(resolvePdfNavigationAction("Home", false, zoomedIn)).toEqual({ kind: "document-edge", edge: "top" });
+      expect(resolvePdfNavigationAction("End", false, zoomedIn)).toEqual({ kind: "document-edge", edge: "bottom" });
     }
-    expect(resolvePdfNavigationAction("Home", false, true)).toEqual({ kind: "page-edge", edge: "top" });
-    expect(resolvePdfNavigationAction("End", false, true)).toEqual({ kind: "page-edge", edge: "bottom" });
-    expect(resolvePdfNavigationAction("Home", false, false)).toEqual({ kind: "document-edge", edge: "top" });
-    expect(resolvePdfNavigationAction("End", false, false)).toEqual({ kind: "document-edge", edge: "bottom" });
     expect(resolvePdfNavigationAction("x", false, false)).toBeNull();
+  });
+
+  test("command palette shortcut mappings match required bindings", () => {
+    const byId = new Map(READER_COMMANDS.map((cmd) => [cmd.id, cmd.shortcut]));
+    expect(byId.get("fit_to_page")).toBe("w");
+    expect(byId.get("fit_to_page_width")).toBe("=");
+    expect(byId.get("zoom_in")).toBe("+");
+    expect(byId.get("zoom_out")).toBe("-");
+    expect(byId.get("search")).toBe("/ · Ctrl+F");
+    expect(byId.get("open_document")).toBe("Ctrl+O");
+    expect(byId.get("close_document")).toBe("Ctrl+W");
+    expect(byId.get("goto_beginning")).toBe("Home");
+    expect(byId.get("goto_end")).toBe("End");
   });
 
   test("continuous mode scrolls with hjkl and leaves browser-scrolling keys native", () => {

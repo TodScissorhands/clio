@@ -41,8 +41,8 @@ export type ReaderCommand = {
 };
 
 export const READER_COMMANDS: ReaderCommand[] = [
-  { id: "open_document", shortcut: "o · Ctrl+O" },
-  { id: "close_document", shortcut: "", label: "Close document" },
+  { id: "open_document", shortcut: "Ctrl+O" },
+  { id: "close_document", shortcut: "Ctrl+W", label: "Close document" },
   { id: "search", shortcut: "/ · Ctrl+F" },
   { id: "next_item", shortcut: "n · Enter" },
   { id: "previous_item", shortcut: "N · Shift+Enter" },
@@ -53,10 +53,10 @@ export const READER_COMMANDS: ReaderCommand[] = [
   { id: "goto_end", shortcut: "End" },
   { id: "zoom_in", shortcut: "+" },
   { id: "zoom_out", shortcut: "-" },
-  { id: "fit_to_page_width", shortcut: "w · =" },
+  { id: "fit_to_page_width", shortcut: "=" },
   { id: "single_page_view", shortcut: "" },
   { id: "two_page_spread", shortcut: "" },
-  { id: "fit_to_page", shortcut: "f" },
+  { id: "fit_to_page", shortcut: "w" },
   { id: "fit_to_spread", shortcut: "F" },
   { id: "toggle_continuous_scrolling", shortcut: "", label: "Toggle continuous scrolling" },
   { id: "toggle_night_mode", shortcut: "i" },
@@ -110,7 +110,7 @@ type ReaderKeyboardActions = {
   scrollContinuous?: (direction: -1 | 1, amount: "page" | "line") => void;
   scrollPdfContinuous?: (direction: PdfPanDirection) => void;
   isPdfZoomedIn?: () => boolean;
-  panPdf?: (direction: PdfPanDirection) => void;
+  panPdf?: (direction: PdfPanDirection) => boolean;
   panPdfPage?: (direction: -1 | 1) => boolean;
   scrollPdfToPageEdge?: (edge: "top" | "bottom") => void;
   setCommandQuery: (query: string) => void;
@@ -136,8 +136,8 @@ export function resolvePdfNavigationAction(
 
   if (key === "PageDown") return zoomedIn ? { kind: "page-pan", direction: 1 } : { kind: "navigate", direction: 1 };
   if (key === "PageUp") return zoomedIn ? { kind: "page-pan", direction: -1 } : { kind: "navigate", direction: -1 };
-  if (key === "Home") return { kind: zoomedIn ? "page-edge" : "document-edge", edge: "top" };
-  if (key === "End") return { kind: zoomedIn ? "page-edge" : "document-edge", edge: "bottom" };
+  if (key === "Home") return { kind: "document-edge", edge: "top" };
+  if (key === "End") return { kind: "document-edge", edge: "bottom" };
 
   const direction: PdfPanDirection | null =
     key === "ArrowLeft" || key.toLowerCase() === "h" ? "left" :
@@ -178,7 +178,9 @@ type RepeatNavigationAction =
 function performPdfNavigation(action: PdfNavigationAction, actions: ReaderKeyboardActions): void {
   switch (action.kind) {
     case "pan":
-      actions.panPdf?.(action.direction);
+      if (!actions.panPdf?.(action.direction)) {
+        actions.runCommand(action.direction === "right" || action.direction === "down" ? "next_page" : "previous_page");
+      }
       break;
     case "page-pan":
       if (!actions.panPdfPage?.(action.direction)) {
@@ -373,6 +375,24 @@ export function useReaderKeyboard(state: ReaderKeyboardState, actions: ReaderKey
         return;
       }
       if (typing || overlay) return;
+      const key = event.key.toLowerCase();
+      if (modifier && !event.altKey && !event.shiftKey) {
+        if (key === "o") {
+          event.preventDefault();
+          runCommand("open_document");
+          return;
+        }
+        if (key === "w") {
+          event.preventDefault();
+          runCommand("close_document");
+          return;
+        }
+        if (key === "f") {
+          event.preventDefault();
+          runCommand("search");
+          return;
+        }
+      }
       if (current.state.continuousScrolling && unmodified) {
         const action = resolveContinuousPdfNavigationAction(event.key, event.shiftKey);
         if (action?.kind === "native") return;
@@ -398,7 +418,6 @@ export function useReaderKeyboard(state: ReaderKeyboardState, actions: ReaderKey
         }
       }
 
-      const key = event.key.toLowerCase();
       const zoomedIn = current.actions.isPdfZoomedIn?.() ?? false;
       const pdfNavigationAction = resolvePdfNavigationAction(event.key, event.shiftKey, zoomedIn);
       if (unmodified && pdfNavigationAction) {
@@ -420,18 +439,12 @@ export function useReaderKeyboard(state: ReaderKeyboardState, actions: ReaderKey
         return;
       }
 
-      const zoomInKey = event.shiftKey && (event.key === "+" || event.code === "Equal");
-      const zoomOutKey = !event.shiftKey && (event.key === "-" || event.code === "Minus");
+      const zoomInKey = !modifier && !event.altKey && event.key === "+";
+      const zoomOutKey = unmodified && (event.key === "-" || (!event.shiftKey && event.code === "Minus"));
       if (key === "i" && !event.shiftKey && !modifier && !event.altKey) {
         event.preventDefault();
         runCommand("toggle_night_mode");
-      } else if (key === "o" && !event.altKey) {
-        event.preventDefault();
-        runCommand("open_document");
-      } else if (modifier && !event.altKey && key === "f") {
-        event.preventDefault();
-        runCommand("search");
-      } else if ((!modifier && !event.altKey && zoomInKey) || (unmodified && zoomOutKey)) {
+      } else if (zoomInKey || zoomOutKey) {
         event.preventDefault();
         const command: ReaderCommandId = zoomInKey ? "zoom_in" : "zoom_out";
         const code = event.code || event.key;
@@ -446,7 +459,7 @@ export function useReaderKeyboard(state: ReaderKeyboardState, actions: ReaderKey
         }
       } else if (unmodified && !event.shiftKey && key === "w") {
         event.preventDefault();
-        runCommand("fit_to_page_width");
+        runCommand("fit_to_page");
       } else if (unmodified && !event.shiftKey && event.key === "=") {
         event.preventDefault();
         runCommand("fit_to_page_width");
@@ -459,9 +472,6 @@ export function useReaderKeyboard(state: ReaderKeyboardState, actions: ReaderKey
       } else if (unmodified && event.shiftKey && key === "f") {
         event.preventDefault();
         runCommand("fit_to_spread");
-      } else if (unmodified && key === "f" && !event.shiftKey) {
-        event.preventDefault();
-        runCommand("fit_to_page");
       } else if (unmodified && key === "n") {
         event.preventDefault();
         runCommand(event.shiftKey || event.key === "N" ? "previous_item" : "next_item");
