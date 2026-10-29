@@ -8,10 +8,66 @@ import { loadPdfJsViewer } from "./viewer";
 import type { PdfJsViewerModule } from "./viewer";
 import "pdfjs-dist/web/pdf_viewer.css";
 import { isScaleEffectivelyEqual } from "../reader/layout";
+import { RecolorShaderRenderer } from "./recolor";
+import type { NormalizedRect, PdfRecolorSettings } from "./recolor";
 
 export type PdfViewerHandle = { current: PDFViewerInstance | null };
 type PageMatch = { index: number; match: SearchMatch };
-type PageViewLayers = { div?: HTMLDivElement };
+type PageViewLayers = {
+  id?: number;
+  div?: HTMLDivElement;
+  canvas?: HTMLCanvasElement;
+  renderingState?: number;
+  imageCoordinates?: unknown;
+  pdfPage?: { imageCoordinates?: unknown };
+};
+
+function extractNormalizedImageRects(rawCoords: ArrayLike<number> | undefined): NormalizedRect[] {
+  const rects: NormalizedRect[] = [];
+  if (!rawCoords || rawCoords.length < 6) return rects;
+  for (let i = 0; i < rawCoords.length; i += 6) {
+    const x1 = rawCoords[i];
+    const y1 = rawCoords[i + 1];
+    const x2 = rawCoords[i + 2];
+    const y2 = rawCoords[i + 3];
+    const x3 = rawCoords[i + 4];
+    const y3 = rawCoords[i + 5];
+    const x4 = x2 + x3 - x1;
+    const y4 = y2 + y3 - y1;
+    rects.push({
+      minX: Math.max(0, Math.min(x1, x2, x3, x4)),
+      minY: Math.max(0, Math.min(y1, y2, y3, y4)),
+      maxX: Math.min(1, Math.max(x1, x2, x3, x4)),
+      maxY: Math.min(1, Math.max(y1, y2, y3, y4)),
+    });
+  }
+  return rects;
+}
+
+function prunePristineCanvases(
+  pristineMap: Map<number, HTMLCanvasElement>,
+  viewer: PDFViewerInstance | null,
+  activePageNumber?: number,
+): void {
+  if (!viewer || pristineMap.size === 0) return;
+  const cachedViews = viewer.getCachedPageViews?.() as Set<PageViewLayers> | undefined;
+  if (!cachedViews) return;
+  const cachedIds = new Set(Array.from(cachedViews, (v) => v.id));
+
+  for (const [num] of pristineMap) {
+    if (num === activePageNumber) continue;
+    const pageView = viewer.getPageView(num - 1) as PageViewLayers | undefined;
+    if (!pageView) {
+      pristineMap.delete(num);
+      continue;
+    }
+    if (pageView.renderingState === 1) continue;
+
+    if (!cachedIds.has(num) && !pageView.canvas) {
+      pristineMap.delete(num);
+    }
+  }
+}
 
 export function PdfViewerSurface({
   containerRef,
@@ -29,6 +85,7 @@ export function PdfViewerSurface({
   onPageElements,
   onPageRendered,
   onRenderError,
+  recolorSettings,
 }: {
   containerRef: RefObject<HTMLDivElement | null>;
   viewerRef: RefObject<HTMLDivElement | null>;
@@ -45,6 +102,7 @@ export function PdfViewerSurface({
   onPageElements: (pages: (HTMLDivElement | null)[]) => void;
   onPageRendered?: (pageNumber: number) => void;
   onRenderError: (message: string) => void;
+  recolorSettings?: PdfRecolorSettings;
 }) {
   const pageChangeRef = useRef(onPageChange);
   const activeMatchRef = useRef(onActiveMatchElement);
@@ -72,6 +130,9 @@ export function PdfViewerSurface({
   scaleRef.current = scale;
   spreadRef.current = spread;
   continuousScrollingRef.current = continuousScrolling;
+  const recolorSettingsRef = useRef(recolorSettings);
+  recolorSettingsRef.current = recolorSettings;
+  const pristineCanvasesRef = useRef<Map<number, HTMLCanvasElement>>(new Map());
 
   useEffect(() => {
     let disposed = false;
@@ -86,6 +147,7 @@ export function PdfViewerSurface({
         return pageView?.div ?? null;
       });
       pageElementsRef.current(pages);
+      prunePristineCanvases(pristineCanvasesRef.current, viewer);
     };
     const syncHighlights = (number: number) => {
       const page = viewerRef.current?.querySelector<HTMLDivElement>(`.page[data-page-number="${number}"]`);
@@ -143,6 +205,7 @@ export function PdfViewerSurface({
         annotationMode: 0,
         removePageBorders: true,
         minDurationToUpdateCanvas: 500,
+        imagesRightClickMinSize: 0,
       });
       scrollModeRef.current = ScrollMode;
       linkService.setViewer(viewer);
@@ -157,7 +220,32 @@ export function PdfViewerSurface({
           renderErrorRef.current(`Could not render page ${event.pageNumber}: ${String(event.error)}`);
         }
         if (event.pageNumber) {
-          pageRenderedRef.current?.(event.pageNumber);
+          const pageNum = event.pageNumber;
+          const pageView = viewer?.getPageView(pageNum - 1) as PageViewLayers | undefined;
+          const canvas = pageView?.canvas;
+          if (canvas && canvas.width > 0 && canvas.height > 0) {
+            let pristine = pristineCanvasesRef.current.get(pageNum);
+            if (!pristine || pristine.width !== canvas.width || pristine.height !== canvas.height) {
+              pristine = document.createElement("canvas");
+              pristine.width = canvas.width;
+              pristine.height = canvas.height;
+              pristineCanvasesRef.current.set(pageNum, pristine);
+            }
+            const pCtx = pristine.getContext("2d");
+            if (pCtx) {
+              pCtx.clearRect(0, 0, pristine.width, pristine.height);
+              pCtx.drawImage(canvas, 0, 0);
+            }
+
+            const settings = recolorSettingsRef.current;
+            if (settings?.recolor && (settings.recolorKeephue || settings.recolorReverseVideo)) {
+              const rawCoords = (pageView.imageCoordinates ?? pageView.pdfPage?.imageCoordinates) as ArrayLike<number> | undefined;
+              const rects = extractNormalizedImageRects(rawCoords);
+              RecolorShaderRenderer.getInstance().render(pristine, canvas, settings, rects);
+            }
+          }
+          prunePristineCanvases(pristineCanvasesRef.current, viewer, pageNum);
+          pageRenderedRef.current?.(pageNum);
         }
       };
       const pagesInitialized = () => {
@@ -202,6 +290,7 @@ export function PdfViewerSurface({
       viewer?.setDocument(null);
       viewerHandle.current = null;
       pageElementsRef.current([]);
+      pristineCanvasesRef.current.clear();
     };
   }, [containerRef, viewerRef, viewerHandle]);
 
@@ -237,6 +326,30 @@ export function PdfViewerSurface({
     if (!viewer) return;
     for (let number = 1; number <= viewer.pagesCount; number += 1) syncHighlightsRef.current(number);
   }, [matchesByPage, activeMatch, viewerHandle]);
+
+  useEffect(() => {
+    const viewer = viewerHandle.current;
+    if (!viewer) return;
+    const settings = recolorSettings;
+
+    for (let num = 1; num <= viewer.pagesCount; num += 1) {
+      const pageView = viewer.getPageView(num - 1) as PageViewLayers | undefined;
+      const canvas = pageView?.canvas;
+      const pristine = pristineCanvasesRef.current.get(num);
+      if (!canvas || !pristine) continue;
+
+      if (settings?.recolor && (settings.recolorKeephue || settings.recolorReverseVideo)) {
+        const rawCoords = (pageView.imageCoordinates ?? pageView.pdfPage?.imageCoordinates) as ArrayLike<number> | undefined;
+        const rects = extractNormalizedImageRects(rawCoords);
+        RecolorShaderRenderer.getInstance().render(pristine, canvas, settings, rects);
+      } else {
+        const ctx = canvas.getContext("2d");
+        if (ctx) {
+          ctx.drawImage(pristine, 0, 0);
+        }
+      }
+    }
+  }, [recolorSettings, viewerHandle]);
 
   return null;
 }

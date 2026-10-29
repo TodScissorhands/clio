@@ -9,6 +9,15 @@ import { loadReadingPosition } from "../platform/readingPosition";
 import type { ReadingPosition } from "../platform/readingPosition";
 import type { ReaderFileSource } from "../platform/tauriReaderFiles";
 import {
+  computeSvgColorMatrix,
+  isValidHexColor,
+  loadRecolorSettings,
+  normalizeHexColor,
+  RECOLOR_PRESETS,
+  saveRecolorSettings,
+} from "../pdf/recolor";
+import type { PdfRecolorPresetId, PdfRecolorSettings } from "../pdf/recolor";
+import {
   calculateFitScale,
   getCenterPreservingScrollDelta,
   getPageGroupIndices,
@@ -83,10 +92,17 @@ export function PdfReader({
   const [jumpInput, setJumpInput] = useState("");
   const [commandQuery, setCommandQuery] = useState("");
   const [commandIndex, setCommandIndex] = useState(0);
+  const [recolorSettings, setRecolorSettings] = useState<PdfRecolorSettings>(() => loadRecolorSettings());
+  const [customColorTarget, setCustomColorTarget] = useState<"light" | "dark" | null>(null);
+  const [colorInput, setColorInput] = useState("");
+  const colorInputRef = useRef<HTMLInputElement>(null);
 
   const activeMatchElementRef = useRef<HTMLDivElement | null>(null);
   const jumpInputRef = useRef<HTMLInputElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const recolorMatrix = useMemo(() => {
+    return computeSvgColorMatrix(recolorSettings.recolorLightcolor, recolorSettings.recolorDarkcolor);
+  }, [recolorSettings.recolorLightcolor, recolorSettings.recolorDarkcolor]);
   const viewerRef = useRef<HTMLDivElement>(null);
   const pdfViewerElementRef = useRef<HTMLDivElement>(null);
   const pdfViewerRef = useRef<PdfViewerHandle["current"]>(null);
@@ -645,13 +661,82 @@ export function PdfReader({
         setViewMode("spread");
         setZoomState({ mode: "fit-spread" });
         break;
+      case "toggle_recolor":
+        setRecolorSettings((current) => {
+          const next = { ...current, recolor: !current.recolor };
+          saveRecolorSettings(next);
+          return next;
+        });
+        break;
+      case "recolor_preset_original":
+        setRecolorSettings((current) => {
+          const next = { ...current, recolor: false, activePreset: "original" as const };
+          saveRecolorSettings(next);
+          return next;
+        });
+        break;
+      case "recolor_preset_zathura_dark":
+      case "recolor_preset_gruvbox_dark":
+      case "recolor_preset_solarized_dark":
+      case "recolor_preset_rose_pine_dawn":
+      case "recolor_preset_sepia_warm": {
+        const presetId = command.replace("recolor_preset_", "").replace(/_/g, "-") as PdfRecolorPresetId;
+        const preset = RECOLOR_PRESETS[presetId];
+        if (preset) {
+          setRecolorSettings((current) => {
+            const next = {
+              ...current,
+              recolor: true,
+              activePreset: presetId,
+              recolorLightcolor: preset.lightColor,
+              recolorDarkcolor: preset.darkColor,
+            };
+            saveRecolorSettings(next);
+            return next;
+          });
+        }
+        break;
+      }
+      case "recolor_toggle_keephue":
+        setRecolorSettings((current) => {
+          const next = { ...current, recolorKeephue: !current.recolorKeephue };
+          saveRecolorSettings(next);
+          return next;
+        });
+        break;
+      case "recolor_toggle_reverse_video":
+        setRecolorSettings((current) => {
+          const next = { ...current, recolorReverseVideo: !current.recolorReverseVideo };
+          saveRecolorSettings(next);
+          return next;
+        });
+        break;
+      case "recolor_toggle_adjust_lightness":
+        setRecolorSettings((current) => {
+          const next = { ...current, recolorAdjustLightness: !current.recolorAdjustLightness };
+          saveRecolorSettings(next);
+          return next;
+        });
+        break;
+      case "recolor_set_lightcolor":
+        setCustomColorTarget("light");
+        setColorInput(recolorSettings.recolorLightcolor);
+        setOverlay("recolor-color");
+        requestAnimationFrame(() => colorInputRef.current?.focus());
+        break;
+      case "recolor_set_darkcolor":
+        setCustomColorTarget("dark");
+        setColorInput(recolorSettings.recolorDarkcolor);
+        setOverlay("recolor-color");
+        requestAnimationFrame(() => colorInputRef.current?.focus());
+        break;
     }
-  }, [search.moveMatch, totalPages, goToPage, effectiveViewMode, handleZoomChange, restoreFitWidth, changeViewMode, captureScrollAnchor, onToggleNightMode, onOpenDocument, closeDocument, document]);
+  }, [search.moveMatch, totalPages, goToPage, effectiveViewMode, handleZoomChange, restoreFitWidth, changeViewMode, captureScrollAnchor, onToggleNightMode, onOpenDocument, closeDocument, document, recolorSettings]);
 
   const executePaletteCommand = useCallback((command: ReaderCommand) => {
     setOverlay(null);
     runReaderCommand(command.id);
-    if (command.id !== "open_document" && command.id !== "search" && command.id !== "goto_page_with_page_number") {
+    if (command.id !== "open_document" && command.id !== "search" && command.id !== "goto_page_with_page_number" && command.id !== "recolor_set_lightcolor" && command.id !== "recolor_set_darkcolor") {
       requestAnimationFrame(() => viewerRef.current?.focus());
     }
   }, [runReaderCommand]);
@@ -696,8 +781,27 @@ export function PdfReader({
   return (
     <>
       {error && <div className="error-banner" role="alert"><span>{error}</span><button className="text-button" onClick={dismissError}>Dismiss</button></div>}
-      <section className="reader-layout">
-        <div className="document-viewport" ref={viewerRef} onScroll={handleViewportScroll} tabIndex={-1} aria-label="PDF reading area">
+      <svg className="visually-hidden" aria-hidden="true" style={{ position: "absolute", width: 0, height: 0 }}>
+        <defs>
+          <filter id="clio-recolor-matrix" colorInterpolationFilters="sRGB">
+            <feColorMatrix type="matrix" values={recolorMatrix} />
+          </filter>
+        </defs>
+      </svg>
+      <section
+        className="reader-layout"
+        data-recolor={recolorSettings.recolor ? "true" : "false"}
+        data-recolor-mode={recolorSettings.recolorKeephue || recolorSettings.recolorReverseVideo ? "pixel" : "svg"}
+        style={recolorSettings.recolor ? { "--recolor-light-color": recolorSettings.recolorLightcolor } as React.CSSProperties : undefined}
+      >
+        <div
+          className="document-viewport"
+          ref={viewerRef}
+          onScroll={handleViewportScroll}
+          tabIndex={-1}
+          aria-label="PDF reading area"
+          style={recolorSettings.recolor ? { background: recolorSettings.recolorLightcolor } : undefined}
+        >
           {loading && <div className="loading-indicator" aria-label="Opening document" />}
           <div className={`pdfViewer ${continuousScrolling ? "continuous-presentation" : "paged-presentation"}`} ref={pdfViewerElementRef} />
           <PdfViewerSurface
@@ -716,9 +820,13 @@ export function PdfReader({
             onPageElements={handlePageElements}
             onRenderError={handlePageRenderError}
             onPageRendered={handlePageRendered}
+            recolorSettings={recolorSettings}
           />
           {overlay !== "commands" && <footer className="status-bar" aria-live="polite">
-            <span>{document ? `Page ${pageNumber} / ${totalPages}` : "Ctrl+O Open PDF or EPUB"}</span>
+            <span>
+              {document ? `Page ${pageNumber} / ${totalPages}` : "Ctrl+O Open PDF or EPUB"}
+              {recolorSettings.recolor && ` · ${RECOLOR_PRESETS[recolorSettings.activePreset]?.label ?? "Recolor"}`}
+            </span>
             {overlay === "search" && <>
               <span className="status-prefix">/</span>
               <input
@@ -748,6 +856,41 @@ export function PdfReader({
                 onChange={(event) => setJumpInput(event.currentTarget.value)}
               />
               <span className="status-range">{totalPages ? `1–${totalPages}` : "—"}</span>
+            </>}
+            {overlay === "recolor-color" && <>
+              <span className="status-prefix">{customColorTarget === "light" ? "Background (hex)" : "Foreground (hex)"}</span>
+              <input
+                ref={colorInputRef}
+                className="status-input"
+                aria-label={customColorTarget === "light" ? "Background hex color" : "Foreground hex color"}
+                placeholder="#14161B"
+                value={colorInput}
+                onChange={(event) => setColorInput(event.currentTarget.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    if (isValidHexColor(colorInput)) {
+                      const normalized = normalizeHexColor(colorInput);
+                      setRecolorSettings((current) => {
+                        const next = {
+                          ...current,
+                          recolor: true,
+                          activePreset: "custom" as const,
+                          [customColorTarget === "light" ? "recolorLightcolor" : "recolorDarkcolor"]: normalized,
+                        };
+                        saveRecolorSettings(next);
+                        return next;
+                      });
+                      closeOverlay();
+                    } else {
+                      setError("Invalid hex color. Enter 3 or 6 hex characters (e.g. #14161B).");
+                    }
+                  } else if (event.key === "Escape") {
+                    event.preventDefault();
+                    closeOverlay();
+                  }
+                }}
+              />
             </>}
             {loading && <span>Opening PDF…</span>}
           </footer>}

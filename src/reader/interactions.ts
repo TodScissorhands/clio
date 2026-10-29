@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef } from "react";
 import type { Dispatch, SetStateAction } from "react";
 
-export type ReaderOverlay = "search" | "jump" | "commands" | null;
+export type ReaderOverlay = "search" | "jump" | "commands" | "recolor-color" | null;
 export type ReaderKind = "pdf" | "epub";
 export type ReaderCommandId =
   | "open_document"
@@ -28,8 +28,19 @@ export type ReaderCommandId =
   | "go_to_chapter"
   | "paged_layout"
   | "continuous_layout"
-  | "select_chapter";
-
+  | "select_chapter"
+  | "toggle_recolor"
+  | "recolor_preset_original"
+  | "recolor_preset_zathura_dark"
+  | "recolor_preset_gruvbox_dark"
+  | "recolor_preset_solarized_dark"
+  | "recolor_preset_rose_pine_dawn"
+  | "recolor_preset_sepia_warm"
+  | "recolor_toggle_keephue"
+  | "recolor_toggle_reverse_video"
+  | "recolor_toggle_adjust_lightness"
+  | "recolor_set_lightcolor"
+  | "recolor_set_darkcolor";
 export type ReaderCommand = {
   id: ReaderCommandId;
   shortcut: string;
@@ -60,6 +71,18 @@ export const READER_COMMANDS: ReaderCommand[] = [
   { id: "fit_to_spread", shortcut: "F" },
   { id: "toggle_continuous_scrolling", shortcut: "", label: "Toggle continuous scrolling" },
   { id: "toggle_night_mode", shortcut: "i" },
+  { id: "toggle_recolor", shortcut: "r", label: "Toggle recoloring" },
+  { id: "recolor_preset_original", shortcut: "", label: "Recolor: Original (native PDF colors)" },
+  { id: "recolor_preset_zathura_dark", shortcut: "", label: "Recolor: Zathura Dark (#14161B / #DCD7BA)" },
+  { id: "recolor_preset_gruvbox_dark", shortcut: "", label: "Recolor: Gruvbox Dark (#282828 / #EBDBB2)" },
+  { id: "recolor_preset_solarized_dark", shortcut: "", label: "Recolor: Solarized Dark (#002B36 / #839496)" },
+  { id: "recolor_preset_rose_pine_dawn", shortcut: "", label: "Recolor: Rose Pine Dawn (#FAF4ED / #575279)" },
+  { id: "recolor_preset_sepia_warm", shortcut: "", label: "Recolor: Sepia Warm (#FBF0D9 / #3C3836)" },
+  { id: "recolor_toggle_keephue", shortcut: "", label: "Toggle hue preservation (recolor-keephue)" },
+  { id: "recolor_toggle_reverse_video", shortcut: "", label: "Toggle image preservation (recolor-reverse-video)" },
+  { id: "recolor_toggle_adjust_lightness", shortcut: "", label: "Toggle lightness adjustment (recolor-adjust-lightness)" },
+  { id: "recolor_set_lightcolor", shortcut: "", label: "Set recolor background color (hex)..." },
+  { id: "recolor_set_darkcolor", shortcut: "", label: "Set recolor foreground color (hex)..." },
 ];
 
 export const EPUB_READER_COMMANDS: ReaderCommand[] = [
@@ -82,7 +105,7 @@ export function filterReaderCommands(
   const commands = commandSet ?? (readerKind === "epub" ? EPUB_READER_COMMANDS : READER_COMMANDS);
   return commands.filter((command) =>
     (command.scope ?? "pdf") === readerKind &&
-    (hasDocument || command.id === "open_document" || command.id === "toggle_night_mode") &&
+    (hasDocument || command.id === "open_document" || command.id === "toggle_night_mode" || command.id.startsWith("recolor_") || command.id === "toggle_recolor") &&
     `${command.id} ${command.label ?? ""} ${command.shortcut}`.toLocaleLowerCase().includes(normalizedQuery),
   );
 }
@@ -305,6 +328,9 @@ export function useReaderKeyboard(state: ReaderKeyboardState, actions: ReaderKey
         }
         return;
       }
+      if (overlay === "recolor-color") {
+        return;
+      }
       if (overlay === "commands") {
         if (event.key === "ArrowDown" && commands.length) {
           event.preventDefault();
@@ -460,6 +486,9 @@ export function useReaderKeyboard(state: ReaderKeyboardState, actions: ReaderKey
       } else if (unmodified && !event.shiftKey && key === "w") {
         event.preventDefault();
         runCommand("fit_to_page");
+      } else if (unmodified && !event.shiftKey && key === "r") {
+        event.preventDefault();
+        runCommand("toggle_recolor");
       } else if (unmodified && !event.shiftKey && event.key === "=") {
         event.preventDefault();
         runCommand("fit_to_page_width");

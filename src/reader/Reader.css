@@ -98,6 +98,32 @@
   filter: invert(1);
 }
 
+.reader-layout[data-recolor="true"] .document-viewport,
+.clio-app[data-recolor="true"] .document-viewport {
+  background: var(--recolor-light-color, #14161B);
+}
+
+.reader-layout[data-recolor="true"] .pdfViewer,
+.clio-app[data-recolor="true"] .pdfViewer {
+  --page-bg-color: var(--recolor-light-color, #14161B);
+}
+
+.reader-layout[data-recolor="true"] .pdfViewer .page,
+.clio-app[data-recolor="true"] .pdfViewer .page {
+  background-color: var(--recolor-light-color, #14161B);
+}
+
+/* When recolor is active, override night mode invert(1) filter */
+.reader-layout[data-recolor="true"] .pdfViewer .canvasWrapper canvas,
+.clio-app[data-recolor="true"] .pdfViewer .canvasWrapper canvas {
+  filter: none;
+}
+
+.reader-layout[data-recolor="true"][data-recolor-mode="svg"] .pdfViewer .canvasWrapper canvas,
+.clio-app[data-recolor="true"][data-recolor-mode="svg"] .pdfViewer .canvasWrapper canvas {
+  filter: url(#clio-recolor-matrix);
+}
+
 .pdfjs-search-highlights {
   position: absolute;
   z-index: 2;
