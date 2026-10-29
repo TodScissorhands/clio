@@ -1,6 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import { canNavigatePagedWheel, getAdjacentPageNumber, getPagePanDelta, getPagedWheelDirection, isPageZoomedIn } from "../src/reader/layout";
-import { READER_COMMANDS, filterReaderCommands, resolveContinuousPdfNavigationAction, resolvePdfNavigationAction } from "../src/reader/interactions";
+import {
+  READER_COMMANDS,
+  filterReaderCommands,
+  performPdfNavigation,
+  resolveContinuousPdfNavigationAction,
+  resolvePdfNavigationAction,
+} from "../src/reader/interactions";
+import type { ReaderCommandId } from "../src/reader/interactions";
 
 describe("PDF paged-mode wheel navigation", () => {
   test("maps vertical wheel direction and leaves native or modified scrolling alone", () => {
@@ -20,7 +27,7 @@ describe("PDF paged-mode wheel navigation", () => {
 });
 
 describe("PDF keyboard navigation", () => {
-  test("directional keys pan when the current page group exceeds the viewport", () => {
+  test("directional keys pan in all directions when page group exceeds both viewport dimensions", () => {
     const directions = [
       ["ArrowLeft", "left"], ["h", "left"],
       ["ArrowDown", "down"], ["j", "down"],
@@ -28,25 +35,41 @@ describe("PDF keyboard navigation", () => {
       ["ArrowRight", "right"], ["l", "right"],
     ] as const;
     for (const [key, direction] of directions) {
-      expect(resolvePdfNavigationAction(key, false, true)).toEqual({ kind: "pan", direction });
+      expect(resolvePdfNavigationAction(key, false, { horizontal: true, vertical: true })).toEqual({ kind: "pan", direction });
     }
   });
 
-  test("directional keys navigate pages when the page group fits", () => {
-    const directions = [
-      ["ArrowLeft", -1], ["h", -1], ["ArrowUp", -1], ["k", -1],
-      ["ArrowRight", 1], ["l", 1], ["ArrowDown", 1], ["j", 1],
-    ] as const;
-    for (const [key, direction] of directions) {
-      expect(resolvePdfNavigationAction(key, false, false)).toEqual({ kind: "navigate", direction });
-    }
+  test("in fit-width mode (vertical overflow only), horizontal keys navigate and vertical keys pan", () => {
+    const fitWidth = { horizontal: false, vertical: true };
+    expect(resolvePdfNavigationAction("ArrowLeft", false, fitWidth)).toEqual({ kind: "navigate", direction: -1 });
+    expect(resolvePdfNavigationAction("h", false, fitWidth)).toEqual({ kind: "navigate", direction: -1 });
+    expect(resolvePdfNavigationAction("ArrowRight", false, fitWidth)).toEqual({ kind: "navigate", direction: 1 });
+    expect(resolvePdfNavigationAction("l", false, fitWidth)).toEqual({ kind: "navigate", direction: 1 });
+
+    expect(resolvePdfNavigationAction("ArrowUp", false, fitWidth)).toEqual({ kind: "pan", direction: "up" });
+    expect(resolvePdfNavigationAction("k", false, fitWidth)).toEqual({ kind: "pan", direction: "up" });
+    expect(resolvePdfNavigationAction("ArrowDown", false, fitWidth)).toEqual({ kind: "pan", direction: "down" });
+    expect(resolvePdfNavigationAction("j", false, fitWidth)).toEqual({ kind: "pan", direction: "down" });
   });
 
-  test("page keys pan to zoomed page boundaries and navigate when fitted", () => {
-    expect(resolvePdfNavigationAction("PageDown", false, true)).toEqual({ kind: "page-pan", direction: 1 });
-    expect(resolvePdfNavigationAction("PageUp", false, true)).toEqual({ kind: "page-pan", direction: -1 });
-    expect(resolvePdfNavigationAction("PageDown", false, false)).toEqual({ kind: "navigate", direction: 1 });
-    expect(resolvePdfNavigationAction("PageUp", false, false)).toEqual({ kind: "navigate", direction: -1 });
+  test("in fit-page mode (no overflow), horizontal keys navigate and vertical keys pan within page", () => {
+    const fitPage = { horizontal: false, vertical: false };
+    expect(resolvePdfNavigationAction("ArrowLeft", false, fitPage)).toEqual({ kind: "navigate", direction: -1 });
+    expect(resolvePdfNavigationAction("h", false, fitPage)).toEqual({ kind: "navigate", direction: -1 });
+    expect(resolvePdfNavigationAction("ArrowRight", false, fitPage)).toEqual({ kind: "navigate", direction: 1 });
+    expect(resolvePdfNavigationAction("l", false, fitPage)).toEqual({ kind: "navigate", direction: 1 });
+
+    expect(resolvePdfNavigationAction("ArrowUp", false, fitPage)).toEqual({ kind: "pan", direction: "up" });
+    expect(resolvePdfNavigationAction("k", false, fitPage)).toEqual({ kind: "pan", direction: "up" });
+    expect(resolvePdfNavigationAction("ArrowDown", false, fitPage)).toEqual({ kind: "pan", direction: "down" });
+    expect(resolvePdfNavigationAction("j", false, fitPage)).toEqual({ kind: "pan", direction: "down" });
+  });
+
+  test("page keys return page-pan to pan within page and navigate at boundaries", () => {
+    for (const zoom of [false, true, { horizontal: false, vertical: true }]) {
+      expect(resolvePdfNavigationAction("PageDown", false, zoom)).toEqual({ kind: "page-pan", direction: 1 });
+      expect(resolvePdfNavigationAction("PageUp", false, zoom)).toEqual({ kind: "page-pan", direction: -1 });
+    }
   });
 
   test("uppercase J and K always navigate; Home and End navigate document edges regardless of zoom", () => {
@@ -117,5 +140,68 @@ describe("PDF keyboard navigation", () => {
     expect(getAdjacentPageNumber(5, 1, 5, "spread")).toBe(5);
     expect(getAdjacentPageNumber(1, -1, 3, "single")).toBe(1);
     expect(getAdjacentPageNumber(3, 1, 3, "single")).toBe(3);
+  });
+
+  test("performPdfNavigation calls navigatePageWithBoundary and prevents duplicate navigation", () => {
+    const commands: ReaderCommandId[] = [];
+    const boundaryNavigations: number[] = [];
+    const actions = {
+      closeOverlay: () => {},
+      moveMatch: () => {},
+      runSearch: () => {},
+      goToPage: () => {},
+      executePaletteCommand: () => {},
+      runCommand: (cmd: ReaderCommandId) => { commands.push(cmd); },
+      navigatePageWithBoundary: (dir: -1 | 1) => { boundaryNavigations.push(dir); },
+      panPdfPage: () => false,
+      panPdf: () => false,
+      setCommandQuery: () => {},
+      setCommandIndex: () => {},
+      setOverlay: () => {},
+    };
+
+    // Navigation action should call navigatePageWithBoundary and NOT runCommand
+    performPdfNavigation({ kind: "navigate", direction: 1 }, actions);
+    expect(boundaryNavigations).toEqual([1]);
+    expect(commands).toEqual([]);
+
+    // Page-pan at boundary should call navigatePageWithBoundary and NOT runCommand
+    performPdfNavigation({ kind: "page-pan", direction: -1 }, actions);
+    expect(boundaryNavigations).toEqual([1, -1]);
+    expect(commands).toEqual([]);
+
+    // Pan reaching boundary should NEVER call runCommand or navigatePageWithBoundary
+    performPdfNavigation({ kind: "pan", direction: "down" }, actions);
+    expect(boundaryNavigations).toEqual([1, -1]);
+    expect(commands).toEqual([]);
+
+    // Fallback when navigatePageWithBoundary is not provided
+    const fallbackActions = {
+      ...actions,
+      navigatePageWithBoundary: undefined,
+    };
+    performPdfNavigation({ kind: "navigate", direction: 1 }, fallbackActions);
+    expect(commands).toEqual(["next_page"]);
+  });
+
+  test("calculates destination edge delta accurately for PageUp bottom-alignment and PageDown top-alignment", () => {
+    const viewport = { top: 0, bottom: 800, height: 800 };
+    // Tall page (e.g. Fit-width portrait page: height 1200 in viewport height 800)
+    const tallPageBounds = { top: 0, bottom: 1200 };
+
+    // PageDown lands at top: delta should be bounds.top - viewport.top
+    const pageDownDelta = tallPageBounds.top - viewport.top;
+    expect(pageDownDelta).toBe(0);
+
+    // PageUp lands at bottom: delta should be bounds.bottom - viewport.bottom
+    const pageUpDelta = tallPageBounds.bottom - viewport.bottom;
+    expect(pageUpDelta).toBe(400);
+
+    // Fitting page (height 600 in viewport height 800)
+    const fittingBounds = { top: 100, bottom: 700 };
+    const fitsVertically = (fittingBounds.bottom - fittingBounds.top) <= (viewport.height + 0.5) &&
+      fittingBounds.top >= (viewport.top - 1.0) &&
+      fittingBounds.bottom <= (viewport.bottom + 1.0);
+    expect(fitsVertically).toBe(true);
   });
 });

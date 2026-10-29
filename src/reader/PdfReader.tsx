@@ -25,7 +25,6 @@ import {
   getPagedWheelDirection,
   canNavigatePagedWheel,
   getPagePanDelta,
-  isPageZoomedIn,
   hasViewportSizeChanged,
   MAX_ZOOM,
   MIN_SPREAD_PAGE_WIDTH,
@@ -39,7 +38,7 @@ import {
   filterReaderCommands,
   useReaderKeyboard,
 } from "./interactions";
-import type { PdfPanDirection, ReaderCommandId, ReaderOverlay } from "./interactions";
+import type { PdfPanDirection, PdfZoomOverflow, ReaderCommandId, ReaderOverlay } from "./interactions";
 import type { ReaderCommand } from "./interactions";
 import { ReaderCommandPalette } from "./ReaderCommandPalette";
 import { useReadingPosition } from "./useReadingPosition";
@@ -236,9 +235,6 @@ export function PdfReader({
     pageElementsRef.current = pages;
     setPageElementsVersion((version) => version + 1);
   }, []);
-  const handlePageRendered = useCallback((renderedPage: number) => {
-    retryRestoration(renderedPage);
-  }, [retryRestoration]);
   useEffect(() => {
     const viewer = viewerRef.current;
     if (!viewer) return;
@@ -485,12 +481,20 @@ export function PdfReader({
     return getPageElementBounds(pages);
   }, [effectiveViewMode]);
 
-  const isPdfZoomedIn = useCallback(() => {
+  const getPdfZoomOverflow = useCallback((): PdfZoomOverflow => {
     const viewport = getPdfReadingViewport();
     const bounds = getCurrentPageGroupBounds();
-    if (!viewport || !bounds) return false;
-    return isPageZoomedIn({ width: bounds.right - bounds.left, height: bounds.bottom - bounds.top }, viewport);
+    if (!viewport || !bounds) return { horizontal: false, vertical: false };
+    return {
+      horizontal: bounds.right - bounds.left > viewport.width + 0.5,
+      vertical: bounds.bottom - bounds.top > viewport.height + 0.5,
+    };
   }, [getCurrentPageGroupBounds, getPdfReadingViewport]);
+
+  const isPdfZoomedIn = useCallback(() => {
+    const overflow = getPdfZoomOverflow();
+    return overflow.horizontal || overflow.vertical;
+  }, [getPdfZoomOverflow]);
 
   const panPdf = useCallback((direction: PdfPanDirection): boolean => {
     const container = viewerRef.current;
@@ -549,6 +553,69 @@ export function PdfReader({
     const delta = edge === "top" ? bounds.top - viewport.top : bounds.bottom - viewport.bottom;
     container.scrollBy({ top: delta, behavior: "auto" });
   }, [getCurrentPageGroupBounds, getPdfReadingViewport]);
+  const pendingPageEdgeRef = useRef<"top" | "bottom" | null>(null);
+
+  const confirmAndAlignPageEdge = useCallback((): boolean => {
+    const edge = pendingPageEdgeRef.current;
+    if (!edge) return true;
+    const container = viewerRef.current;
+    const viewport = getPdfReadingViewport();
+    const bounds = getCurrentPageGroupBounds();
+    if (!container || !viewport || !bounds || bounds.bottom <= bounds.top) return false;
+
+    const pageHeight = bounds.bottom - bounds.top;
+    const delta = edge === "top" ? bounds.top - viewport.top : bounds.bottom - viewport.bottom;
+
+    if (Math.abs(delta) <= 1.0) {
+      pendingPageEdgeRef.current = null;
+      return true;
+    }
+
+    const pageFitsInViewport = pageHeight <= viewport.height + 0.5 &&
+      bounds.top >= viewport.top - 1.0 &&
+      bounds.bottom <= viewport.bottom + 1.0;
+
+    const prevTop = container.scrollTop;
+    container.scrollBy({ top: delta, behavior: "auto" });
+
+    const updatedViewport = getPdfReadingViewport();
+    const updatedBounds = getCurrentPageGroupBounds();
+    if (!updatedViewport || !updatedBounds) return false;
+
+    const remaining = edge === "top"
+      ? updatedBounds.top - updatedViewport.top
+      : updatedBounds.bottom - updatedViewport.bottom;
+
+    if (Math.abs(remaining) <= 1.0) {
+      pendingPageEdgeRef.current = null;
+      return true;
+    }
+
+    if (pageFitsInViewport && Math.abs(container.scrollTop - prevTop) <= 0.5) {
+      pendingPageEdgeRef.current = null;
+      return true;
+    }
+
+    return false;
+  }, [getCurrentPageGroupBounds, getPdfReadingViewport]);
+
+  const navigatePageWithBoundary = useCallback((direction: -1 | 1) => {
+    const targetPage = getAdjacentPageNumber(pageNumberRef.current, direction, totalPages, effectiveViewMode);
+    if (targetPage === pageNumberRef.current) return;
+    pendingPageEdgeRef.current = direction < 0 ? "bottom" : "top";
+    goToPage(targetPage);
+  }, [effectiveViewMode, goToPage, totalPages]);
+
+  useLayoutEffect(() => {
+    confirmAndAlignPageEdge();
+  }, [pageNumber, confirmAndAlignPageEdge]);
+
+  const handlePageRendered = useCallback((renderedPage: number) => {
+    if (renderedPage === pageNumberRef.current && pendingPageEdgeRef.current) {
+      confirmAndAlignPageEdge();
+    }
+    retryRestoration(renderedPage);
+  }, [confirmAndAlignPageEdge, retryRestoration]);
 
   const registerActiveMatchElement = useCallback((index: number, element: HTMLDivElement | null) => {
     if (index !== activeMatchRef.current) return;
@@ -767,8 +834,10 @@ export function PdfReader({
       executePaletteCommand,
       runCommand: runReaderCommand,
       isPdfZoomedIn,
+      getPdfZoomOverflow,
       panPdf,
       panPdfPage,
+      navigatePageWithBoundary,
       scrollPdfToPageEdge,
       scrollPdfContinuous,
       setCommandQuery,

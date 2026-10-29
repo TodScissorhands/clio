@@ -133,12 +133,19 @@ type ReaderKeyboardActions = {
   scrollContinuous?: (direction: -1 | 1, amount: "page" | "line") => void;
   scrollPdfContinuous?: (direction: PdfPanDirection) => void;
   isPdfZoomedIn?: () => boolean;
+  getPdfZoomOverflow?: () => PdfZoomOverflow;
   panPdf?: (direction: PdfPanDirection) => boolean;
   panPdfPage?: (direction: -1 | 1) => boolean;
+  navigatePageWithBoundary?: (direction: -1 | 1) => void;
   scrollPdfToPageEdge?: (edge: "top" | "bottom") => void;
   setCommandQuery: (query: string) => void;
   setCommandIndex: Dispatch<SetStateAction<number>>;
   setOverlay: (overlay: ReaderOverlay) => void;
+};
+
+export type PdfZoomOverflow = {
+  horizontal: boolean;
+  vertical: boolean;
 };
 
 export type PdfPanDirection = "left" | "right" | "up" | "down";
@@ -152,25 +159,37 @@ export type PdfNavigationAction =
 export function resolvePdfNavigationAction(
   key: string,
   shiftKey: boolean,
-  zoomedIn: boolean,
+  zoomState: boolean | PdfZoomOverflow,
 ): PdfNavigationAction | null {
   if (key === "J" || (shiftKey && key.toLowerCase() === "j")) return { kind: "navigate", direction: 1 };
   if (key === "K" || (shiftKey && key.toLowerCase() === "k")) return { kind: "navigate", direction: -1 };
 
-  if (key === "PageDown") return zoomedIn ? { kind: "page-pan", direction: 1 } : { kind: "navigate", direction: 1 };
-  if (key === "PageUp") return zoomedIn ? { kind: "page-pan", direction: -1 } : { kind: "navigate", direction: -1 };
+  if (key === "PageDown") return { kind: "page-pan", direction: 1 };
+  if (key === "PageUp") return { kind: "page-pan", direction: -1 };
   if (key === "Home") return { kind: "document-edge", edge: "top" };
   if (key === "End") return { kind: "document-edge", edge: "bottom" };
 
-  const direction: PdfPanDirection | null =
-    key === "ArrowLeft" || key.toLowerCase() === "h" ? "left" :
-    key === "ArrowRight" || key.toLowerCase() === "l" ? "right" :
-    key === "ArrowUp" || key.toLowerCase() === "k" ? "up" :
-    key === "ArrowDown" || key.toLowerCase() === "j" ? "down" :
-    null;
-  if (!direction) return null;
-  if (zoomedIn) return { kind: "pan", direction };
-  return { kind: "navigate", direction: direction === "left" || direction === "up" ? -1 : 1 };
+  const overflow: PdfZoomOverflow =
+    typeof zoomState === "boolean"
+      ? { horizontal: zoomState, vertical: zoomState }
+      : zoomState;
+
+  const isLeft = key === "ArrowLeft" || key.toLowerCase() === "h";
+  const isRight = key === "ArrowRight" || key.toLowerCase() === "l";
+  const isUp = key === "ArrowUp" || key.toLowerCase() === "k";
+  const isDown = key === "ArrowDown" || key.toLowerCase() === "j";
+
+  if (isUp) return { kind: "pan", direction: "up" };
+  if (isDown) return { kind: "pan", direction: "down" };
+
+  if (isLeft) {
+    return overflow.horizontal ? { kind: "pan", direction: "left" } : { kind: "navigate", direction: -1 };
+  }
+  if (isRight) {
+    return overflow.horizontal ? { kind: "pan", direction: "right" } : { kind: "navigate", direction: 1 };
+  }
+
+  return null;
 }
 export type ContinuousPdfNavigationAction =
   | { kind: "scroll"; direction: PdfPanDirection }
@@ -198,20 +217,26 @@ type RepeatNavigationAction =
   | { kind: "command"; command: ReaderCommandId }
   | { kind: "pdf-key"; key: string; shiftKey: boolean };
 
-function performPdfNavigation(action: PdfNavigationAction, actions: ReaderKeyboardActions): void {
+export function performPdfNavigation(action: PdfNavigationAction, actions: ReaderKeyboardActions): void {
   switch (action.kind) {
     case "pan":
-      if (!actions.panPdf?.(action.direction)) {
-        actions.runCommand(action.direction === "right" || action.direction === "down" ? "next_page" : "previous_page");
-      }
+      actions.panPdf?.(action.direction);
       break;
     case "page-pan":
       if (!actions.panPdfPage?.(action.direction)) {
-        actions.runCommand(action.direction > 0 ? "next_page" : "previous_page");
+        if (actions.navigatePageWithBoundary) {
+          actions.navigatePageWithBoundary(action.direction);
+        } else {
+          actions.runCommand(action.direction > 0 ? "next_page" : "previous_page");
+        }
       }
       break;
     case "navigate":
-      actions.runCommand(action.direction > 0 ? "next_page" : "previous_page");
+      if (actions.navigatePageWithBoundary) {
+        actions.navigatePageWithBoundary(action.direction);
+      } else {
+        actions.runCommand(action.direction > 0 ? "next_page" : "previous_page");
+      }
       break;
     case "page-edge":
       actions.scrollPdfToPageEdge?.(action.edge);
@@ -223,7 +248,8 @@ function performPdfNavigation(action: PdfNavigationAction, actions: ReaderKeyboa
 }
 
 function performPdfKey(key: string, shiftKey: boolean, actions: ReaderKeyboardActions): boolean {
-  const action = resolvePdfNavigationAction(key, shiftKey, actions.isPdfZoomedIn?.() ?? false);
+  const zoomState = actions.getPdfZoomOverflow?.() ?? (actions.isPdfZoomedIn?.() ?? false);
+  const action = resolvePdfNavigationAction(key, shiftKey, zoomState);
   if (!action) return false;
   performPdfNavigation(action, actions);
   return true;
@@ -345,6 +371,7 @@ export function useReaderKeyboard(state: ReaderKeyboardState, actions: ReaderKey
         }
         return;
       }
+      if (typing || overlay) return;
       if (readerKind === "epub") {
         if (!typing && unmodified && (event.key === ":" || (event.code === "Semicolon" && event.shiftKey))) {
           event.preventDefault();
@@ -444,8 +471,8 @@ export function useReaderKeyboard(state: ReaderKeyboardState, actions: ReaderKey
         }
       }
 
-      const zoomedIn = current.actions.isPdfZoomedIn?.() ?? false;
-      const pdfNavigationAction = resolvePdfNavigationAction(event.key, event.shiftKey, zoomedIn);
+      const zoomState = current.actions.getPdfZoomOverflow?.() ?? (current.actions.isPdfZoomedIn?.() ?? false);
+      const pdfNavigationAction = resolvePdfNavigationAction(event.key, event.shiftKey, zoomState);
       if (unmodified && pdfNavigationAction) {
         event.preventDefault();
         const code = event.code || event.key;
