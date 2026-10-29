@@ -23,18 +23,23 @@ export function useReadingPosition({
 }) {
   const positionSaveTimerRef = useRef<number | null>(null);
   const pendingRestoreRef = useRef<ReadingPosition | null>(null);
+  const appliedRestorationScrollTopRef = useRef<number | null>(null);
+  const initialPageRef = useRef<number | null>(null);
   const suppressPositionSaveRef = useRef(false);
+  const retryRafRef = useRef<number | null>(null);
 
   const schedulePositionSave = useCallback(() => {
-    if (!path) return;
+    if (!path || suppressPositionSaveRef.current || pendingRestoreRef.current !== null) return;
     if (positionSaveTimerRef.current !== null) window.clearTimeout(positionSaveTimerRef.current);
     const savePath = path;
     positionSaveTimerRef.current = window.setTimeout(() => {
+      positionSaveTimerRef.current = null;
+      if (!path || path !== savePath || suppressPositionSaveRef.current || pendingRestoreRef.current !== null) return;
       const viewer = viewerRef.current;
       const page = pageElementsRef.current[pageNumberRef.current - 1];
-      positionSaveTimerRef.current = null;
-      if (!viewer || !page) return;
+      if (!viewer || !page || !page.isConnected) return;
       const pageRect = page.getBoundingClientRect();
+      if (pageRect.height <= 0) return;
       const offset = Math.max(0, Math.min(1,
         (viewer.getBoundingClientRect().top - pageRect.top) / pageRect.height,
       ));
@@ -44,33 +49,95 @@ export function useReadingPosition({
   }, [path, pageNumberRef, viewerRef, pageElementsRef, onError]);
 
   const handleViewportScroll = useCallback(() => {
+    if (appliedRestorationScrollTopRef.current !== null) {
+      const currentTop = viewerRef.current?.scrollTop ?? 0;
+      if (Math.abs(currentTop - appliedRestorationScrollTopRef.current) < 1) {
+        return;
+      }
+      appliedRestorationScrollTopRef.current = null;
+    }
     if (!suppressPositionSaveRef.current) schedulePositionSave();
-  }, [schedulePositionSave]);
+  }, [schedulePositionSave, viewerRef]);
 
   const queueRestoration = useCallback((position: ReadingPosition | null) => {
+    if (positionSaveTimerRef.current !== null) {
+      window.clearTimeout(positionSaveTimerRef.current);
+      positionSaveTimerRef.current = null;
+    }
+    if (retryRafRef.current !== null) {
+      cancelAnimationFrame(retryRafRef.current);
+      retryRafRef.current = null;
+    }
     pendingRestoreRef.current = position;
-    suppressPositionSaveRef.current = true;
+    initialPageRef.current = position?.page ?? null;
+    appliedRestorationScrollTopRef.current = null;
+    suppressPositionSaveRef.current = position !== null;
     viewerRef.current?.scrollTo({ top: 0, behavior: "auto" });
-    window.setTimeout(() => { suppressPositionSaveRef.current = false; }, 200);
   }, [viewerRef]);
 
-  useLayoutEffect(() => {
+  const applyRestoration = useCallback(() => {
     const restore = pendingRestoreRef.current;
     const viewer = viewerRef.current;
-    const page = restore && pageElementsRef.current[restore.page - 1];
-    if (!restore || !viewer || !page) return;
-    viewer.scrollTop += page.getBoundingClientRect().top - viewer.getBoundingClientRect().top +
-      restore.offset * page.getBoundingClientRect().height;
+    if (!restore || !viewer) return false;
+    const page = pageElementsRef.current[restore.page - 1];
+    if (!page || !page.isConnected) return false;
+    const pageRect = page.getBoundingClientRect();
+    if (pageRect.height <= 0) return false;
+
+    const viewerRect = viewer.getBoundingClientRect();
+    viewer.scrollTop += (pageRect.top - viewerRect.top) + restore.offset * pageRect.height;
+    appliedRestorationScrollTopRef.current = viewer.scrollTop;
     pendingRestoreRef.current = null;
-  }, [layoutVersion, viewerRef, pageElementsRef]);
+    suppressPositionSaveRef.current = false;
+    return true;
+  }, [viewerRef, pageElementsRef]);
+
+  const retryRestoration = useCallback((renderedPage: number) => {
+    if (pendingRestoreRef.current?.page === renderedPage) {
+      if (retryRafRef.current !== null) {
+        cancelAnimationFrame(retryRafRef.current);
+        retryRafRef.current = null;
+      }
+      if (!applyRestoration()) {
+        retryRafRef.current = requestAnimationFrame(() => {
+          retryRafRef.current = null;
+          if (pendingRestoreRef.current?.page === renderedPage) {
+            applyRestoration();
+          }
+        });
+      }
+    }
+  }, [applyRestoration]);
+
+  useLayoutEffect(() => {
+    applyRestoration();
+  }, [applyRestoration, layoutVersion]);
 
   useEffect(() => {
-    schedulePositionSave();
+    if (appliedRestorationScrollTopRef.current !== null && initialPageRef.current !== null && pageNumber !== initialPageRef.current) {
+      appliedRestorationScrollTopRef.current = null;
+    }
+    if (!suppressPositionSaveRef.current && pendingRestoreRef.current === null && appliedRestorationScrollTopRef.current === null) {
+      schedulePositionSave();
+    }
   }, [pageNumber, schedulePositionSave]);
 
-  useEffect(() => () => {
-    if (positionSaveTimerRef.current !== null) window.clearTimeout(positionSaveTimerRef.current);
-  }, []);
+  useEffect(() => {
+    return () => {
+      if (positionSaveTimerRef.current !== null) {
+        window.clearTimeout(positionSaveTimerRef.current);
+        positionSaveTimerRef.current = null;
+      }
+      if (retryRafRef.current !== null) {
+        cancelAnimationFrame(retryRafRef.current);
+        retryRafRef.current = null;
+      }
+      pendingRestoreRef.current = null;
+      initialPageRef.current = null;
+      appliedRestorationScrollTopRef.current = null;
+      suppressPositionSaveRef.current = false;
+    };
+  }, [path]);
 
-  return { schedulePositionSave, handleViewportScroll, queueRestoration };
+  return { schedulePositionSave, handleViewportScroll, queueRestoration, retryRestoration };
 }

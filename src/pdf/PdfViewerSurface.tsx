@@ -7,6 +7,7 @@ import type { SearchMatch } from "./search";
 import { loadPdfJsViewer } from "./viewer";
 import type { PdfJsViewerModule } from "./viewer";
 import "pdfjs-dist/web/pdf_viewer.css";
+import { isScaleEffectivelyEqual } from "../reader/layout";
 
 export type PdfViewerHandle = { current: PDFViewerInstance | null };
 type PageMatch = { index: number; match: SearchMatch };
@@ -26,6 +27,7 @@ export function PdfViewerSurface({
   onPageChange,
   onActiveMatchElement,
   onPageElements,
+  onPageRendered,
   onRenderError,
 }: {
   containerRef: RefObject<HTMLDivElement | null>;
@@ -41,12 +43,15 @@ export function PdfViewerSurface({
   onPageChange: (page: number) => void;
   onActiveMatchElement: (index: number, element: HTMLDivElement | null) => void;
   onPageElements: (pages: (HTMLDivElement | null)[]) => void;
+  onPageRendered?: (pageNumber: number) => void;
   onRenderError: (message: string) => void;
 }) {
   const pageChangeRef = useRef(onPageChange);
   const activeMatchRef = useRef(onActiveMatchElement);
   const pageElementsRef = useRef(onPageElements);
   const renderErrorRef = useRef(onRenderError);
+  const pageRenderedRef = useRef(onPageRendered);
+  pageRenderedRef.current = onPageRendered;
   const matchesRef = useRef(matchesByPage);
   const activeIndexRef = useRef(activeMatch);
   const pdfRef = useRef(pdf);
@@ -143,23 +148,41 @@ export function PdfViewerSurface({
       linkService.setViewer(viewer);
       viewerHandle.current = viewer;
       const pageChanged = (event: { pageNumber?: number }) => {
-        if (event.pageNumber) pageChangeRef.current(event.pageNumber);
+        if (event.pageNumber && event.pageNumber !== pageNumberRef.current) {
+          pageChangeRef.current(event.pageNumber);
+        }
       };
       const pageRendered = (event: { pageNumber?: number; error?: unknown }) => {
         if (event.error && event.pageNumber) {
           renderErrorRef.current(`Could not render page ${event.pageNumber}: ${String(event.error)}`);
         }
+        if (event.pageNumber) {
+          pageRenderedRef.current?.(event.pageNumber);
+        }
       };
       const pagesInitialized = () => {
         if (!viewer) return;
-        viewer.spreadMode = spreadRef.current ? 1 : 0;
-        viewer.scrollMode = continuousScrollingRef.current ? ScrollMode.VERTICAL : ScrollMode.PAGE;
-        viewer.currentScale = scaleRef.current / PixelsPerInch.PDF_TO_CSS_UNITS;
-        viewer.currentPageNumber = pageNumberRef.current;
+        const desiredSpread = spreadRef.current ? 1 : 0;
+        if (viewer.spreadMode !== desiredSpread) viewer.spreadMode = desiredSpread;
+        const ScrollMode = scrollModeRef.current;
+        if (ScrollMode) {
+          const desiredScroll = continuousScrollingRef.current ? ScrollMode.VERTICAL : ScrollMode.PAGE;
+          if (viewer.scrollMode !== desiredScroll) viewer.scrollMode = desiredScroll;
+        }
+        const targetScale = scaleRef.current / PixelsPerInch.PDF_TO_CSS_UNITS;
+        if (Number.isFinite(targetScale) && targetScale > 0 && !isScaleEffectivelyEqual(viewer.currentScale, targetScale)) {
+          viewer.currentScale = targetScale;
+        }
+        if (viewer.currentPageNumber !== pageNumberRef.current) {
+          viewer.currentPageNumber = pageNumberRef.current;
+        }
         syncPageElements();
       };
       const textRendered = (event: { pageNumber?: number }) => {
-        if (event.pageNumber) syncHighlights(event.pageNumber);
+        if (event.pageNumber) {
+          syncHighlights(event.pageNumber);
+          pageRenderedRef.current?.(event.pageNumber);
+        }
       };
       listeners = [
         ["pagechanging", pageChanged],
@@ -189,11 +212,24 @@ export function PdfViewerSurface({
   useLayoutEffect(() => {
     const viewer = viewerHandle.current;
     if (!viewer || !pdf) return;
-    viewer.spreadMode = spread ? 1 : 0;
+    const desiredSpread = spread ? 1 : 0;
+    if (viewer.spreadMode !== desiredSpread) {
+      viewer.spreadMode = desiredSpread;
+    }
     const ScrollMode = scrollModeRef.current;
-    if (ScrollMode) viewer.scrollMode = continuousScrolling ? ScrollMode.VERTICAL : ScrollMode.PAGE;
-    viewer.currentScale = scale / PixelsPerInch.PDF_TO_CSS_UNITS;
-    if (viewer.currentPageNumber !== pageNumber) viewer.currentPageNumber = pageNumber;
+    if (ScrollMode) {
+      const desiredScroll = continuousScrolling ? ScrollMode.VERTICAL : ScrollMode.PAGE;
+      if (viewer.scrollMode !== desiredScroll) {
+        viewer.scrollMode = desiredScroll;
+      }
+    }
+    const targetScale = scale / PixelsPerInch.PDF_TO_CSS_UNITS;
+    if (Number.isFinite(targetScale) && targetScale > 0 && !isScaleEffectivelyEqual(viewer.currentScale, targetScale)) {
+      viewer.currentScale = targetScale;
+    }
+    if (viewer.currentPageNumber !== pageNumber) {
+      viewer.currentPageNumber = pageNumber;
+    }
   }, [pdf, pageNumber, scale, spread, continuousScrolling, viewerHandle]);
 
   useEffect(() => {

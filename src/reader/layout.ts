@@ -134,3 +134,22 @@ export function getCenterPreservingScrollDelta(
     top: after.top + normalizedY * afterHeight - center.y,
   };
 }
+
+export function isScaleEffectivelyEqual(
+  currentScale: number,
+  targetScale: number,
+  tolerance = 1e-4,
+): boolean {
+  if (!Number.isFinite(currentScale) || !Number.isFinite(targetScale) || currentScale <= 0 || targetScale <= 0) {
+    return false;
+  }
+  return Math.abs(currentScale - targetScale) <= tolerance;
+}
+
+export function hasViewportSizeChanged(
+  prev: ViewportSize,
+  next: ViewportSize,
+  minDelta = 1,
+): boolean {
+  return Math.abs(prev.width - next.width) >= minDelta || Math.abs(prev.height - next.height) >= minDelta;
+}

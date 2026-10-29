@@ -17,6 +17,7 @@ import {
   canNavigatePagedWheel,
   getPagePanDelta,
   isPageZoomedIn,
+  hasViewportSizeChanged,
   MAX_ZOOM,
   MIN_SPREAD_PAGE_WIDTH,
   MIN_ZOOM,
@@ -100,10 +101,14 @@ export function PdfReader({
   pageNumberRef.current = pageNumber;
 
   const selectSearchMatch = useCallback((match: SearchMatch) => {
-    pageNumberRef.current = match.page;
-    setPageNumber(match.page);
+    if (pageNumberRef.current !== match.page) {
+      pageNumberRef.current = match.page;
+      setPageNumber(match.page);
+    }
     const pdfViewer = pdfViewerRef.current;
-    if (pdfViewer) pdfViewer.currentPageNumber = match.page;
+    if (pdfViewer && pdfViewer.currentPageNumber !== match.page) {
+      pdfViewer.currentPageNumber = match.page;
+    }
     const viewer = viewerRef.current;
     const element = pageElementsRef.current[match.page - 1];
     if (viewer && element) {
@@ -146,7 +151,7 @@ export function PdfReader({
   const zoomFactor = zoomState.mode === "manual" ? zoomState.factor : 1;
   const pageScale = calculateFitScale(fitBasis, pageSizes, effectiveViewMode, viewerSize, pageNumber) * zoomFactor;
   const reportPositionError = useCallback((message: string) => setError(message), []);
-  const { handleViewportScroll, queueRestoration } = useReadingPosition({
+  const { handleViewportScroll, queueRestoration, retryRestoration } = useReadingPosition({
     path: documentPath,
     pageNumber,
     pageNumberRef,
@@ -205,6 +210,7 @@ export function PdfReader({
 
   const handlePageRenderError = useCallback((message: string) => setError(message), []);
   const handlePageChange = useCallback((nextPage: number) => {
+    if (!Number.isInteger(nextPage) || pageNumberRef.current === nextPage) return;
     pageNumberRef.current = nextPage;
     setPageNumber(nextPage);
   }, []);
@@ -214,17 +220,33 @@ export function PdfReader({
     pageElementsRef.current = pages;
     setPageElementsVersion((version) => version + 1);
   }, []);
+  const handlePageRendered = useCallback((renderedPage: number) => {
+    retryRestoration(renderedPage);
+  }, [retryRestoration]);
   useEffect(() => {
     const viewer = viewerRef.current;
     if (!viewer) return;
+    let rafId: number | null = null;
     const updateSize = () => {
-      captureScrollAnchor();
-      setViewerSize(measureAvailableViewport(viewer));
+      if (rafId !== null) cancelAnimationFrame(rafId);
+      rafId = requestAnimationFrame(() => {
+        rafId = null;
+        const nextSize = measureAvailableViewport(viewer);
+        setViewerSize((prev) => {
+          if (!hasViewportSizeChanged(prev, nextSize, 1)) return prev;
+          captureScrollAnchor();
+          return nextSize;
+        });
+      });
     };
     const observer = new ResizeObserver(updateSize);
     observer.observe(viewer);
-    updateSize();
-    return () => observer.disconnect();
+    const initialSize = measureAvailableViewport(viewer);
+    setViewerSize((prev) => (hasViewportSizeChanged(prev, initialSize, 1) ? initialSize : prev));
+    return () => {
+      observer.disconnect();
+      if (rafId !== null) cancelAnimationFrame(rafId);
+    };
   }, [captureScrollAnchor, pageSizes]);
 
 
@@ -388,10 +410,15 @@ export function PdfReader({
   const goToPage = useCallback((page: number) => {
     if (!totalPages || !Number.isInteger(page)) return;
     const nextPage = Math.max(1, Math.min(totalPages, page));
-    pageNumberRef.current = nextPage;
-    setPageNumber(nextPage);
+    if (pageNumberRef.current === nextPage && pdfViewerRef.current?.currentPageNumber === nextPage) return;
+    if (pageNumberRef.current !== nextPage) {
+      pageNumberRef.current = nextPage;
+      setPageNumber(nextPage);
+    }
     const viewer = pdfViewerRef.current;
-    if (viewer) viewer.currentPageNumber = nextPage;
+    if (viewer && viewer.currentPageNumber !== nextPage) {
+      viewer.currentPageNumber = nextPage;
+    }
   }, [totalPages]);
 
   const getPdfReadingViewport = useCallback(() => {
@@ -688,6 +715,7 @@ export function PdfReader({
             onActiveMatchElement={registerActiveMatchElement}
             onPageElements={handlePageElements}
             onRenderError={handlePageRenderError}
+            onPageRendered={handlePageRendered}
           />
           {overlay !== "commands" && <footer className="status-bar" aria-live="polite">
             <span>{document ? `Page ${pageNumber} / ${totalPages}` : "Ctrl+O Open PDF or EPUB"}</span>

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { PixelsPerInch } from "pdfjs-dist";
-import { calculateFitScale, getCenterPreservingScrollDelta, measureAvailableViewport } from "../src/reader/layout";
+import { calculateFitScale, getCenterPreservingScrollDelta, hasViewportSizeChanged, isScaleEffectivelyEqual, measureAvailableViewport } from "../src/reader/layout";
 import type { RectBounds } from "../src/reader/layout";
 
 const page = { width: 612, height: 792 };
@@ -90,5 +90,32 @@ describe("PDF fractional fit scales", () => {
       expect(after.left + normalizedX * (after.right - after.left) - delta.left).toBeCloseTo(center.x, 10);
       expect(after.top + normalizedY * (after.bottom - after.top) - delta.top).toBeCloseTo(center.y, 10);
     }
+  });
+});
+
+describe("PDF scale tolerance and viewport size delta", () => {
+  test("treats scales within tolerance as effectively equal", () => {
+    expect(isScaleEffectivelyEqual(1.25, 1.25)).toBe(true);
+    expect(isScaleEffectivelyEqual(1.25, 1.25005)).toBe(true);
+    expect(isScaleEffectivelyEqual(1.25, 1.25015)).toBe(false);
+    expect(isScaleEffectivelyEqual(1.25, 1.24995)).toBe(true);
+    expect(isScaleEffectivelyEqual(1.25, 1.24985)).toBe(false);
+  });
+
+  test("rejects non-finite and non-positive scale values", () => {
+    expect(isScaleEffectivelyEqual(0, 0)).toBe(false);
+    expect(isScaleEffectivelyEqual(-1, -1)).toBe(false);
+    expect(isScaleEffectivelyEqual(Number.NaN, 1)).toBe(false);
+    expect(isScaleEffectivelyEqual(1, Number.POSITIVE_INFINITY)).toBe(false);
+  });
+
+  test("ignores subpixel viewport fluctuations and detects whole-pixel shifts", () => {
+    const base = { width: 800, height: 600 };
+    expect(hasViewportSizeChanged(base, { width: 800.4, height: 600.3 })).toBe(false);
+    expect(hasViewportSizeChanged(base, { width: 800, height: 600.99 })).toBe(false);
+    expect(hasViewportSizeChanged(base, { width: 801, height: 600 })).toBe(true);
+    expect(hasViewportSizeChanged(base, { width: 799, height: 600 })).toBe(true);
+    expect(hasViewportSizeChanged(base, { width: 800, height: 601 })).toBe(true);
+    expect(hasViewportSizeChanged(base, { width: 800, height: 599 })).toBe(true);
   });
 });
