@@ -1,3 +1,16 @@
+diff --git a/lib/managers/helpers/stage.js b/lib/managers/helpers/stage.js
+index fcec0c939f2b6ff3d464fe7e5dcf66f25a467f93..54138dc6b227a8a40901f5add075550236c3f4c6 100644
+--- a/lib/managers/helpers/stage.js
++++ b/lib/managers/helpers/stage.js
+@@ -341,7 +341,7 @@ class Stage {
+       }
+ 
+       window.removeEventListener("resize", this.resizeFunc);
+-      window.removeEventListener("orientationChange", this.orientationChangeFunc);
++      window.removeEventListener("orientationchange", this.orientationChangeFunc);
+     }
+   }
+ 
 diff --git a/src/managers/continuous/index.js b/src/managers/continuous/index.js
 index d61f8f76c215589ddc2c5e1fde4262db76585de8..e03e07bfcde69ca52acabe30de96ffafcff38a37 100644
 --- a/src/managers/continuous/index.js
@@ -126,7 +139,6 @@ index d61f8f76c215589ddc2c5e1fde4262db76585de8..e03e07bfcde69ca52acabe30de96ffaf
 -		// Erase all but last above
 -		for (var i = 0; i < above.length-1; i++) {
 -			this.erase(above[i], above);
--		}
 +		var views = this.views.all().slice();
 +		var container = this.bounds();
 +		var horizontal = this.settings.axis === "horizontal";
@@ -168,7 +180,7 @@ index d61f8f76c215589ddc2c5e1fde4262db76585de8..e03e07bfcde69ca52acabe30de96ffaf
 +				}
 +				lastVisible = i;
 +			}
-+		}
+ 		}
  
 -		// Erase all except first below
 -		for (var j = 1; j < below.length; j++) {
@@ -333,3 +345,16 @@ index d61f8f76c215589ddc2c5e1fde4262db76585de8..e03e07bfcde69ca52acabe30de96ffaf
  		super.destroy();
  
  		if (this.snapper) {
+diff --git a/src/managers/helpers/stage.js b/src/managers/helpers/stage.js
+index d0f67e65ded36ec79e7755a01523829cc7ea6c3c..b7abeebbbbf98961dd1cc7cdda386ad66f7cf6f4 100644
+--- a/src/managers/helpers/stage.js
++++ b/src/managers/helpers/stage.js
+@@ -354,7 +354,7 @@ class Stage {
+ 			}
+ 
+ 			window.removeEventListener("resize", this.resizeFunc);
+-			window.removeEventListener("orientationChange", this.orientationChangeFunc);
++			window.removeEventListener("orientationchange", this.orientationChangeFunc);
+ 
+ 		}
+ 	}

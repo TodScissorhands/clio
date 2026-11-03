@@ -24,3 +24,9 @@ Position updates are debounced by 700 ms. Closing a document or replacing it flu
 ## Search performance
 
 Search caches normalized text and source-offset mappings per PDF page for the lifetime of the in-memory document. First search still extracts every page; later queries reuse that index. To benchmark a generated 400-page PDF or an existing PDF, run `bun scripts/benchmark-pdf-search.ts [path/to/file.pdf]`.
+
+## Dependency patch
+
+Bun applies `patches/epubjs@0.3.93.patch` through `patchedDependencies` in `package.json`. Keep the Stage orientation-listener cleanup correction in both the source and compiled library files when refreshing the patch.
+
+Run `bun test tests/epub-stage-lifecycle.test.ts` to verify that destroyed stages stop receiving orientation events without affecting live stages or unrelated listeners.
