@@ -41,6 +41,7 @@ import {
 import type { PdfPanDirection, PdfZoomOverflow, ReaderCommandId, ReaderOverlay } from "./interactions";
 import type { ReaderCommand } from "./interactions";
 import { ReaderCommandPalette } from "./ReaderCommandPalette";
+import { deferPdfOpen } from "./deferPdfOpen";
 import { useReadingPosition } from "./useReadingPosition";
 import "./Reader.css";
 
@@ -385,8 +386,10 @@ export function PdfReader({
 
   useEffect(() => {
     if (!initialSource) return;
-    void openPdfSource(initialSource).finally(focusReader);
-    onInitialSourceConsumed();
+    return deferPdfOpen(() => {
+      void openPdfSource(initialSource).finally(focusReader);
+      onInitialSourceConsumed();
+    });
   }, [focusReader, initialSource, onInitialSourceConsumed, openPdfSource]);
 
   const closeDocument = useCallback(() => {
