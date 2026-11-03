@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { NavItem, Rendition } from "epubjs";
 import type { EpubBook } from "./engine";
+import { createEpubPositionSession, epubLocationCfi, resolveEpubCfi } from "./readingPosition";
 import {
   filterReaderCommands,
   useReaderKeyboard,
@@ -14,6 +15,7 @@ type PaletteMode = "commands" | "chapters";
 
 type EpubReaderProps = {
   book: EpubBook;
+  path: string | null;
   onClose: () => void;
   onOpenDocument: (restoreFocus?: () => void) => void;
 };
@@ -73,7 +75,7 @@ function errorMessage(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
 }
 
-export function EpubReader({ book, onClose, onOpenDocument }: EpubReaderProps) {
+export function EpubReader({ book, path, onClose, onOpenDocument }: EpubReaderProps) {
   const viewportRef = useRef<HTMLDivElement>(null);
   const focusReader = useCallback(() => {
     requestAnimationFrame(() => viewportRef.current?.focus());
@@ -89,6 +91,7 @@ export function EpubReader({ book, onClose, onOpenDocument }: EpubReaderProps) {
   const lastAppliedSizeRef = useRef<ViewportSize | null>(null);
   const resizeTimerRef = useRef<number | null>(null);
   const resizeSchedulerRef = useRef<() => void>(() => {});
+  const changeLayoutRef = useRef<(mode: EpubLayoutMode) => void>(() => {});
   const [chapters, setChapters] = useState<ChapterTarget[]>([]);
   const [spineItems, setSpineItems] = useState<SpineSection[]>([]);
   const [currentSpineIndex, setCurrentSpineIndex] = useState<number | null>(null);
@@ -121,14 +124,15 @@ export function EpubReader({ book, onClose, onOpenDocument }: EpubReaderProps) {
     navigationInFlightRef.current += 1;
     void rendition.display(href)
       .then(() => {
-        if (activeRef.current && rendition.location?.start) {
+        if (activeRef.current && renditionRef.current === rendition && rendition.location?.start) {
           setCurrentSpineIndex(rendition.location.start.index);
         }
       })
       .catch((cause: unknown) => {
-        if (activeRef.current) setError(`Could not open chapter: ${errorMessage(cause)}`);
+        if (activeRef.current && renditionRef.current === rendition) setError(`Could not open chapter: ${errorMessage(cause)}`);
       })
       .finally(() => {
+        if (renditionRef.current !== rendition) return;
         navigationInFlightRef.current = Math.max(0, navigationInFlightRef.current - 1);
         resizeSchedulerRef.current();
       });
@@ -155,9 +159,10 @@ export function EpubReader({ book, onClose, onOpenDocument }: EpubReaderProps) {
     const turn = direction > 0 ? rendition.next() : rendition.prev();
     void turn
       .catch((cause: unknown) => {
-        if (activeRef.current) setError(`Could not change page: ${errorMessage(cause)}`);
+        if (activeRef.current && renditionRef.current === rendition) setError(`Could not change page: ${errorMessage(cause)}`);
       })
       .finally(() => {
+        if (renditionRef.current !== rendition) return;
         pageTurnInFlightRef.current = false;
         navigationInFlightRef.current = Math.max(0, navigationInFlightRef.current - 1);
         resizeSchedulerRef.current();
@@ -191,14 +196,10 @@ export function EpubReader({ book, onClose, onOpenDocument }: EpubReaderProps) {
         onClose();
         break;
       case "paged_layout":
-        layoutModeRef.current = "paged";
-        setLayoutMode("paged");
-        renditionRef.current?.flow("paginated");
+        changeLayoutRef.current("paged");
         break;
       case "continuous_layout":
-        layoutModeRef.current = "continuous";
-        setLayoutMode("continuous");
-        renditionRef.current?.flow("scrolled-continuous");
+        changeLayoutRef.current("continuous");
         break;
       default:
         break;
@@ -287,6 +288,24 @@ export function EpubReader({ book, onClose, onOpenDocument }: EpubReaderProps) {
     }
     let active = true;
     activeRef.current = true;
+    initialDisplayReadyRef.current = false;
+    const position = createEpubPositionSession(path, (cause) => {
+      if (active) setError(`Could not save EPUB reading position: ${errorMessage(cause)}`);
+    });
+    const currentCfi = () => {
+      try {
+        return epubLocationCfi(book, rendition?.currentLocation()) ?? epubLocationCfi(book, rendition?.location);
+      } catch {
+        return null;
+      }
+    };
+    const capturePosition = () => {
+      if (initialDisplayReadyRef.current) position.capture(currentCfi());
+    };
+    // epub.js display() resolves before its RAF-based relocated event.
+    const afterLayout = () => new Promise<void>((resolve) => {
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+    });
     let rendition: Rendition | null = existingRendition;
     const deferBookDestroy = () => {
       const timeout = window.setTimeout(() => {
@@ -305,6 +324,7 @@ export function EpubReader({ book, onClose, onOpenDocument }: EpubReaderProps) {
         };
         initialDisplayReadyRef.current = false;
         navigationInFlightRef.current = 0;
+        pageTurnInFlightRef.current = false;
         pendingResizeRef.current = null;
         lastAppliedSizeRef.current = initialSize;
         layoutModeRef.current = "paged";
@@ -326,10 +346,36 @@ export function EpubReader({ book, onClose, onOpenDocument }: EpubReaderProps) {
       return () => {
         active = false;
         activeRef.current = false;
+        void position.close();
         deferBookDestroy();
       };
     }
     if (!rendition) return;
+    const reflow = (apply: () => void) => {
+      if (!active || !initialDisplayReadyRef.current || navigationInFlightRef.current > 0) return;
+      const cfi = position.capture(currentCfi());
+      navigationInFlightRef.current += 1;
+      void position.preserve(cfi, async () => {
+        apply();
+        if (cfi) await rendition.display(cfi);
+        await afterLayout();
+        return currentCfi();
+      }).catch((cause: unknown) => {
+        if (active) setError(`Could not preserve EPUB reading position: ${errorMessage(cause)}`);
+      }).finally(() => {
+        if (!active) return;
+        navigationInFlightRef.current = Math.max(0, navigationInFlightRef.current - 1);
+        if (active) resizeSchedulerRef.current();
+      });
+    };
+    changeLayoutRef.current = (mode) => {
+      if (layoutModeRef.current === mode) return;
+      reflow(() => {
+        layoutModeRef.current = mode;
+        setLayoutMode(mode);
+        rendition.flow(mode === "paged" ? "paginated" : "scrolled-continuous");
+      });
+    };
     const scheduleResize = () => {
       if (
         !active ||
@@ -347,7 +393,7 @@ export function EpubReader({ book, onClose, onOpenDocument }: EpubReaderProps) {
         const previous = lastAppliedSizeRef.current;
         if (previous?.width === size.width && previous.height === size.height) return;
         try {
-          rendition.resize(size.width, size.height);
+          reflow(() => rendition.resize(size.width, size.height));
           lastAppliedSizeRef.current = size;
         } catch (cause) {
           if (active) setError(`Could not resize EPUB: ${errorMessage(cause)}`);
@@ -396,6 +442,7 @@ export function EpubReader({ book, onClose, onOpenDocument }: EpubReaderProps) {
       if (start && typeof start === "object" && "index" in start && typeof start.index === "number") {
         setCurrentSpineIndex(start.index);
       }
+      if (active && initialDisplayReadyRef.current) position.update(epubLocationCfi(book, location));
     };
     rendition.hooks.content.register(onContent);
     rendition.on("removed", onRemoved);
@@ -421,14 +468,33 @@ export function EpubReader({ book, onClose, onOpenDocument }: EpubReaderProps) {
         setSpineItems(spine);
         navigationInFlightRef.current += 1;
         try {
-          await rendition.display(targets[0]?.href);
+          let savedCfi: string | null = null;
+          try {
+            savedCfi = await position.load();
+          } catch (cause) {
+            if (active) setError(`Could not restore EPUB reading position: ${errorMessage(cause)}`);
+          }
+          if (!active) return;
+          let restoredCfi = await resolveEpubCfi(book, savedCfi);
+          if (!active) return;
+          try {
+            await rendition.display(restoredCfi ?? targets[0]?.href);
+          } catch (cause) {
+            if (!restoredCfi) throw cause;
+            if (!active) return;
+            restoredCfi = null;
+            await rendition.display(targets[0]?.href);
+          }
+          await afterLayout();
           if (active) {
+            const visibleCfi = currentCfi();
+            position.start(restoredCfi ?? visibleCfi, visibleCfi);
             if (rendition.location?.start) setCurrentSpineIndex(rendition.location.start.index);
             viewport.focus();
           }
         } finally {
-          navigationInFlightRef.current = Math.max(0, navigationInFlightRef.current - 1);
           if (active) {
+            navigationInFlightRef.current = Math.max(0, navigationInFlightRef.current - 1);
             initialDisplayReadyRef.current = true;
             resizeSchedulerRef.current();
           }
@@ -438,7 +504,15 @@ export function EpubReader({ book, onClose, onOpenDocument }: EpubReaderProps) {
         if (active) setError(`Could not render EPUB: ${errorMessage(cause)}`);
       });
 
+    const onPageHide = () => {
+      capturePosition();
+      void position.flush();
+    };
+    window.addEventListener("pagehide", onPageHide);
+
     return () => {
+      capturePosition();
+      void position.close();
       active = false;
       activeRef.current = false;
       resizeObserver.disconnect();
@@ -447,6 +521,8 @@ export function EpubReader({ book, onClose, onOpenDocument }: EpubReaderProps) {
         resizeTimerRef.current = null;
       }
       resizeSchedulerRef.current = () => {};
+      changeLayoutRef.current = () => {};
+      window.removeEventListener("pagehide", onPageHide);
       rendition.hooks.content.deregister(onContent);
       rendition.off("removed", onRemoved);
       rendition.off("relocated", onRelocated);
@@ -454,7 +530,7 @@ export function EpubReader({ book, onClose, onOpenDocument }: EpubReaderProps) {
       keyboardCleanups.clear();
       deferBookDestroy();
     };
-  }, [book, registerKeyboardTarget]);
+  }, [book, path, registerKeyboardTarget]);
 
   return (
     <section className="epub-reader" aria-label="EPUB reader">

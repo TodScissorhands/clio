@@ -12,6 +12,15 @@ Clio is a keyboard-first PDF reader built with Tauri, React, and PDF.js.
 - `i` or `toggle_night_mode` switches the application to dark mode and inverts displayed PDF pixels together. It never changes the PDF file.
 - Clio saves a debounced page and within-page reading offset for each canonical file path in app data. The PDF stays at its original location; moving or renaming a file gives it a new reading-position identity.
 
+## EPUB reading positions
+
+Native EPUBs save a debounced EPUB CFI in the same app-data `reading-positions.json` file used for PDFs, keyed by canonical file path. Different paths have independent positions; moving or renaming a file gives it a new identity.
+
+Reopening restores the saved passage in paged mode. Paged/continuous switches and resizing retain the CFI anchor, although reflow can place it within a page or spread rather than at the top. Missing, malformed, or unresolvable saved CFIs fall back to normal document opening.
+
+Position updates are debounced by 700 ms. Closing a document or replacing it flushes the latest stable location without waiting for that delay. Browser-selected files have no canonical path and do not persist positions, matching the PDF browser behavior. Abrupt application termination can lose updates that have not finished saving.
+
+
 ## Search performance
 
 Search caches normalized text and source-offset mappings per PDF page for the lifetime of the in-memory document. First search still extracts every page; later queries reuse that index. To benchmark a generated 400-page PDF or an existing PDF, run `bun scripts/benchmark-pdf-search.ts [path/to/file.pdf]`.

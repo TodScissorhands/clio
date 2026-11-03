@@ -11,3 +11,13 @@ export async function saveReadingPosition(path: string, position: ReadingPositio
   if (!isTauri()) return;
   await invoke("save_reading_position", { path, page: position.page, offset: position.offset });
 }
+
+export async function loadEpubReadingPosition(path: string): Promise<{ cfi: string } | null> {
+  if (!isTauri()) return null;
+  return invoke<{ cfi: string } | null>("load_epub_reading_position", { path });
+}
+
+export async function saveEpubReadingPosition(path: string, position: { cfi: string }): Promise<void> {
+  if (!isTauri()) return;
+  await invoke("save_epub_reading_position", { path, cfi: position.cfi });
+}

@@ -12,22 +12,28 @@ type PdfSource = Extract<ReaderFileSource, { kind: "pdf" }>;
 
 function App() {
   const [nightMode, setNightMode] = useState(() => window.matchMedia("(prefers-color-scheme: dark)").matches);
-  const [activeEpub, setActiveEpub] = useState<EpubBook | null>(null);
+  const [activeEpub, setActiveEpub] = useState<{ book: EpubBook; path: string | null } | null>(null);
   const [pendingPdfSource, setPendingPdfSource] = useState<PdfSource | null>(null);
   const [openError, setOpenError] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
   const previousFocusRef = useRef<(() => void) | null>(null);
+  const openGenerationRef = useRef(0);
   const toggleNightMode = useCallback(() => setNightMode((current) => !current), []);
-  const openEpub = useCallback(async (source: EpubSource) => {
+  const openEpub = useCallback(async (source: EpubSource, generation: number) => {
     const book = await openEpubBook(source.bytes);
+    if (generation !== openGenerationRef.current) {
+      book.destroy();
+      return;
+    }
     setPendingPdfSource(null);
-    setActiveEpub(book);
+    setActiveEpub({ book, path: source.path });
   }, []);
   const clearPendingPdfSource = useCallback(() => setPendingPdfSource(null), []);
   const openReaderSource = useCallback(async (source: ReaderFileSource) => {
+    const generation = ++openGenerationRef.current;
     setOpenError("");
     if (source.kind === "epub") {
-      await openEpub(source);
+      await openEpub(source, generation);
     } else {
       setPendingPdfSource(source);
       setActiveEpub(null);
@@ -95,7 +101,10 @@ function App() {
         <button className="text-button" onClick={() => setOpenError("")}>Dismiss</button>
       </div>}
       {activeEpub
-        ? <EpubReader book={activeEpub} onClose={() => setActiveEpub(null)} onOpenDocument={openDocument} />
+        ? <EpubReader book={activeEpub.book} path={activeEpub.path} onClose={() => {
+            openGenerationRef.current += 1;
+            setActiveEpub(null);
+          }} onOpenDocument={openDocument} />
         : <PdfReader
             onToggleNightMode={toggleNightMode}
             onOpenDocument={openDocument}
