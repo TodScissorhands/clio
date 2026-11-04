@@ -52,25 +52,25 @@ export type ReaderCommand = {
 };
 
 export const READER_COMMANDS: ReaderCommand[] = [
-  { id: "open_document", shortcut: "Ctrl+O" },
+  { id: "open_document", shortcut: "Ctrl+O", label: "Open document" },
   { id: "close_document", shortcut: "Ctrl+W", label: "Close document" },
-  { id: "search", shortcut: "/ · Ctrl+F" },
-  { id: "next_item", shortcut: "n · Enter" },
-  { id: "previous_item", shortcut: "N · Shift+Enter" },
-  { id: "goto_page_with_page_number", shortcut: "g" },
-  { id: "next_page", shortcut: "PageDown · ↓ · → · j · l · J" },
-  { id: "previous_page", shortcut: "PageUp · ↑ · ← · h · k · K" },
-  { id: "goto_beginning", shortcut: "Home" },
-  { id: "goto_end", shortcut: "End" },
-  { id: "zoom_in", shortcut: "+" },
-  { id: "zoom_out", shortcut: "-" },
-  { id: "fit_to_page_width", shortcut: "=" },
-  { id: "single_page_view", shortcut: "" },
-  { id: "two_page_spread", shortcut: "" },
-  { id: "fit_to_page", shortcut: "w" },
-  { id: "fit_to_spread", shortcut: "F" },
+  { id: "search", shortcut: "/ · Ctrl+F", label: "Search document" },
+  { id: "next_item", shortcut: "n · Enter", label: "Next search match" },
+  { id: "previous_item", shortcut: "N · Shift+Enter", label: "Previous search match" },
+  { id: "goto_page_with_page_number", shortcut: "g", label: "Go to page number" },
+  { id: "next_page", shortcut: "PageDown · ↓ · → · j · l · J", label: "Next page" },
+  { id: "previous_page", shortcut: "PageUp · ↑ · ← · h · k · K", label: "Previous page" },
+  { id: "goto_beginning", shortcut: "Home", label: "Go to beginning" },
+  { id: "goto_end", shortcut: "End", label: "Go to end" },
+  { id: "zoom_in", shortcut: "+", label: "Zoom in" },
+  { id: "zoom_out", shortcut: "-", label: "Zoom out" },
+  { id: "fit_to_page_width", shortcut: "=", label: "Fit to page width" },
+  { id: "single_page_view", shortcut: "", label: "Single page view" },
+  { id: "two_page_spread", shortcut: "", label: "Two page spread" },
+  { id: "fit_to_page", shortcut: "w", label: "Fit to page" },
+  { id: "fit_to_spread", shortcut: "F", label: "Fit to spread" },
   { id: "toggle_continuous_scrolling", shortcut: "", label: "Toggle continuous scrolling" },
-  { id: "toggle_night_mode", shortcut: "i" },
+  { id: "toggle_night_mode", shortcut: "i", label: "Toggle night mode" },
   { id: "toggle_recolor", shortcut: "r", label: "Toggle recoloring" },
   { id: "recolor_preset_original", shortcut: "", label: "Recolor: Original (native PDF colors)" },
   { id: "recolor_preset_zathura_dark", shortcut: "", label: "Recolor: Zathura Dark (#14161B / #DCD7BA)" },
@@ -101,13 +101,22 @@ export function filterReaderCommands(
   readerKind: ReaderKind = "pdf",
   commandSet?: ReaderCommand[],
 ): ReaderCommand[] {
-  const normalizedQuery = query.trim().toLocaleLowerCase();
+  const normalize = (text: string) => text.trim().toLocaleLowerCase().replace(/\s+/g, " ");
+  const normalizedQuery = normalize(query);
   const commands = commandSet ?? (readerKind === "epub" ? EPUB_READER_COMMANDS : READER_COMMANDS);
-  return commands.filter((command) =>
-    (command.scope ?? "pdf") === readerKind &&
-    (hasDocument || command.id === "open_document" || command.id === "toggle_night_mode" || command.id.startsWith("recolor_") || command.id === "toggle_recolor") &&
-    `${command.id} ${command.label ?? ""} ${command.shortcut}`.toLocaleLowerCase().includes(normalizedQuery),
-  );
+  return commands.filter((command) => {
+    if ((command.scope ?? "pdf") !== readerKind) return false;
+    if (!hasDocument && command.id !== "open_document" && command.id !== "toggle_night_mode" &&
+      !command.id.startsWith("recolor_") && command.id !== "toggle_recolor") return false;
+    const terms = command.id === "select_chapter"
+      ? `${command.label ?? ""} ${command.targetHref ?? ""}`
+      : `${command.label ?? ""} ${command.id} ${command.id.replace(/_/g, " ")} ${command.shortcut}`;
+    return normalize(terms).includes(normalizedQuery);
+  });
+}
+
+export function clampCommandIndex(index: number, count: number): number {
+  return Math.max(0, Math.min(index, count - 1));
 }
 
 type ReaderKeyboardState = {
@@ -128,6 +137,7 @@ type ReaderKeyboardActions = {
   moveMatch: (direction: number) => void;
   runSearch: () => void;
   goToPage: (page: number) => void;
+  reportInvalidPage?: (message: string) => void;
   executePaletteCommand: (command: ReaderCommand) => void;
   runCommand: (command: ReaderCommandId) => void;
   scrollContinuous?: (direction: -1 | 1, amount: "page" | "line") => void;
@@ -372,6 +382,10 @@ export function useReaderKeyboard(state: ReaderKeyboardState, actions: ReaderKey
           if (/^\d+$/.test(jumpInput) && page >= 1 && page <= pageCount) {
             goToPage(page);
             closeOverlay();
+          } else {
+            current.actions.reportInvalidPage?.(pageCount
+              ? `Enter a whole page number (1–${pageCount}).`
+              : "No PDF is open.");
           }
         }
         return;
@@ -382,13 +396,13 @@ export function useReaderKeyboard(state: ReaderKeyboardState, actions: ReaderKey
       if (overlay === "commands") {
         if (event.key === "ArrowDown" && commands.length) {
           event.preventDefault();
-          setCommandIndex((index) => Math.min(index + 1, commands.length - 1));
+          setCommandIndex((index) => Math.min(clampCommandIndex(index, commands.length) + 1, commands.length - 1));
         } else if (event.key === "ArrowUp" && commands.length) {
           event.preventDefault();
-          setCommandIndex((index) => Math.max(index - 1, 0));
+          setCommandIndex((index) => Math.max(clampCommandIndex(index, commands.length) - 1, 0));
         } else if (event.key === "Enter") {
           event.preventDefault();
-          const command = commands[commandIndex];
+          const command = commands[clampCommandIndex(commandIndex, commands.length)];
           if (command) executePaletteCommand(command);
         }
         return;

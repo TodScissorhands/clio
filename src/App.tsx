@@ -106,6 +106,7 @@ function App() {
             setActiveEpub(null);
           }} onOpenDocument={openDocument} />
         : <PdfReader
+            nightMode={nightMode}
             onToggleNightMode={toggleNightMode}
             onOpenDocument={openDocument}
             initialSource={pendingPdfSource}

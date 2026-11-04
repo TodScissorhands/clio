@@ -9,9 +9,31 @@ Clio is a keyboard-first PDF reader built with Tauri, React, and PDF.js.
 - PDF page navigation: `Ctrl+PageDown` / `Ctrl+PageUp` and `J` / `K` explicitly move to the next/previous logical page group, regardless of zoom. Groups are single pages or spreads, including the narrow-window single-page fallback, and clamp at document boundaries.
 - `PageDown` / `PageUp` retain viewport paging followed by page navigation at a boundary. Arrows and `h/j/k/l` retain their context-sensitive movement. `Home` / `End` and `Ctrl+Home` / `Ctrl+End` use the existing beginning/end commands. `g` opens page jump. `Shift+PageUp` / `Shift+PageDown` keep their ordinary page-key behavior, not ten-page jumps.
 - PDF zoom: bare `+` / `-` or `Ctrl++` / `Ctrl+-` change manual zoom in 5% multiplicative steps, preserving the fit basis, limits, and viewport-center anchor. `Ctrl+=` is also zoom-in, including `Ctrl+Shift+=` when Shift produces `+`; `Ctrl+NumpadAdd` / `Ctrl+NumpadSubtract` are supported. Bare `=` fits width, `w` fits a page, and `F` fits a spread. Reader shortcuts do not take over typing or overlays.
-- `:` opens the command palette. Choose `single_page_view` or `two_page_spread` to switch layouts. Spreads pair pages 1–2, 3–4, and so on, and fall back to single pages in narrow windows.
+- `:` opens the command palette. Choose “Single page view” or “Two page spread” to switch layouts. Spreads pair pages 1–2, 3–4, and so on, and fall back to single pages in narrow windows.
 - `i` or `toggle_night_mode` switches the application to dark mode and inverts displayed PDF pixels together. It never changes the PDF file.
 - Clio saves a debounced page and within-page reading offset for each canonical file path in app data. The PDF stays at its original location; moving or renaming a file gives it a new reading-position identity.
+
+## Command palette
+
+The PDF/EPUB palette keeps focus in its filter. Arrow keys select an option and reveal it inside the list; `Enter` executes it. Pointer movement selects a row and clicking executes that row. `Tab` and `Shift+Tab` stay in the palette; `Esc` closes it and returns focus to the reader.
+
+Command searches accept readable phrases such as `zoom in` and `fit to page width`, original identifiers such as `zoom_in`, and shortcut text. Chapter searches use titles and destination paths, not the shared `select_chapter` action ID. Unmatched chapter queries show “No matching chapters.”
+
+State-bearing commands show a checkmark and a short setting description, separate from the highlighted command selected by the keyboard. Descriptions are exposed to assistive technology and do not participate in filtering. Ordinary actions and chapter destinations have no setting marker.
+
+PDF descriptions reflect the effective view, fit versus custom zoom, night mode and recoloring preferences. A narrow-window spread fallback identifies the displayed single page and the still-requested spread separately. Disabled recoloring distinguishes saved options from applied effects; custom colors never mark a stock preset current. EPUB describes its paged or continuous layout. These indicators read existing state without changing execution or persistence.
+
+`bun test` includes a real WebKitGTK palette integration test at three viewport sizes and both appearances. It uses an offscreen GTK view and the installed Python GObject/WebKitGTK 4.1 bindings on Linux with an X display; environments without that tooling report this test as skipped. Native Tauri verification remains separate from this shared-runtime regression test.
+
+## Reader feedback
+
+Errors use opaque theme surfaces in both appearances; application-level errors remain dismissible. Presentation changes leave document-replacement and error-recovery logic unchanged.
+
+The PDF status bar stays 24px high. While a search, page-jump or recolor input is active at widths up to 600 CSS pixels, the optional recolor preset is omitted to prioritize page information, the input and its feedback. Other secondary status text can truncate rather than wrap.
+
+Page jump accepts whole page numbers within the document's inclusive range. Rejected input stays editable and focused with an accessible range explanation; editing or closing the overlay clears stale validation feedback. A valid entry navigates to that exact page.
+
+`bun test` also exercises the real App, PDF.js and epub.js in WebKitGTK using disposable generated documents. This feedback integration test uses the same optional native tooling as the palette test and delays the real PDF worker response to inspect loading layout. Visible focus paint is checked separately in native Tauri, since the offscreen runner has no active native window.
 
 ## PDF wheel navigation
 

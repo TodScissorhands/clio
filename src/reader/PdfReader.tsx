@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPdfLoadingTask, getPdfPageSizes, pdfErrorMessage } from "../pdf/engine";
 import type { PdfDocument, PdfLoadingTask } from "../pdf/engine";
 import { PdfViewerSurface } from "../pdf/PdfViewerSurface";
@@ -41,6 +41,7 @@ import {
 import type { PdfPanDirection, PdfZoomOverflow, ReaderCommandId, ReaderOverlay } from "./interactions";
 import type { ReaderCommand } from "./interactions";
 import { ReaderCommandPalette } from "./ReaderCommandPalette";
+import { getPdfCommandStates } from "./commandState";
 import { deferPdfOpen } from "./deferPdfOpen";
 import { useReadingPosition } from "./useReadingPosition";
 import "./Reader.css";
@@ -68,11 +69,13 @@ function getPageElementBounds(elements: (HTMLElement | null)[]): RectBounds | nu
 
 
 export function PdfReader({
+  nightMode,
   onToggleNightMode,
   onOpenDocument,
   initialSource,
   onInitialSourceConsumed,
 }: {
+  nightMode: boolean;
   onToggleNightMode: () => void;
   onOpenDocument: (restoreFocus?: () => void) => void;
   initialSource: PdfReaderSource | null;
@@ -92,6 +95,9 @@ export function PdfReader({
   const [error, setError] = useState("");
   const [overlay, setOverlay] = useState<ReaderOverlay>(null);
   const [jumpInput, setJumpInput] = useState("");
+  const [jumpError, setJumpError] = useState("");
+  const jumpFeedbackId = useId();
+  const jumpRangeId = useId();
   const [commandQuery, setCommandQuery] = useState("");
   const [commandIndex, setCommandIndex] = useState(0);
   const [recolorSettings, setRecolorSettings] = useState<PdfRecolorSettings>(() => loadRecolorSettings());
@@ -169,6 +175,9 @@ export function PdfReader({
   const visibleCommands = filterReaderCommands(commandQuery, document !== null && !loading);
   const effectiveViewMode: ViewMode = viewMode === "spread" &&
     viewerSize.width >= MIN_SPREAD_PAGE_WIDTH * 2 + SPREAD_GAP ? "spread" : "single";
+  const commandStates = useMemo(() => getPdfCommandStates({
+    viewMode, effectiveViewMode, zoomMode: zoomState.mode, continuousScrolling, nightMode, recolorSettings,
+  }), [viewMode, effectiveViewMode, zoomState.mode, continuousScrolling, nightMode, recolorSettings]);
   const fitBasis = zoomState.mode === "manual" ? zoomState.basis : zoomState.mode;
   const zoomFactor = zoomState.mode === "manual" ? zoomState.factor : 1;
   const pageScale = calculateFitScale(fitBasis, pageSizes, effectiveViewMode, viewerSize, pageNumber) * zoomFactor;
@@ -293,6 +302,10 @@ export function PdfReader({
       jumpInputRef.current?.focus();
     }
   }, [overlay]);
+
+  useEffect(() => {
+    setJumpError("");
+  }, [overlay, document]);
 
   useEffect(() => {
     const restoreReaderFocus = () => {
@@ -927,6 +940,7 @@ export function PdfReader({
       moveMatch: search.moveMatch,
       runSearch: search.runSearch,
       goToPage,
+      reportInvalidPage: setJumpError,
       executePaletteCommand,
       runCommand: runReaderCommand,
       isPdfZoomedIn,
@@ -943,6 +957,9 @@ export function PdfReader({
   );
 
   const dismissError = () => setError("");
+  const searchStatusText = searching ? "Searching…" : matches.length
+    ? `${activeMatch + 1} / ${matches.length} matches`
+    : searchedQuery ? "No matches" : "";
   return (
     <>
       {error && <div className="error-banner" role="alert"><span>{error}</span><button className="text-button" onClick={dismissError}>Dismiss</button></div>}
@@ -987,10 +1004,12 @@ export function PdfReader({
             onPageRendered={handlePageRendered}
             recolorSettings={recolorSettings}
           />
-          {overlay !== "commands" && <footer className="status-bar" aria-live="polite">
-            <span>
-              {document ? `Page ${pageNumber} / ${totalPages}` : "Ctrl+O Open PDF or EPUB"}
-              {recolorSettings.recolor && ` · ${RECOLOR_PRESETS[recolorSettings.activePreset]?.label ?? "Recolor"}`}
+          {overlay !== "commands" && <footer className="status-bar" data-overlay={overlay ?? undefined} aria-live="polite">
+            <span className="status-document">
+              <span className="status-page">{document ? `Page ${pageNumber} / ${totalPages}` : "Ctrl+O Open PDF or EPUB"}</span>
+              {recolorSettings.recolor && <span className="status-preset" title={RECOLOR_PRESETS[recolorSettings.activePreset]?.label ?? "Recolor"}>
+                · {RECOLOR_PRESETS[recolorSettings.activePreset]?.label ?? "Recolor"}
+              </span>}
             </span>
             {overlay === "search" && <>
               <span className="status-prefix">/</span>
@@ -1006,7 +1025,7 @@ export function PdfReader({
                   search.setQuery(event.currentTarget.value);
                 }}
               />
-              <span className="search-status">{searching ? "Searching…" : matches.length ? `${activeMatch + 1} / ${matches.length} matches` : searchedQuery ? "No matches" : ""}</span>
+              <span className="search-status" title={searchStatusText}>{searchStatusText}</span>
             </>}
             {overlay === "jump" && <>
               <span className="status-prefix">Go to</span>
@@ -1014,13 +1033,19 @@ export function PdfReader({
                 ref={jumpInputRef}
                 className="status-input"
                 aria-label="Page number"
+                aria-invalid={jumpError ? true : undefined}
+                aria-describedby={jumpError ? jumpFeedbackId : jumpRangeId}
                 inputMode="numeric"
                 placeholder={totalPages ? `1–${totalPages}` : "No document"}
                 value={jumpInput}
                 disabled={!document}
-                onChange={(event) => setJumpInput(event.currentTarget.value)}
+                onChange={(event) => {
+                  setJumpInput(event.currentTarget.value);
+                  setJumpError("");
+                }}
               />
-              <span className="status-range">{totalPages ? `1–${totalPages}` : "—"}</span>
+              <span id={jumpRangeId} className="status-range" hidden={!!jumpError}>{totalPages ? `1–${totalPages}` : "—"}</span>
+              <span id={jumpFeedbackId} className={jumpError ? "status-feedback" : "visually-hidden"} role="alert" title={jumpError}>{jumpError}</span>
             </>}
             {overlay === "recolor-color" && <>
               <span className="status-prefix">{customColorTarget === "light" ? "Background (hex)" : "Foreground (hex)"}</span>
@@ -1057,10 +1082,11 @@ export function PdfReader({
                 }}
               />
             </>}
-            {loading && <span>Opening PDF…</span>}
+            {loading && <span className="status-loading">Opening PDF…</span>}
           </footer>}
           {overlay === "commands" && <ReaderCommandPalette
             commands={visibleCommands}
+            commandStates={commandStates}
             commandIndex={commandIndex}
             query={commandQuery}
             onQueryChange={setCommandQuery}

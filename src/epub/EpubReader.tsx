@@ -8,6 +8,7 @@ import {
 } from "../reader/interactions";
 import type { ReaderCommand, ReaderCommandId, ReaderOverlay } from "../reader/interactions";
 import { ReaderCommandPalette } from "../reader/ReaderCommandPalette";
+import { getEpubCommandStates } from "../reader/commandState";
 import "./EpubReader.css";
 
 type ChapterTarget = { href: string; label: string; depth: number };
@@ -101,6 +102,7 @@ export function EpubReader({ book, path, onClose, onOpenDocument }: EpubReaderPr
   const [paletteMode, setPaletteMode] = useState<PaletteMode>("commands");
   const [layoutMode, setLayoutMode] = useState<EpubLayoutMode>("paged");
   const [error, setError] = useState("");
+  const commandStates = useMemo(() => getEpubCommandStates(layoutMode), [layoutMode]);
 
   const chapterCommands = useMemo(() => chapters.map((chapter, index): ReaderCommand => ({
     id: "select_chapter",
@@ -538,11 +540,12 @@ export function EpubReader({ book, path, onClose, onOpenDocument }: EpubReaderPr
       <div className="epub-reader__viewport" ref={viewportRef} tabIndex={-1} aria-label="EPUB reading area" />
       {overlay === "commands" && <ReaderCommandPalette
         commands={visibleCommands}
+        commandStates={paletteMode === "commands" ? commandStates : undefined}
         commandIndex={commandIndex}
         query={commandQuery}
         placeholder={paletteMode === "chapters" ? "Filter chapters" : "Filter commands"}
         ariaLabel={paletteMode === "chapters" ? "Choose a chapter" : "Reader commands"}
-        emptyMessage={paletteMode === "chapters" ? "No chapter destinations" : "No commands"}
+        emptyMessage={paletteMode === "chapters" ? "No matching chapters" : "No commands"}
         onQueryChange={setCommandQuery}
         onCommandIndexChange={setCommandIndex}
         onExecute={executePaletteCommand}

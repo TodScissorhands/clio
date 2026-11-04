@@ -16,6 +16,8 @@
   --muted: #6f7782;
   --accent: #496A96;
   --pdf-canvas-bg: #E8E9EC;
+  --danger-bg: #fce8e6;
+  --danger-text: #8a1c13;
 }
 
 .clio-app[data-night-mode="true"] {
@@ -25,6 +27,7 @@
   --surface: #000000;
   --border: #353535;
   --text: #f5f5f5;
+  --muted: #999;
   --pdf-canvas-bg: #292B30;
   --accent: #86a9d2;
   --danger-bg: #432e30;
