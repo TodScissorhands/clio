@@ -22,16 +22,16 @@ import {
   getCenterPreservingScrollDelta,
   getPageGroupIndices,
   getAdjacentPageNumber,
-  getPagedWheelDirection,
-  canNavigatePagedWheel,
+  createPagedWheelState,
+  getPagedWheelAction,
+  createWheelZoomState,
+  getWheelZoomDirection,
+  getNextZoomFactor,
   getPagePanDelta,
   hasViewportSizeChanged,
-  MAX_ZOOM,
   MIN_SPREAD_PAGE_WIDTH,
-  MIN_ZOOM,
   measureAvailableViewport,
   SPREAD_GAP,
-  ZOOM_FACTOR,
 } from "./layout";
 import type { PageSize, RectBounds, ViewMode, ViewportSize, ZoomState } from "./layout";
 import {
@@ -47,10 +47,12 @@ import "./Reader.css";
 
 
 type PdfReaderSource = Extract<ReaderFileSource, { kind: "pdf" }>;
-type ZoomCenterAnchor = {
+type ZoomPoint = { x: number; y: number };
+type ZoomAnchor = {
   pageIndices: number[];
   bounds: RectBounds;
-  center: { x: number; y: number };
+  point: ZoomPoint;
+  pointer: boolean;
 };
 
 function getPageElementBounds(elements: (HTMLElement | null)[]): RectBounds | null {
@@ -108,8 +110,12 @@ export function PdfReader({
   const pdfViewerRef = useRef<PdfViewerHandle["current"]>(null);
   const pageElementsRef = useRef<(HTMLDivElement | null)[]>([]);
   const scrollAnchorRef = useRef<{ page: number; top: number } | null>(null);
-  const zoomCenterAnchorRef = useRef<ZoomCenterAnchor | null>(null);
-  const lastPagedWheelNavigationAtRef = useRef(Number.NEGATIVE_INFINITY);
+  const zoomAnchorRef = useRef<ZoomAnchor | null>(null);
+  const zoomAnchorFrameRef = useRef<number | null>(null);
+  const pagedWheelStateRef = useRef(createPagedWheelState());
+  const wheelZoomStateRef = useRef(createWheelZoomState());
+  const wheelZoomFrameRef = useRef<number | null>(null);
+  const pendingWheelZoomRef = useRef<{ direction: -1 | 1; point: ZoomPoint } | null>(null);
   const pageNumberRef = useRef(1);
   const loadingTaskRef = useRef<PdfLoadingTask | null>(null);
   const generationRef = useRef(0);
@@ -181,7 +187,9 @@ export function PdfReader({
   }, []);
 
   const captureScrollAnchor = useCallback(() => {
-    zoomCenterAnchorRef.current = null;
+    if (zoomAnchorFrameRef.current !== null) cancelAnimationFrame(zoomAnchorFrameRef.current);
+    zoomAnchorFrameRef.current = null;
+    zoomAnchorRef.current = null;
     const viewer = viewerRef.current;
     const page = pageElementsRef.current[pageNumberRef.current - 1];
     if (viewer && page) {
@@ -193,36 +201,6 @@ export function PdfReader({
   }, []);
 
 
-  const handlePagedWheel = useCallback((event: WheelEvent) => {
-    const direction = getPagedWheelDirection(
-      event.deltaY,
-      continuousScrolling,
-      event.ctrlKey || event.metaKey || event.altKey || event.shiftKey,
-    );
-    if (direction === null || overlay !== null) return;
-    const target = event.target;
-    if (target instanceof Element && target.closest(
-      ".status-bar, .command-palette, input, textarea, select, button, [contenteditable], [role='textbox']",
-    )) return;
-
-    event.preventDefault();
-    const now = performance.now();
-    if (!canNavigatePagedWheel(now, lastPagedWheelNavigationAtRef.current)) return;
-    const pdfViewer = pdfViewerRef.current;
-    if (!pdfViewer) return;
-    lastPagedWheelNavigationAtRef.current = now;
-    if (direction > 0) pdfViewer.nextPage();
-    else pdfViewer.previousPage();
-  }, [continuousScrolling, overlay]);
-  useEffect(() => {
-    const viewport = viewerRef.current;
-    if (!viewport) return;
-    viewport.addEventListener("wheel", handlePagedWheel, { passive: false });
-    return () => viewport.removeEventListener("wheel", handlePagedWheel);
-  }, [handlePagedWheel]);
-  useEffect(() => {
-    lastPagedWheelNavigationAtRef.current = Number.NEGATIVE_INFINITY;
-  }, [continuousScrolling, overlay, document]);
 
   const handlePageRenderError = useCallback((message: string) => setError(message), []);
   const handlePageChange = useCallback((nextPage: number) => {
@@ -263,21 +241,37 @@ export function PdfReader({
   }, [captureScrollAnchor, pageSizes]);
 
 
+  const applyZoomAnchor = useCallback((anchor: ZoomAnchor) => {
+    const viewer = viewerRef.current;
+    if (!viewer) return;
+    const pdfViewer = pdfViewerRef.current;
+    const pages = anchor.pageIndices.map((index) =>
+      pageElementsRef.current[index] ?? pdfViewer?.getPageView(index)?.div ?? null,
+    );
+    const after = getPageElementBounds(pages);
+    if (!after) return;
+    const delta = getCenterPreservingScrollDelta(anchor.bounds, after, anchor.point);
+    viewer.scrollLeft += delta.left;
+    viewer.scrollTop += delta.top;
+  }, []);
+
   useLayoutEffect(() => {
     const viewer = viewerRef.current;
-    const centerAnchor = zoomCenterAnchorRef.current;
-    if (viewer && centerAnchor) {
-      const pdfViewer = pdfViewerRef.current;
-      const pages = centerAnchor.pageIndices.map((index) =>
-        pageElementsRef.current[index] ?? pdfViewer?.getPageView(index)?.div ?? null,
-      );
-      const after = getPageElementBounds(pages);
-      zoomCenterAnchorRef.current = null;
+    const zoomAnchor = zoomAnchorRef.current;
+    if (viewer && zoomAnchor) {
       scrollAnchorRef.current = null;
-      if (after) {
-        const delta = getCenterPreservingScrollDelta(centerAnchor.bounds, after, centerAnchor.center);
-        viewer.scrollLeft += delta.left;
-        viewer.scrollTop += delta.top;
+      if (!zoomAnchor.pointer) zoomAnchorRef.current = null;
+      applyZoomAnchor(zoomAnchor);
+      if (zoomAnchor.pointer) {
+        // PDF.js can recenter again as its page/scale events commit. Retain the
+        // same document point through those commits and finish after layout.
+        if (zoomAnchorFrameRef.current !== null) cancelAnimationFrame(zoomAnchorFrameRef.current);
+        zoomAnchorFrameRef.current = requestAnimationFrame(() => {
+          zoomAnchorFrameRef.current = null;
+          if (zoomAnchorRef.current !== zoomAnchor) return;
+          applyZoomAnchor(zoomAnchor);
+          zoomAnchorRef.current = null;
+        });
       }
       return;
     }
@@ -288,7 +282,7 @@ export function PdfReader({
     const top = page.getBoundingClientRect().top - viewer.getBoundingClientRect().top;
     viewer.scrollTop += top - anchor.top;
     scrollAnchorRef.current = null;
-  }, [zoomState, viewerSize, pageSizes, viewMode, continuousScrolling, pageElementsVersion]);
+  }, [zoomState, viewerSize, pageSizes, viewMode, continuousScrolling, pageElementsVersion, pageScale, pageNumber, applyZoomAnchor]);
 
 
   useEffect(() => {
@@ -361,7 +355,7 @@ export function PdfReader({
       setDocumentPath(source.path);
       pageElementsRef.current = [];
       scrollAnchorRef.current = null;
-      zoomCenterAnchorRef.current = null;
+      zoomAnchorRef.current = null;
       setDocument(pdf);
       setPageSizes(sizes);
       setZoomState({ mode: "fit-page" });
@@ -418,7 +412,7 @@ export function PdfReader({
     activeMatchElementRef.current = null;
     pageElementsRef.current = [];
     scrollAnchorRef.current = null;
-    zoomCenterAnchorRef.current = null;
+    zoomAnchorRef.current = null;
     queueRestoration(null);
   }, [loading, queueRestoration, search.cancelSearch, search.clear]);
 
@@ -449,25 +443,32 @@ export function PdfReader({
     const top = rect.top + container.clientTop + paddingTop;
     return { left, top, right: left + size.width, bottom: top + size.height, ...size };
   }, []);
-  const captureZoomCenterAnchor = useCallback(() => {
-    zoomCenterAnchorRef.current = null;
+  const captureZoomAnchor = useCallback((pointer?: ZoomPoint) => {
+    if (zoomAnchorFrameRef.current !== null) cancelAnimationFrame(zoomAnchorFrameRef.current);
+    zoomAnchorFrameRef.current = null;
+    zoomAnchorRef.current = null;
     const pdfViewer = pdfViewerRef.current;
     const viewport = getPdfReadingViewport();
     if (!pdfViewer || !viewport || !pdfViewer.pagesCount) return;
+    const point = pointer ? {
+      x: Math.max(viewport.left, Math.min(viewport.right, pointer.x)),
+      y: Math.max(viewport.top, Math.min(viewport.bottom, pointer.y)),
+    } : { x: viewport.left + viewport.width / 2, y: viewport.top + viewport.height / 2 };
+    const hit = pointer ? viewerRef.current?.ownerDocument.elementFromPoint(point.x, point.y)
+      ?.closest<HTMLElement>(".page[data-page-number]") : null;
+    const pointerIndex = hit && viewerRef.current?.contains(hit) ? Number(hit.dataset.pageNumber) - 1 : -1;
     const pageIndex = Math.max(0, pdfViewer.currentPageNumber - 1);
-    const pageIndices = getPageGroupIndices(pdfViewer.pagesCount, effectiveViewMode)
-      .find((group) => group.includes(pageIndex));
+    // In continuous mode the page under the pointer need not be the current page.
+    // In gaps/margins, retain the current group's geometry as the fallback.
+    const pageIndices = pointerIndex >= 0 && pointerIndex < pdfViewer.pagesCount ? [pointerIndex] :
+      getPageGroupIndices(pdfViewer.pagesCount, effectiveViewMode).find((group) => group.includes(pageIndex));
     if (!pageIndices) return;
     const pages = pageIndices.map((index) =>
       pageElementsRef.current[index] ?? pdfViewer.getPageView(index)?.div ?? null,
     );
     const bounds = getPageElementBounds(pages);
     if (!bounds || bounds.right <= bounds.left || bounds.bottom <= bounds.top) return;
-    zoomCenterAnchorRef.current = {
-      pageIndices,
-      bounds,
-      center: { x: viewport.left + viewport.width / 2, y: viewport.top + viewport.height / 2 },
-    };
+    zoomAnchorRef.current = { pageIndices, bounds, point, pointer: pointer !== undefined };
     scrollAnchorRef.current = null;
   }, [effectiveViewMode, getPdfReadingViewport]);
 
@@ -609,6 +610,107 @@ export function PdfReader({
     goToPage(targetPage);
   }, [effectiveViewMode, goToPage, totalPages]);
 
+  const handleZoomChange = useCallback((direction: number, pointer?: ZoomPoint) => {
+    const basis = zoomState.mode === "manual" ? zoomState.basis : zoomState.mode;
+    const factor = zoomState.mode === "manual" ? zoomState.factor : 1;
+    const nextFactor = getNextZoomFactor(factor, direction);
+    if (nextFactor === factor) return;
+    captureZoomAnchor(pointer);
+    setZoomState({ mode: "manual", basis, factor: nextFactor });
+  }, [captureZoomAnchor, zoomState]);
+  const zoomChangeRef = useRef(handleZoomChange);
+  zoomChangeRef.current = handleZoomChange;
+
+  const cancelWheelZoom = useCallback(() => {
+    if (wheelZoomFrameRef.current !== null) cancelAnimationFrame(wheelZoomFrameRef.current);
+    if (zoomAnchorFrameRef.current !== null) cancelAnimationFrame(zoomAnchorFrameRef.current);
+    zoomAnchorFrameRef.current = null;
+    if (zoomAnchorRef.current?.pointer) zoomAnchorRef.current = null;
+    wheelZoomFrameRef.current = null;
+    pendingWheelZoomRef.current = null;
+    wheelZoomStateRef.current.distance = 0;
+    wheelZoomStateRef.current.lastEventAt = Number.NEGATIVE_INFINITY;
+  }, []);
+
+  const handlePdfWheel = useCallback((event: WheelEvent) => {
+    const target = event.target;
+    const modified = event.ctrlKey || event.metaKey || event.altKey || event.shiftKey;
+    const blocked = overlay !== null || event.defaultPrevented || !event.cancelable ||
+      !pdfViewerRef.current || (target instanceof Element && target.closest(
+        ".status-bar, .command-palette, input, textarea, select, button, [contenteditable], [role='textbox']",
+      ) !== null);
+    if (event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey &&
+      !blocked && pdfViewerRef.current!.pagesCount > 0) {
+      const startingZoom = wheelZoomStateRef.current.lastEventAt === Number.NEGATIVE_INFINITY;
+      const direction = getWheelZoomDirection(wheelZoomStateRef.current, {
+        deltaY: event.deltaY, deltaMode: event.deltaMode, now: performance.now(),
+      }, event.deltaMode === 2 ? getPdfReadingViewport()?.height ?? 0 : 0);
+      if (direction === null) {
+        cancelWheelZoom();
+        return;
+      }
+      // Own valid Ctrl+Wheel even below the threshold and at zoom limits:
+      // never fall through to scrolling, page turns, or WebKit page zoom.
+      event.preventDefault();
+      if (startingZoom) pagedWheelStateRef.current = createPagedWheelState();
+      const point = { x: event.clientX, y: event.clientY };
+      if (pendingWheelZoomRef.current) pendingWheelZoomRef.current.point = point;
+      if (direction !== 0) {
+        pendingWheelZoomRef.current = { direction, point };
+        if (wheelZoomFrameRef.current === null) {
+          wheelZoomFrameRef.current = requestAnimationFrame(() => {
+            wheelZoomFrameRef.current = null;
+            const pending = pendingWheelZoomRef.current;
+            pendingWheelZoomRef.current = null;
+            // Merge a frame's events into one 5% step, with no deferred backlog.
+            if (pending) zoomChangeRef.current(pending.direction, pending.point);
+          });
+        }
+      }
+      return;
+    }
+    cancelWheelZoom();
+    const nativeOnly = continuousScrolling || modified || blocked;
+    const viewport = nativeOnly ? null : getPdfReadingViewport();
+    const bounds = nativeOnly ? null : getCurrentPageGroupBounds();
+    const pageBounds = {
+      width: bounds ? bounds.right - bounds.left : 0,
+      height: bounds ? bounds.bottom - bounds.top : 0,
+    };
+    const action = getPagedWheelAction(pagedWheelStateRef.current, {
+      deltaX: event.deltaX,
+      deltaY: event.deltaY,
+      deltaMode: event.deltaMode,
+      now: performance.now(),
+      continuousScrolling,
+      modified,
+      blocked,
+    }, pageBounds, viewport ?? pageBounds);
+    // PDF.js PAGE mode mounts only the active group. Native overflow therefore
+    // scrolls and clamps within that group, without a competing custom scroll.
+    if (action === null) return;
+    event.preventDefault();
+    if (action !== 0) navigatePageWithBoundary(action);
+  }, [continuousScrolling, overlay, getPdfReadingViewport, getCurrentPageGroupBounds, navigatePageWithBoundary, cancelWheelZoom]);
+
+  useEffect(() => {
+    const viewport = viewerRef.current;
+    if (!viewport) return;
+    viewport.addEventListener("wheel", handlePdfWheel, { passive: false });
+    return () => {
+      viewport.removeEventListener("wheel", handlePdfWheel);
+      cancelWheelZoom();
+    };
+  }, [handlePdfWheel, cancelWheelZoom]);
+  useEffect(() => {
+    pagedWheelStateRef.current = createPagedWheelState();
+    // A wheel-driven page change must not rearm its own continuing burst.
+  }, [continuousScrolling, overlay, document, zoomState, viewerSize, effectiveViewMode]);
+  useLayoutEffect(() => {
+    // Cancel before a queued zoom frame can act on a changed reader context.
+    cancelWheelZoom();
+  }, [continuousScrolling, overlay, document, viewerSize, effectiveViewMode, cancelWheelZoom]);
+
   useLayoutEffect(() => {
     confirmAndAlignPageEdge();
   }, [pageNumber, confirmAndAlignPageEdge]);
@@ -634,15 +736,6 @@ export function PdfReader({
   }, []);
 
 
-  const handleZoomChange = useCallback((direction: number) => {
-    const multiplier = direction > 0 ? ZOOM_FACTOR : 1 / ZOOM_FACTOR;
-    const basis = zoomState.mode === "manual" ? zoomState.basis : zoomState.mode;
-    const factor = zoomState.mode === "manual" ? zoomState.factor : 1;
-    const nextFactor = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, factor * multiplier));
-    if (nextFactor === factor) return;
-    captureZoomCenterAnchor();
-    setZoomState({ mode: "manual", basis, factor: nextFactor });
-  }, [captureZoomCenterAnchor, zoomState]);
 
   const restoreFitWidth = useCallback(() => {
     captureScrollAnchor();

@@ -84,16 +84,112 @@ export function measureAvailableViewport(viewer: HTMLDivElement): ViewportSize {
 }
 
 
-export function getPagedWheelDirection(
-  deltaY: number,
-  continuousScrolling: boolean,
-  modified: boolean,
-): -1 | 1 | null {
-  if (continuousScrolling || modified || deltaY === 0) return null;
-  return deltaY > 0 ? 1 : -1;
+export type PagedWheelState = {
+  distance: number;
+  lastEventAt: number;
+  turned: boolean;
+};
+
+export function createPagedWheelState(): PagedWheelState {
+  return { distance: 0, lastEventAt: Number.NEGATIVE_INFINITY, turned: false };
 }
-export function canNavigatePagedWheel(now: number, lastNavigationAt: number): boolean {
-  return now - lastNavigationAt >= 150;
+
+// These define a navigation action, not a mouse/touchpad classification.
+const PAGED_WHEEL_DISTANCE = 48;
+const PAGED_WHEEL_QUIET_MS = 250;
+const WHEEL_LINE_HEIGHT = 16;
+
+export function getPagedWheelAction(
+  state: PagedWheelState,
+  input: {
+    deltaX: number;
+    deltaY: number;
+    deltaMode: number;
+    now: number;
+    continuousScrolling: boolean;
+    modified: boolean;
+    blocked: boolean;
+  },
+  pageBounds: ViewportSize,
+  viewport: ViewportSize,
+): -1 | 0 | 1 | null {
+  if (
+    input.continuousScrolling || input.modified || input.blocked ||
+    pageBounds.width <= 0 || pageBounds.height <= 0 ||
+    pageBounds.width > viewport.width + 0.5 || pageBounds.height > viewport.height + 0.5 ||
+    !Number.isFinite(input.deltaX) || !Number.isFinite(input.deltaY) ||
+    input.deltaMode < 0 || input.deltaMode > 2 || !Number.isInteger(input.deltaMode)
+  ) {
+    state.distance = 0;
+    state.lastEventAt = Number.NEGATIVE_INFINITY;
+    state.turned = false;
+    return null;
+  }
+
+  if (input.now - state.lastEventAt >= PAGED_WHEEL_QUIET_MS) {
+    state.distance = 0;
+    state.turned = false;
+  }
+  // Measure quiet time from the last event, including a continuing momentum tail.
+  state.lastEventAt = input.now;
+  const xUnit = input.deltaMode === 1 ? WHEEL_LINE_HEIGHT : input.deltaMode === 2 ? viewport.width : 1;
+  const yUnit = input.deltaMode === 1 ? WHEEL_LINE_HEIGHT : input.deltaMode === 2 ? viewport.height : 1;
+  const deltaX = input.deltaX * xUnit;
+  const deltaY = input.deltaY * yUnit;
+  if (Math.abs(deltaY) <= Math.abs(deltaX)) {
+    state.distance = 0;
+    return null;
+  }
+  if (state.turned) return 0;
+  if (Math.sign(deltaY) !== Math.sign(state.distance)) state.distance = 0;
+  state.distance += deltaY;
+  if (Math.abs(state.distance) < PAGED_WHEEL_DISTANCE) return 0;
+  state.turned = true;
+  return state.distance > 0 ? 1 : -1;
+}
+
+export type WheelZoomState = {
+  distance: number;
+  lastEventAt: number;
+};
+
+export function createWheelZoomState(): WheelZoomState {
+  return { distance: 0, lastEventAt: Number.NEGATIVE_INFINITY };
+}
+
+const WHEEL_ZOOM_DISTANCE = 48;
+const WHEEL_ZOOM_IDLE_MS = 200;
+
+export function getWheelZoomDirection(
+  state: WheelZoomState,
+  input: { deltaY: number; deltaMode: number; now: number },
+  pageHeight: number,
+): -1 | 0 | 1 | null {
+  if (
+    !Number.isFinite(input.deltaY) ||
+    input.deltaMode < 0 || input.deltaMode > 2 || !Number.isInteger(input.deltaMode) ||
+    (input.deltaMode === 2 && (!Number.isFinite(pageHeight) || pageHeight <= 0))
+  ) {
+    state.distance = 0;
+    state.lastEventAt = Number.NEGATIVE_INFINITY;
+    return null;
+  }
+  if (input.now - state.lastEventAt >= WHEEL_ZOOM_IDLE_MS) state.distance = 0;
+  state.lastEventAt = input.now;
+  const unit = input.deltaMode === 1 ? WHEEL_LINE_HEIGHT : input.deltaMode === 2 ? pageHeight : 1;
+  const delta = input.deltaY * unit;
+  if (delta === 0 || Math.sign(delta) !== Math.sign(state.distance)) state.distance = 0;
+  // No queued distance debt: a large event can request only one existing zoom step.
+  state.distance = Math.max(-WHEEL_ZOOM_DISTANCE, Math.min(WHEEL_ZOOM_DISTANCE, state.distance + delta));
+  if (Math.abs(state.distance) < WHEEL_ZOOM_DISTANCE) return 0;
+  const direction = state.distance < 0 ? 1 : -1;
+  state.distance = 0;
+  return direction;
+}
+
+export function getNextZoomFactor(factor: number, direction: number): number {
+  const multiplier = direction > 0 ? ZOOM_FACTOR : 1 / ZOOM_FACTOR;
+  return Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, factor * multiplier));
 }
 
 export function isPageZoomedIn(pageBounds: ViewportSize, viewport: ViewportSize): boolean {

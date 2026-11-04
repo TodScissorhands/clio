@@ -212,6 +212,28 @@ export function resolveContinuousPdfNavigationAction(
   return direction ? { kind: "scroll", direction } : null;
 }
 
+export function resolvePdfControlCommand(
+  event: Pick<KeyboardEvent, "key" | "code" | "ctrlKey" | "metaKey" | "altKey" | "shiftKey">,
+): ReaderCommandId | null {
+  if (!event.ctrlKey || event.metaKey || event.altKey) return null;
+  const key = !event.key || event.key === "Unidentified" ? event.code : event.key;
+  // Prefer the character; numpad codes also cover legacy Add/Subtract key names.
+  if (key === "+" || key === "=" || key === "Add" || key === "Equal" || event.code === "NumpadAdd") {
+    return "zoom_in";
+  }
+  if (event.shiftKey) return null;
+  if (key === "-" || key === "Subtract" || key === "Minus" || event.code === "NumpadSubtract") {
+    return "zoom_out";
+  }
+  switch (key) {
+    case "PageDown": return "next_page";
+    case "PageUp": return "previous_page";
+    case "Home": return "goto_beginning";
+    case "End": return "goto_end";
+    default: return null;
+  }
+}
+
 
 type RepeatNavigationAction =
   | { kind: "command"; command: ReaderCommandId }
@@ -446,8 +468,15 @@ export function useReaderKeyboard(state: ReaderKeyboardState, actions: ReaderKey
           return;
         }
       }
-      if (current.state.continuousScrolling && unmodified) {
-        const action = resolveContinuousPdfNavigationAction(event.key, event.shiftKey);
+      const controlCommand = resolvePdfControlCommand(event);
+      const controlNavigation = controlCommand === "next_page" || controlCommand === "previous_page" ||
+        controlCommand === "goto_beginning" || controlCommand === "goto_end";
+      const pdfKey = controlCommand === "next_page" ? "J" :
+        controlCommand === "previous_page" ? "K" :
+        controlCommand === "goto_beginning" ? "Home" :
+        controlCommand === "goto_end" ? "End" : event.key;
+      if (current.state.continuousScrolling && (unmodified || controlNavigation)) {
+        const action = resolveContinuousPdfNavigationAction(pdfKey, event.shiftKey);
         if (action?.kind === "native") return;
         if (action?.kind === "scroll") {
           event.preventDefault();
@@ -472,13 +501,13 @@ export function useReaderKeyboard(state: ReaderKeyboardState, actions: ReaderKey
       }
 
       const zoomState = current.actions.getPdfZoomOverflow?.() ?? (current.actions.isPdfZoomedIn?.() ?? false);
-      const pdfNavigationAction = resolvePdfNavigationAction(event.key, event.shiftKey, zoomState);
-      if (unmodified && pdfNavigationAction) {
+      const pdfNavigationAction = resolvePdfNavigationAction(pdfKey, event.shiftKey, zoomState);
+      if ((unmodified || controlNavigation) && pdfNavigationAction) {
         event.preventDefault();
         const code = event.code || event.key;
         const repeatAction: RepeatNavigationAction = {
           kind: "pdf-key",
-          key: event.key,
+          key: pdfKey,
           shiftKey: event.shiftKey,
         };
         const heldAction = heldNavigationKeysRef.current.get(code);
@@ -492,8 +521,9 @@ export function useReaderKeyboard(state: ReaderKeyboardState, actions: ReaderKey
         return;
       }
 
-      const zoomInKey = !modifier && !event.altKey && event.key === "+";
-      const zoomOutKey = unmodified && (event.key === "-" || (!event.shiftKey && event.code === "Minus"));
+      const zoomInKey = controlCommand === "zoom_in" || (!modifier && !event.altKey && event.key === "+");
+      const zoomOutKey = controlCommand === "zoom_out" ||
+        (unmodified && (event.key === "-" || (!event.shiftKey && event.code === "Minus")));
       if (key === "i" && !event.shiftKey && !modifier && !event.altKey) {
         event.preventDefault();
         runCommand("toggle_night_mode");

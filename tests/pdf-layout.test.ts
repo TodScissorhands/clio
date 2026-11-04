@@ -163,3 +163,88 @@ describe("PDF viewport padding measurement (Phase 2)", () => {
     }
   });
 });
+
+describe("PDF pointer anchoring geometry", () => {
+  const before: RectBounds = { left: 100, top: 50, right: 500, bottom: 650 };
+  const after: RectBounds = { left: 80, top: 30, right: 680, bottom: 930 };
+
+  for (const { name, point, expected } of [
+    { name: "page center", point: { x: 300, y: 350 }, expected: { left: 80, top: 130 } },
+    { name: "off-center interior", point: { x: 180, y: 200 }, expected: { left: 20, top: 55 } },
+    { name: "near left edge", point: { x: 104, y: 350 }, expected: { left: -18, top: 130 } },
+    { name: "near right edge", point: { x: 496, y: 350 }, expected: { left: 178, top: 130 } },
+    { name: "near top edge", point: { x: 300, y: 56 }, expected: { left: 80, top: -17 } },
+    { name: "near bottom edge", point: { x: 300, y: 644 }, expected: { left: 80, top: 277 } },
+    { name: "near top-left corner", point: { x: 104, y: 56 }, expected: { left: -18, top: -17 } },
+    { name: "near bottom-right corner", point: { x: 496, y: 644 }, expected: { left: 178, top: 277 } },
+  ]) {
+    test(`anchors the ${name} rather than substituting the viewport center`, () => {
+      const delta = getCenterPreservingScrollDelta(before, after, point);
+      expect(delta.left).toBeCloseTo(expected.left, 10);
+      expect(delta.top).toBeCloseTo(expected.top, 10);
+    });
+  }
+
+  for (const { name, resized, expected } of [
+    {
+      name: "horizontal",
+      resized: { left: -240, top: -300, right: 760, bottom: 900 },
+      expected: { left: 20, top: 0 },
+    },
+    {
+      name: "vertical",
+      resized: { left: -200, top: -360, right: 600, bottom: 1140 },
+      expected: { left: 0, top: 30 },
+    },
+    {
+      name: "horizontal and vertical",
+      resized: { left: -240, top: -360, right: 760, bottom: 1140 },
+      expected: { left: 20, top: 30 },
+    },
+  ]) {
+    test(`returns both scroll components correctly with ${name} overflow`, () => {
+      const overflowingPage = { left: -200, top: -300, right: 600, bottom: 900 };
+      expect(getCenterPreservingScrollDelta(overflowingPage, resized, { x: 40, y: 60 }))
+        .toEqual(expected);
+    });
+  }
+
+  test("anchors the right-hand page of a spread independently of its fixed gap", () => {
+    // The left page grows from 400px to 600px wide at x=20; the gap stays 4px.
+    // The right-page quarter point moves from (524, 190) to (774, 265).
+    const rightPageBefore = { left: 424, top: 40, right: 824, bottom: 640 };
+    const rightPageAfter = { left: 624, top: 40, right: 1224, bottom: 940 };
+    expect(getCenterPreservingScrollDelta(rightPageBefore, rightPageAfter, { x: 524, y: 190 }))
+      .toEqual({ left: 250, top: 75 });
+  });
+
+  test("anchors the left-hand page without including the other page or spread gap", () => {
+    const leftPageBefore = { left: 20, top: 40, right: 420, bottom: 640 };
+    const leftPageAfter = { left: 20, top: 40, right: 620, bottom: 940 };
+    expect(getCenterPreservingScrollDelta(leftPageBefore, leftPageAfter, { x: 120, y: 190 }))
+      .toEqual({ left: 50, top: 75 });
+  });
+
+  test("includes preceding content movement when anchoring a lower continuous page", () => {
+    // The preceding page's bottom moves from 160 to 460; its following gap stays 20px.
+    // The lower page's quarter point moves from (200, 330) to (230, 705).
+    const lowerPageBefore = { left: 100, top: 180, right: 500, bottom: 780 };
+    const lowerPageAfter = { left: 80, top: 480, right: 680, bottom: 1380 };
+    expect(getCenterPreservingScrollDelta(lowerPageBefore, lowerPageAfter, { x: 200, y: 330 }))
+      .toEqual({ left: 30, top: 375 });
+  });
+
+  test("returns negative corrections when zooming an overflowing page out", () => {
+    const enlarged = { left: -240, top: -360, right: 760, bottom: 1140 };
+    const reduced = { left: -200, top: -300, right: 600, bottom: 900 };
+    expect(getCenterPreservingScrollDelta(enlarged, reduced, { x: 60, y: 90 }))
+      .toEqual({ left: -20, top: -30 });
+    expect(getCenterPreservingScrollDelta(enlarged, reduced, { x: 750, y: 1125 }))
+      .toEqual({ left: -158, top: -237 });
+  });
+
+  test("accounts for page repositioning as well as shrinking during zoom out", () => {
+    expect(getCenterPreservingScrollDelta(after, before, { x: 230, y: 255 }))
+      .toEqual({ left: -30, top: -55 });
+  });
+});
