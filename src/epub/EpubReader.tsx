@@ -5,8 +5,14 @@ import { createEpubPositionSession, epubLocationCfi, resolveEpubCfi } from "./re
 import { attachEpubKeyboard } from "./iframeKeyboard";
 import { createEpubStatusResolver } from "./readingStatus";
 import type { EpubChapterTarget, EpubReadingStatus } from "./readingStatus";
+import { createEpubStyles } from "./styles";
+import { DEFAULT_EPUB_PREFERENCES, loadEpubPreferences, saveEpubPreferences } from "./preferences";
+import type { EpubPreferences } from "./preferences";
+import { DOCUMENT_THEMES } from "../reader/appearance";
+import { applyEpubPreferenceCommand, commandTheme, epubPreferenceCommands, searchableReaderCommands, themeCommands } from "../reader/appearanceCommands";
 import {
   filterReaderCommands,
+  EPUB_READER_COMMANDS,
   useReaderKeyboard,
 } from "../reader/interactions";
 import type { ReaderCommand, ReaderCommandId, ReaderOverlay } from "../reader/interactions";
@@ -15,13 +21,15 @@ import { getEpubCommandStates } from "../reader/commandState";
 import "../reader/ReaderStatus.css";
 import "./EpubReader.css";
 
-type PaletteMode = "commands" | "chapters";
+type PaletteMode = "commands" | "chapters" | "themes" | "preferences";
 
 type EpubReaderProps = {
   book: EpubBook;
   path: string | null;
   onClose: () => void;
   onOpenDocument: (restoreFocus?: () => void) => void;
+  nightMode: boolean;
+  onToggleNightMode: () => void;
 };
 export type SpineSection = { index: number; href?: string; linear: boolean };
 
@@ -58,8 +66,9 @@ function errorMessage(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
 }
 
-export function EpubReader({ book, path, onClose, onOpenDocument }: EpubReaderProps) {
+export function EpubReader({ book, path, onClose, onOpenDocument, nightMode, onToggleNightMode }: EpubReaderProps) {
   const viewportRef = useRef<HTMLDivElement>(null);
+  const surfaceRef = useRef<HTMLDivElement>(null);
   const focusReader = useCallback(() => {
     requestAnimationFrame(() => viewportRef.current?.focus());
   }, []);
@@ -84,11 +93,29 @@ export function EpubReader({ book, path, onClose, onOpenDocument }: EpubReaderPr
   const [paletteMode, setPaletteMode] = useState<PaletteMode>("commands");
   const [layoutMode, setLayoutMode] = useState<EpubLayoutMode>("paged");
   const [error, setError] = useState("");
+  const [preferences, setPreferences] = useState(loadEpubPreferences);
+  const preferencesRef = useRef(preferences);
+  const storageWarningRef = useRef(false);
+  const [presentation, setPresentation] = useState({ book, applied: DEFAULT_EPUB_PREFERENCES, retained: "", ready: false });
+  const applied = presentation.book === book ? presentation.applied : DEFAULT_EPUB_PREFERENCES;
+  const retained = presentation.book === book ? presentation.retained : "";
+  const choosePreferences = useCallback((next: EpubPreferences) => {
+    preferencesRef.current = next;
+    setPreferences(next);
+    if (!saveEpubPreferences(next) && !storageWarningRef.current) {
+      storageWarningRef.current = true;
+      setError("Reading preferences are available for this session but could not be saved.");
+    }
+    resizeSchedulerRef.current();
+  }, []);
   const [readingStatus, setReadingStatus] = useState<{ book: EpubBook; value: EpubReadingStatus }>({
     book,
     value: { label: "EPUB", page: null, total: null },
   });
-  const commandStates = useMemo(() => getEpubCommandStates(layoutMode), [layoutMode]);
+  const commandStates = useMemo(() => ({
+    ...getEpubCommandStates(layoutMode),
+    toggle_night_mode: { active: nightMode, text: nightMode ? "Dark chrome" : "Light chrome" },
+  }), [layoutMode, nightMode]);
 
   const chapterCommands = useMemo(() => chapters.map((chapter, index): ReaderCommand => ({
     id: "select_chapter",
@@ -99,12 +126,18 @@ export function EpubReader({ book, path, onClose, onOpenDocument }: EpubReaderPr
     depth: chapter.depth,
     targetHref: chapter.href,
   })), [chapters]);
-  const visibleCommands = filterReaderCommands(
-    commandQuery,
-    true,
-    "epub",
-    paletteMode === "chapters" ? chapterCommands : undefined,
-  );
+  const themes = themeCommands("epub", applied.theme, preferences.theme, retained || "Requested — waiting for layout");
+  const preferenceChoices = epubPreferenceCommands(preferences, applied, retained);
+  const rootCommands = EPUB_READER_COMMANDS.map((command) => {
+    if (layoutMode === "continuous" && (command.id === "next_page" || command.id === "previous_page")) {
+      return { ...command, label: command.id === "next_page" ? "Next screen" : "Previous screen" };
+    }
+    return command;
+  });
+  const visibleCommands = filterReaderCommands(commandQuery, true, "epub",
+    paletteMode === "chapters" ? chapterCommands
+      : paletteMode === "themes" ? themes : paletteMode === "preferences" ? preferenceChoices
+        : searchableReaderCommands(rootCommands, [themes, preferenceChoices], commandQuery));
 
   const navigateToHref = useCallback((href: string) => {
     const rendition = renditionRef.current;
@@ -162,6 +195,9 @@ export function EpubReader({ book, path, onClose, onOpenDocument }: EpubReaderPr
       case "open_document":
         onOpenDocument(focusReader);
         break;
+      case "toggle_night_mode":
+        onToggleNightMode();
+        break;
       case "previous_chapter":
         navigateSpine(-1);
         break;
@@ -192,7 +228,7 @@ export function EpubReader({ book, path, onClose, onOpenDocument }: EpubReaderPr
       default:
         break;
     }
-  }, [focusReader, navigateSpine, onClose, onOpenDocument, scrollContinuous, turnPage]);
+  }, [focusReader, navigateSpine, onClose, onOpenDocument, onToggleNightMode, scrollContinuous, turnPage]);
 
 
   const openCommandPalette = useCallback(() => {
@@ -209,6 +245,19 @@ export function EpubReader({ book, path, onClose, onOpenDocument }: EpubReaderPr
   }, []);
 
   const executePaletteCommand = useCallback((command: ReaderCommand) => {
+    if (command.disabled) return;
+    if (command.id === "document_appearance" || command.id === "epub_reading_preferences" || command.id === "back_to_commands") {
+      setPaletteMode(command.id === "document_appearance" ? "themes" : command.id === "epub_reading_preferences" ? "preferences" : "commands");
+      setCommandQuery("");
+      setCommandIndex(0);
+      return;
+    }
+    const theme = commandTheme(command.id);
+    const next = theme ? { ...preferencesRef.current, theme } : applyEpubPreferenceCommand(preferencesRef.current, command);
+    if (next) {
+      choosePreferences(next);
+      return;
+    }
     if (command.id === "go_to_chapter") {
       setPaletteMode("chapters");
       setCommandQuery("");
@@ -225,7 +274,7 @@ export function EpubReader({ book, path, onClose, onOpenDocument }: EpubReaderPr
     setOverlay(null);
     runReaderCommand(command.id);
     if (command.id !== "close_document") requestAnimationFrame(() => viewportRef.current?.focus());
-  }, [navigateToHref, runReaderCommand]);
+  }, [choosePreferences, navigateToHref, runReaderCommand]);
 
   const registerKeyboardTarget = useReaderKeyboard(
     {
@@ -375,80 +424,160 @@ export function EpubReader({ book, path, onClose, onOpenDocument }: EpubReaderPr
       if (location) lastStatusLocation = location;
       publishStatus(location ?? lastStatusLocation, !!location && !layoutPending && !layoutFailed && initialDisplayReadyRef.current);
     };
-    const reflow = (apply: () => void) => {
+    const styles = createEpubStyles(book, rendition);
+    let fixedLayout = false;
+    let verticalWriting = false;
+    let appliedRequest: EpubPreferences | null = null;
+    let failedRequest: EpubPreferences | null = null;
+    let appliedPreferences = DEFAULT_EPUB_PREFERENCES;
+    let requestedLayout = layoutModeRef.current;
+    let presentationFrame: number | null = null;
+    let resizeReady = false;
+    const effectivePreferences = (requested: EpubPreferences): EpubPreferences => fixedLayout
+      ? DEFAULT_EPUB_PREFERENCES
+      : verticalWriting ? { ...DEFAULT_EPUB_PREFERENCES, theme: requested.theme } : requested;
+    const retainedReason = () => fixedLayout ? "Fixed-layout publication" : verticalWriting ? "Vertical writing" : "";
+    const publishPresentation = (ready: boolean) => {
+      if (active) setPresentation({ book, applied: appliedPreferences, retained: retainedReason(), ready });
+    };
+    publishPresentation(false);
+    const applyGeometry = (preferences: EpubPreferences) => {
+      const gutters = { publisher: "", compact: "min(8px, 10%)", comfortable: "min(16px, 10%)", generous: "min(32px, 10%)" };
+      const columns = { publisher: "", narrow: "32rem", comfortable: "44rem", wide: "60rem" };
+      if (surfaceRef.current) surfaceRef.current.style.paddingInline = gutters[preferences.margins];
+      viewport.style.maxWidth = columns[preferences.columnWidth];
+      const rect = viewport.getBoundingClientRect();
+      const size = { width: Math.max(1, Math.floor(rect.width)), height: Math.max(1, Math.floor(rect.height)) };
+      const previous = lastAppliedSizeRef.current;
+      if (!previous || size.width !== previous.width || size.height !== previous.height) {
+        rendition.resize(size.width, size.height);
+        lastAppliedSizeRef.current = size;
+      }
+      pendingResizeRef.current = null;
+      resizeReady = false;
+    };
+    const schedulePresentation = () => {
+      if (!active || presentationFrame !== null) return;
+      presentationFrame = requestAnimationFrame(() => {
+        presentationFrame = null;
+        drainPresentation();
+      });
+    };
+    const drainPresentation = () => {
       if (!active || !initialDisplayReadyRef.current || navigationInFlightRef.current > 0) return;
+      const request = preferencesRef.current;
+      const next = effectivePreferences(request);
+      const nextLayout = requestedLayout;
+      const preferenceChange = request !== appliedRequest && request !== failedRequest;
+      const layoutChange = nextLayout !== layoutModeRef.current;
+      const resize = resizeReady && hasPendingResize();
+      if (!preferenceChange && !layoutChange && !resize) return;
+      const previous = appliedPreferences;
+      const previousLayout = layoutModeRef.current;
+      const metricsChange = layoutChange || resize ||
+        next.fontFamily !== previous.fontFamily || next.fontScale !== previous.fontScale ||
+        next.lineHeight !== previous.lineHeight || next.alignment !== previous.alignment ||
+        next.margins !== previous.margins || next.columnWidth !== previous.columnWidth;
+      if (!metricsChange) {
+        try {
+          styles.apply(next);
+          appliedPreferences = next;
+          appliedRequest = request;
+          failedRequest = null;
+          publishPresentation(true);
+        } catch (cause) {
+          styles.apply(previous);
+          failedRequest = request;
+          setError(`Could not apply EPUB preferences: ${errorMessage(cause)}`);
+        }
+        return;
+      }
       const cfi = position.capture(currentCfi());
+      if (!cfi) {
+        setPresentation({ book, applied: previous, retained: "Waiting for a reading location", ready: true });
+        return;
+      }
       invalidateStatus();
       let completed = false;
       navigationInFlightRef.current += 1;
       void position.preserve(cfi, async () => {
-        apply();
-        if (cfi) await rendition.display(cfi);
-        await afterLayout();
-        completed = true;
-        return currentCfi();
+        try {
+          styles.apply(next);
+          applyGeometry(next);
+          if (layoutChange) rendition.flow(nextLayout === "paged" ? "paginated" : "scrolled-continuous");
+          await afterLayout();
+          if (!active) return null;
+          await rendition.display(cfi);
+          await afterLayout();
+          if (!active) return null;
+          appliedPreferences = next;
+          appliedRequest = request;
+          failedRequest = null;
+          layoutModeRef.current = nextLayout;
+          setLayoutMode(nextLayout);
+          completed = true;
+          publishPresentation(true);
+          return currentCfi();
+        } catch (cause) {
+          if (!active) return null;
+          styles.apply(previous);
+          applyGeometry(previous);
+          if (layoutChange) rendition.flow(previousLayout === "paged" ? "paginated" : "scrolled-continuous");
+          await afterLayout();
+          if (!active) return null;
+          await rendition.display(cfi);
+          await afterLayout();
+          throw cause;
+        }
       }).catch((cause: unknown) => {
-        if (active) setError(`Could not preserve EPUB reading position: ${errorMessage(cause)}`);
+        if (!active) return;
+        failedRequest = request;
+        if (requestedLayout === nextLayout) requestedLayout = previousLayout;
+        publishPresentation(true);
+        setError(`Could not preserve EPUB reading position while applying preferences: ${errorMessage(cause)}`);
       }).finally(() => {
         if (!active) return;
         navigationInFlightRef.current = Math.max(0, navigationInFlightRef.current - 1);
         layoutFailed = !completed;
         layoutPending = !completed || hasPendingResize();
         if (completed) publishFreshStatus();
-        if (active) resizeSchedulerRef.current();
+        schedulePresentation();
       });
     };
     changeLayoutRef.current = (mode) => {
-      if (layoutModeRef.current === mode) return;
-      reflow(() => {
-        layoutModeRef.current = mode;
-        setLayoutMode(mode);
-        rendition.flow(mode === "paged" ? "paginated" : "scrolled-continuous");
-      });
+      requestedLayout = mode;
+      schedulePresentation();
     };
-    const scheduleResize = () => {
-      if (
-        !active ||
-        !initialDisplayReadyRef.current ||
-        navigationInFlightRef.current > 0 ||
-        !pendingResizeRef.current
-      ) return;
+    resizeSchedulerRef.current = schedulePresentation;
+    const resizeObserver = new ResizeObserver(() => {
+      const rect = viewport.getBoundingClientRect();
+      const size = { width: Math.max(1, Math.floor(rect.width)), height: Math.max(1, Math.floor(rect.height)) };
+      const previous = lastAppliedSizeRef.current;
+      if (previous?.width === size.width && previous.height === size.height) return;
+      invalidateStatus();
+      pendingResizeRef.current = size;
       if (resizeTimerRef.current !== null) window.clearTimeout(resizeTimerRef.current);
       resizeTimerRef.current = window.setTimeout(() => {
         resizeTimerRef.current = null;
-        if (!active || !initialDisplayReadyRef.current || navigationInFlightRef.current > 0) return;
-        const size = pendingResizeRef.current;
-        if (!size) return;
-        pendingResizeRef.current = null;
-        const previous = lastAppliedSizeRef.current;
-        if (previous?.width === size.width && previous.height === size.height) {
-          if (!layoutFailed) {
-            layoutPending = false;
-            publishFreshStatus();
-          }
-          return;
-        }
-        try {
-          reflow(() => rendition.resize(size.width, size.height));
-          lastAppliedSizeRef.current = size;
-        } catch (cause) {
-          if (active) setError(`Could not resize EPUB: ${errorMessage(cause)}`);
-        }
+        resizeReady = true;
+        schedulePresentation();
       }, 140);
-    };
-    resizeSchedulerRef.current = scheduleResize;
-    const resizeObserver = new ResizeObserver(() => {
-      const rect = viewport.getBoundingClientRect();
-      const width = Math.max(1, Math.floor(rect.width));
-      const height = Math.max(1, Math.floor(rect.height));
-      const applied = lastAppliedSizeRef.current;
-      if (!applied || width !== applied.width || height !== applied.height) invalidateStatus();
-      pendingResizeRef.current = { width, height };
-      scheduleResize();
     });
     resizeObserver.observe(viewport);
 
-    const disposeKeyboard = attachEpubKeyboard(rendition, viewport, registerKeyboardTarget);
+    const disposeKeyboard = attachEpubKeyboard(rendition, viewport, (document) => {
+      const view = document.defaultView;
+      if (!verticalWriting && view && [document.documentElement, document.body].some((element) =>
+        element && /^(vertical|sideways)/.test(view.getComputedStyle(element).writingMode))) {
+        verticalWriting = true;
+        appliedRequest = null;
+        styles.apply(effectivePreferences(preferencesRef.current));
+        schedulePresentation();
+      }
+      const disposeStyle = styles.registerDocument(document);
+      const disposeKeys = registerKeyboardTarget(document);
+      return () => { disposeKeys(); disposeStyle(); };
+    });
     const onRelocated = (location: unknown) => {
       if (!active || renditionRef.current !== rendition) return;
       lastStatusLocation = location;
@@ -459,6 +588,7 @@ export function EpubReader({ book, path, onClose, onOpenDocument }: EpubReaderPr
         setCurrentSpineIndex(start.index);
       }
       if (active && initialDisplayReadyRef.current) position.update(epubLocationCfi(book, location));
+      schedulePresentation();
     };
     rendition.on("relocated", onRelocated);
 
@@ -484,6 +614,15 @@ export function EpubReader({ book, path, onClose, onOpenDocument }: EpubReaderPr
         navigationInFlightRef.current += 1;
         let displayReady = false;
         try {
+          await rendition.started;
+          const metadata = await book.loaded.metadata;
+          if (!active) return;
+          fixedLayout = metadata.layout === "pre-paginated" || rendition.settings.layout === "pre-paginated" ||
+            book.packaging.spine.some((section) => section.properties.includes("rendition:layout-pre-paginated"));
+          appliedPreferences = effectivePreferences(preferencesRef.current);
+          styles.apply(appliedPreferences);
+          applyGeometry(appliedPreferences);
+          appliedRequest = preferencesRef.current;
           let savedCfi: string | null = null;
           try {
             savedCfi = await position.load();
@@ -508,6 +647,7 @@ export function EpubReader({ book, path, onClose, onOpenDocument }: EpubReaderPr
             position.start(restoredCfi ?? visibleCfi, visibleCfi);
             if (rendition.location?.start) setCurrentSpineIndex(rendition.location.start.index);
             viewport.focus();
+            publishPresentation(true);
           }
         } finally {
           if (active) {
@@ -522,6 +662,7 @@ export function EpubReader({ book, path, onClose, onOpenDocument }: EpubReaderPr
       })
       .catch((cause: unknown) => {
         if (active) setError(`Could not render EPUB: ${errorMessage(cause)}`);
+        if (active) publishPresentation(true);
       });
 
     const onPageHide = () => {
@@ -536,6 +677,7 @@ export function EpubReader({ book, path, onClose, onOpenDocument }: EpubReaderPr
       active = false;
       activeRef.current = false;
       resizeObserver.disconnect();
+      if (presentationFrame !== null) cancelAnimationFrame(presentationFrame);
       if (resizeTimerRef.current !== null) {
         window.clearTimeout(resizeTimerRef.current);
         resizeTimerRef.current = null;
@@ -544,18 +686,24 @@ export function EpubReader({ book, path, onClose, onOpenDocument }: EpubReaderPr
       changeLayoutRef.current = () => {};
       window.removeEventListener("pagehide", onPageHide);
       disposeKeyboard();
+      styles.dispose();
       rendition.off("relocated", onRelocated);
       deferBookDestroy();
     };
   }, [book, path, registerKeyboardTarget]);
 
   const status = readingStatus.book === book ? readingStatus.value : { label: "EPUB", page: null, total: null };
+  const backdrop = DOCUMENT_THEMES.find((theme) => theme.id === applied.theme)?.background ?? "#fff";
+  const loading = presentation.book !== book || !presentation.ready;
 
   return (
     <section className="epub-reader" aria-label="EPUB reader">
       {error && <div className="epub-reader__error" role="alert">{error}</div>}
-      <div className="epub-reader__viewport" ref={viewportRef} tabIndex={-1} aria-label="EPUB reading area" />
-      {overlay !== "commands" && <footer className="status-bar epub-status" aria-label="EPUB reading status" aria-live="off">
+      <div className="epub-reader__surface" ref={surfaceRef} style={{ background: backdrop }}>
+        <div className="epub-reader__viewport" ref={viewportRef} tabIndex={-1} aria-label="EPUB reading area" aria-busy={loading} style={{ background: backdrop }} />
+      </div>
+      <footer className="status-bar epub-status" aria-label="EPUB reading status" aria-live="off">
+        {loading && <span role="status">Opening EPUB…</span>}
         <span className="visually-hidden">
           {status.label}{status.page !== null && ` — First visible page ${status.page} of ${status.total} in this section`}
         </span>
@@ -563,14 +711,14 @@ export function EpubReader({ book, path, onClose, onOpenDocument }: EpubReaderPr
           <span className="epub-status__chapter" title={status.label}>{status.label}</span>
           {status.page !== null && <span className="epub-status__detail"> · Page {status.page} / {status.total} in section</span>}
         </span>
-      </footer>}
+      </footer>
       {overlay === "commands" && <ReaderCommandPalette
         commands={visibleCommands}
         commandStates={paletteMode === "commands" ? commandStates : undefined}
         commandIndex={commandIndex}
         query={commandQuery}
-        placeholder={paletteMode === "chapters" ? "Filter chapters" : "Filter commands"}
-        ariaLabel={paletteMode === "chapters" ? "Choose a chapter" : "Reader commands"}
+        placeholder={paletteMode === "chapters" ? "Filter chapters" : paletteMode === "themes" ? "Filter document themes" : paletteMode === "preferences" ? "Filter reading preferences" : "Filter commands"}
+        ariaLabel={paletteMode === "chapters" ? "Choose a chapter" : paletteMode === "themes" ? "Document themes" : paletteMode === "preferences" ? "Reading preferences" : "Reader commands"}
         emptyMessage={paletteMode === "chapters" ? "No matching chapters" : "No commands"}
         onQueryChange={setCommandQuery}
         onCommandIndexChange={setCommandIndex}

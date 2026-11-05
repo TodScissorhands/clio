@@ -130,13 +130,14 @@ export function ReaderCommandPalette({
       />
       <div ref={listRef} id={listId} className="command-list" role="listbox" aria-label={ariaLabel}>
         {commands.map((command, index) => {
-          const state = commandStates?.[command.id];
+          const state = command.state ?? commandStates?.[command.id];
           const rowId = `${listId}-option-${index}`;
           return <div
           key={command.key ?? command.id}
           id={rowId}
           role="option"
           aria-selected={activeIndex === index}
+          aria-disabled={command.disabled || undefined}
           aria-labelledby={`${rowId}-label ${rowId}-shortcut`}
           aria-describedby={state ? `${rowId}-state` : undefined}
           className="command-row"
@@ -150,6 +151,7 @@ export function ReaderCommandPalette({
           }}
           onMouseDown={(event) => event.preventDefault()}
           onClick={() => {
+            if (command.disabled) return;
             onCommandIndexChange(index);
             onExecute(command);
           }}

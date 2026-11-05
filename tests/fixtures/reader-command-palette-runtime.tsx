@@ -3,6 +3,9 @@ import { createRoot } from "react-dom/client";
 import { ReaderCommandPalette } from "../../src/reader/ReaderCommandPalette";
 import { filterReaderCommands, useReaderKeyboard } from "../../src/reader/interactions";
 import type { ReaderCommand, ReaderKind, ReaderOverlay } from "../../src/reader/interactions";
+import { epubPreferenceCommands, searchableReaderCommands, themeCommands } from "../../src/reader/appearanceCommands";
+import { DEFAULT_EPUB_PREFERENCES } from "../../src/epub/preferences";
+import { EPUB_READER_COMMANDS } from "../../src/reader/interactions";
 
 // Exercise the real shared component and keyboard hook in WebKit, not a DOM mock.
 
@@ -21,6 +24,11 @@ const chapters: ReaderCommand[] = Array.from({ length: 36 }, (_, index) => ({
   depth: index === 1 ? 1 : 0,
   shortcut: "",
 }));
+const preferenceChoices = epubPreferenceCommands(
+  { ...DEFAULT_EPUB_PREFERENCES, fontFamily: "serif", fontScale: 200 },
+  DEFAULT_EPUB_PREFERENCES,
+);
+const themes = themeCommands("epub", "original");
 let updateReader: (kind: ReaderKind) => void;
 let replaceQuery: (query: string) => void;
 let replaceIndex: (index: number) => void;
@@ -30,7 +38,7 @@ function TestReader() {
   const [kind, setKind] = useState<ReaderKind>("pdf");
   const [dark, setDark] = useState(false);
   const [overlay, setOverlay] = useState<ReaderOverlay>(null);
-  const [chapterMode, setChapterMode] = useState(false);
+  const [mode, setMode] = useState<"commands" | "chapters" | "themes" | "preferences">("commands");
   const [query, setQuery] = useState("");
   const [index, setIndex] = useState(0);
   const [destination, setDestination] = useState("");
@@ -38,15 +46,20 @@ function TestReader() {
   replaceQuery = setQuery;
   replaceIndex = setIndex;
   updateAppearance = setDark;
-  const commands = filterReaderCommands(query, true, kind, chapterMode ? chapters : undefined);
+  const commandSet = mode === "chapters" ? chapters : mode === "themes" ? themes
+    : mode === "preferences" ? preferenceChoices
+      : kind === "epub" ? searchableReaderCommands(EPUB_READER_COMMANDS, [themes, preferenceChoices], query) : undefined;
+  const commands = filterReaderCommands(query, true, kind, commandSet);
   const closeOverlay = () => {
     setOverlay(null);
-    setChapterMode(false);
+    setMode("commands");
     requestAnimationFrame(() => document.getElementById("reading-area")?.focus());
   };
   const execute = (command: ReaderCommand) => {
-    if (command.id === "go_to_chapter") {
-      setChapterMode(true);
+    if (command.id === "go_to_chapter" || command.id === "document_appearance" ||
+      command.id === "epub_reading_preferences" || command.id === "back_to_commands") {
+      setMode(command.id === "go_to_chapter" ? "chapters" : command.id === "document_appearance" ? "themes"
+        : command.id === "epub_reading_preferences" ? "preferences" : "commands");
       setQuery("");
       setIndex(0);
     } else {
@@ -69,8 +82,9 @@ function TestReader() {
     <output id="destination">{destination}</output>
     {overlay === "commands" && <ReaderCommandPalette
       commands={commands} commandIndex={index} query={query}
-      placeholder={chapterMode ? "Filter chapters" : "Filter commands"}
-      emptyMessage={chapterMode ? "No matching chapters" : "No commands"}
+      placeholder={mode === "chapters" ? "Filter chapters" : mode === "themes" ? "Filter document themes"
+        : mode === "preferences" ? "Filter reading preferences" : "Filter commands"}
+      emptyMessage={mode === "chapters" ? "No matching chapters" : "No commands"}
       onQueryChange={setQuery} onCommandIndexChange={setIndex} onExecute={execute}
     />}
   </main>;
@@ -233,6 +247,42 @@ async function run() {
     check(document.activeElement?.id === "reading-area", "click must restore reader focus");
 
     updateReader("epub"); await settle();
+    await open("reading preferences"); await key("Enter");
+    checkActive();
+    await query("Font: Serif");
+    const pending = selected();
+    const pendingDescription = document.getElementById(pending.getAttribute("aria-describedby")!);
+    check(pendingDescription && /requested/i.test(pendingDescription.textContent!) &&
+      /waiting/i.test(pendingDescription.textContent!), "requested preference lacks its accessible pending description");
+    check(!pending.querySelector('.command-state [aria-hidden="true"]'), "pending preference is falsely marked applied");
+    check(pending.getAttribute("aria-selected") === "true" && !pending.hasAttribute("aria-checked"),
+      "keyboard selection was conflated with applied preference state");
+    await query("Font: Publisher");
+    check(!!selected().querySelector('.command-state [aria-hidden="true"]'), "applied preference has no non-color current mark");
+    await query("epub_text_larger");
+    checkActive();
+    const disabled = selected();
+    check(disabled.getAttribute("aria-disabled") === "true", "bounded text-size action lacks disabled option semantics");
+    const description = document.getElementById(disabled.getAttribute("aria-describedby")!);
+    check(description?.textContent?.includes("200%"), "disabled size action does not describe the saved size");
+    const beforeDisabled = document.getElementById("destination")!.textContent;
+    const disabledPress = new MouseEvent("mousedown", { bubbles: true, cancelable: true });
+    disabled.dispatchEvent(disabledPress);
+    check(disabledPress.defaultPrevented && document.activeElement === filter(), "disabled pointer press stole filter focus");
+    disabled.click();
+    await settle();
+    check(!!filter() && document.getElementById("destination")!.textContent === beforeDisabled,
+      "disabled option executed through the pointer");
+    await key("Enter");
+    check(!!filter() && document.getElementById("destination")!.textContent === beforeDisabled,
+      "disabled option executed through Enter");
+    checkActive();
+    await query("epub_text_smaller");
+    check(selected().getAttribute("aria-disabled") !== "true", "enabled neighboring option remained disabled");
+    await key("Enter");
+    check(document.getElementById("destination")!.textContent === "epub_text_smaller",
+      "disabled-option rejection blocked a subsequent enabled command");
+    check(document.activeElement?.id === "reading-area", "enabled execution did not restore reader focus");
     await open("go to chapter"); await key("Enter");
     check(filter().placeholder === "Filter chapters", "chapter mode did not replace the command list");
     checkActive();

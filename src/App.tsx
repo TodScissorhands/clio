@@ -190,7 +190,7 @@ function App() {
             activeEpubRef.current = null;
             setActiveEpub(null);
             setDocumentName(null);
-          }} onOpenDocument={openDocument} />
+          }} onOpenDocument={openDocument} nightMode={nightMode} onToggleNightMode={toggleNightMode} />
         : <PdfReader
             nightMode={nightMode}
             onToggleNightMode={toggleNightMode}

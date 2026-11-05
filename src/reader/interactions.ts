@@ -29,6 +29,26 @@ export type ReaderCommandId =
   | "paged_layout"
   | "continuous_layout"
   | "select_chapter"
+  | "document_appearance"
+  | "epub_reading_preferences"
+  | "back_to_commands"
+  | "theme_original"
+  | "theme_light"
+  | "theme_dark"
+  | "theme_sepia"
+  | "theme_zathura_dark"
+  | "theme_gruvbox_dark"
+  | "theme_solarized_dark"
+  | "theme_rose_pine_dawn"
+  | "epub_set_font_family"
+  | "epub_size_publisher"
+  | "epub_set_line_height"
+  | "epub_set_alignment"
+  | "epub_set_margins"
+  | "epub_set_column_width"
+  | "epub_text_larger"
+  | "epub_text_smaller"
+  | "epub_reset_typography"
   | "toggle_recolor"
   | "recolor_preset_original"
   | "recolor_preset_zathura_dark"
@@ -49,6 +69,9 @@ export type ReaderCommand = {
   key?: string;
   depth?: number;
   targetHref?: string;
+  value?: string;
+  state?: { active: boolean; text: string };
+  disabled?: boolean;
 };
 
 export const READER_COMMANDS: ReaderCommand[] = [
@@ -90,9 +113,14 @@ export const EPUB_READER_COMMANDS: ReaderCommand[] = [
   { id: "previous_chapter", shortcut: "Shift+N", scope: "epub", label: "Previous chapter" },
   { id: "next_chapter", shortcut: "n", scope: "epub", label: "Next chapter" },
   { id: "go_to_chapter", shortcut: "", scope: "epub", label: "Go to chapter" },
+  { id: "next_page", shortcut: "PageDown", scope: "epub", label: "Next page" },
+  { id: "previous_page", shortcut: "PageUp", scope: "epub", label: "Previous page" },
+  { id: "document_appearance", shortcut: "", scope: "epub", label: "Document theme…" },
+  { id: "epub_reading_preferences", shortcut: "", scope: "epub", label: "Reading preferences…" },
   { id: "paged_layout", shortcut: "", scope: "epub", label: "Paged layout" },
   { id: "continuous_layout", shortcut: "", scope: "epub", label: "Continuous layout" },
-  { id: "close_document", shortcut: "", scope: "epub", label: "Close document" },
+  { id: "toggle_night_mode", shortcut: "i", scope: "epub", label: "Toggle application appearance" },
+  { id: "close_document", shortcut: "Ctrl+W", scope: "epub", label: "Close document" },
 ];
 
 export function filterReaderCommands(
@@ -403,11 +431,22 @@ export function useReaderKeyboard(state: ReaderKeyboardState, actions: ReaderKey
         } else if (event.key === "Enter") {
           event.preventDefault();
           const command = commands[clampCommandIndex(commandIndex, commands.length)];
-          if (command) executePaletteCommand(command);
+          if (command && !command.disabled) executePaletteCommand(command);
         }
         return;
       }
       if (typing || overlay) return;
+      const sharedKey = event.key.toLowerCase();
+      if (modifier && !event.altKey && !event.shiftKey && (sharedKey === "o" || sharedKey === "w")) {
+        event.preventDefault();
+        runCommand(sharedKey === "o" ? "open_document" : "close_document");
+        return;
+      }
+      if (unmodified && !event.shiftKey && sharedKey === "i") {
+        event.preventDefault();
+        runCommand("toggle_night_mode");
+        return;
+      }
       if (readerKind === "epub") {
         if (!typing && unmodified && (event.key === ":" || (event.code === "Semicolon" && event.shiftKey))) {
           event.preventDefault();
@@ -466,16 +505,6 @@ export function useReaderKeyboard(state: ReaderKeyboardState, actions: ReaderKey
       if (typing || overlay) return;
       const key = event.key.toLowerCase();
       if (modifier && !event.altKey && !event.shiftKey) {
-        if (key === "o") {
-          event.preventDefault();
-          runCommand("open_document");
-          return;
-        }
-        if (key === "w") {
-          event.preventDefault();
-          runCommand("close_document");
-          return;
-        }
         if (key === "f") {
           event.preventDefault();
           runCommand("search");
@@ -538,10 +567,7 @@ export function useReaderKeyboard(state: ReaderKeyboardState, actions: ReaderKey
       const zoomInKey = controlCommand === "zoom_in" || (!modifier && !event.altKey && event.key === "+");
       const zoomOutKey = controlCommand === "zoom_out" ||
         (unmodified && (event.key === "-" || (!event.shiftKey && event.code === "Minus")));
-      if (key === "i" && !event.shiftKey && !modifier && !event.altKey) {
-        event.preventDefault();
-        runCommand("toggle_night_mode");
-      } else if (zoomInKey || zoomOutKey) {
+      if (zoomInKey || zoomOutKey) {
         event.preventDefault();
         const command: ReaderCommandId = zoomInKey ? "zoom_in" : "zoom_out";
         const code = event.code || event.key;

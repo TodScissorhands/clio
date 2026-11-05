@@ -21,7 +21,7 @@ Command searches accept readable phrases such as `zoom in` and `fit to page widt
 
 State-bearing commands show a checkmark and a short setting description, separate from the highlighted command selected by the keyboard. Descriptions are exposed to assistive technology and do not participate in filtering. Ordinary actions and chapter destinations have no setting marker.
 
-PDF descriptions reflect the effective view, fit versus custom zoom, night mode and recoloring preferences. A narrow-window spread fallback identifies the displayed single page and the still-requested spread separately. Disabled recoloring distinguishes saved options from applied effects; custom colors never mark a stock preset current. EPUB describes its paged or continuous layout. These indicators read existing state without changing execution or persistence.
+PDF descriptions reflect the effective view, fit versus custom zoom, application appearance and recoloring preferences. A narrow-window spread fallback identifies the displayed single page and the still-requested spread separately. Disabled recoloring distinguishes saved options from applied effects; custom colors never mark a stock preset current. EPUB describes layout and applied versus requested reading preferences.
 
 `bun test` includes a real WebKitGTK palette integration test at three viewport sizes and both appearances. It uses an offscreen GTK view and the installed Python GObject/WebKitGTK 4.1 bindings on Linux with an X display; environments without that tooling report this test as skipped. Native Tauri verification remains separate from this shared-runtime regression test.
 
@@ -55,6 +55,16 @@ Page jump accepts whole page numbers within the document's inclusive range. Reje
 Initial PDF opens are deferred by one microtask so effect replay, unmount, or source replacement can cancel them before PDF.js transfers the source buffer to its worker. React StrictMode and PDF.js workers remain enabled; active loading tasks retain the existing generation checks and teardown.
 
 Run `bun test tests/pdf-open-lifecycle.test.ts` to verify replay and cancellation with real transferable PDF buffers.
+
+## EPUB reading preferences
+
+Open `:` → **Reading preferences…** for Publisher/Serif/Sans, text size (80–200%), line spacing, logical Start/Justify alignment, outer margins and reading-column width. Publisher is the default for every typography/layout field. **Reset typography and layout to Publisher** leaves the independent **Document theme…** choice intact. Root command searches also find individual choices; a chooser stays focused after selection.
+
+Preferences are global to EPUBs, stored in `clio:epub-reading-preferences`, separately from canonical-path CFIs and PDF settings. Reflow preserves the captured CFI; rapid choices retain the latest intent. A storage failure leaves session preferences usable and reports a nonblocking warning. Fixed/mixed-fixed publications retain Publisher presentation; vertical writing retains Publisher typography/geometry. Saved choices remain available for other books.
+
+Text-size percentages use each section's original body size. An explicit size sets ordinary paragraphs to that reading size, including pixel/em/rem declarations; Publisher restores their original differences. The implementation uses epub.js theme APIs and one opt-in stylesheet, not descendant snapshots or inline rewrites. Code, tables, media, declared verse and manual-break/preserved-whitespace blocks are excluded from that paragraph rule. Native probes found API-only absolute-size failures and column overflow with Readium-style zoom; the real WebKit preference regression exercises the selected API/CSS path and exact reset. Arbitrary publisher CSS is not universally normalized.
+
+Eight EPUB document themes are available: Original, Light, Dark, Sepia, Zathura Dark, Gruvbox Dark, Solarized Dark and Rose Pine Dawn. Original removes reader color overrides; transparent Original pages use a white backdrop independent of application chrome. Themes do not invert images or enable publication scripts. See [the interface specification](docs/DESIGN.md) for appearance semantics.
 
 ## EPUB reading positions
 

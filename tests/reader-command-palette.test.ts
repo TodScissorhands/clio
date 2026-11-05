@@ -11,7 +11,7 @@ const probe = process.platform === "linux" && process.env.DISPLAY && python
   ? Bun.spawnSync([python, "-c", "import gi; gi.require_version('WebKit2', '4.1'); from gi.repository import WebKit2"], { stdout: "ignore", stderr: "ignore" })
   : null;
 
-test.skipIf(!probe || probe.exitCode !== 0)("shared palette and keyboard integration in real WebKitGTK", async () => {
+test.skipIf(!probe || probe.exitCode !== 0)("shared palette focus, setting descriptions, disabled execution and keyboard integration in real WebKitGTK", async () => {
   const directory = await mkdtemp(join(tmpdir(), "clio-palette-test-"));
   let server: Server<undefined> | undefined;
   let child: Subprocess<"ignore", "pipe", "pipe"> | undefined;

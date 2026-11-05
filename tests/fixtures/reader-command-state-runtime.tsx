@@ -5,6 +5,8 @@ import { EPUB_READER_COMMANDS, READER_COMMANDS } from "../../src/reader/interact
 import type { ReaderCommandId } from "../../src/reader/interactions";
 import { DEFAULT_RECOLOR_SETTINGS, RECOLOR_PRESETS } from "../../src/pdf/recolor";
 import type { PdfRecolorSettings } from "../../src/pdf/recolor";
+import { epubPreferenceCommands, themeCommands } from "../../src/reader/appearanceCommands";
+import { DEFAULT_EPUB_PREFERENCES } from "../../src/epub/preferences";
 import "../../src/index.css";
 
 declare global {
@@ -70,8 +72,17 @@ const optionCommands = [
 ] as const;
 const fits = ["fit_to_page", "fit_to_page_width", "fit_to_spread"] as const;
 function row(id: ReaderCommandId) {
-  const definition = [...READER_COMMANDS, ...EPUB_READER_COMMANDS].find((command) => command.id === id)!;
-  const result = rows().find((candidate) => candidate.querySelector(".command-label")?.textContent === definition.label);
+  const epub = !!document.querySelector(".epub-reader");
+  const definitions = epub ? [
+    ...EPUB_READER_COMMANDS,
+    ...themeCommands("epub", "original"),
+    ...epubPreferenceCommands(DEFAULT_EPUB_PREFERENCES, DEFAULT_EPUB_PREFERENCES),
+  ] : READER_COMMANDS;
+  const definition = definitions.find((command) => command.id === id)!;
+  const label = epub && (id === "next_page" || id === "previous_page") &&
+    getComputedStyle(document.querySelector(".epub-container")!).overflowY === "scroll"
+    ? id === "next_page" ? "Next screen" : "Previous screen" : definition.label;
+  const result = rows().find((candidate) => candidate.querySelector(".command-label")?.textContent === label);
   check(result, `missing production command row: ${id}`);
   return result!;
 }
@@ -129,6 +140,12 @@ async function execute(id: ReaderCommandId, pointer = false) {
   }
   if (id === "go_to_chapter") {
     await until(() => filter()?.getAttribute("aria-label") === "Filter chapters", "chapter command did not enter destination mode");
+    return;
+  }
+  if (document.querySelector(".epub-reader") && (id === "document_appearance" || id === "epub_reading_preferences" || id === "back_to_commands")) {
+    const label = id === "document_appearance" ? "Filter document themes" : id === "epub_reading_preferences" ? "Filter reading preferences" : "Filter commands";
+    await until(() => filter()?.getAttribute("aria-label") === label, `${id} did not enter its command chooser`);
+    check(document.activeElement === filter(), `${id} lost chooser filter focus`);
     return;
   }
   await until(() => !document.querySelector(".command-palette"), `${id} did not execute and close the palette`);
@@ -465,12 +482,37 @@ async function epubCase(width: number, height: number) {
   await settledEpub();
   await openPalette();
   const layout = paletteLayout();
-  for (const id of ["open_document", "previous_chapter", "next_chapter", "go_to_chapter", "close_document"] as const) {
+  for (const id of ["open_document", "previous_chapter", "next_chapter", "next_page", "previous_page", "go_to_chapter", "close_document"] as const) {
     check(!row(id).querySelector(".command-state"), "EPUB one-shot command incorrectly gained setting state");
   }
   state("paged_layout", true, /current/i);
   state("continuous_layout", false, /not\s+current/i);
   check(row("paged_layout").getAttribute("aria-selected") === "false", "EPUB selection incorrectly follows the current layout");
+  check(/PageDown/.test(row("next_page").querySelector(".command-shortcut")!.textContent!) &&
+    /PageUp/.test(row("previous_page").querySelector(".command-shortcut")!.textContent!), "EPUB page commands omit their unconditional navigation shortcuts");
+  check(!rows().some((option) => option.querySelector(".command-label")?.textContent === "Gruvbox Dark"),
+    "empty EPUB root is flooded with theme choices");
+  await execute("document_appearance", true);
+  state("theme_original", true, /current/i);
+  state("theme_gruvbox_dark", false, /not\s+current/i);
+  await value(filter(), "font");
+  check(rows().length === 0, "theme chooser leaked typography commands");
+  await value(filter(), "");
+  await execute("back_to_commands");
+  await execute("epub_reading_preferences");
+  state("epub_set_font_family", true, /current/i);
+  state("epub_size_publisher", true, /current/i);
+  state("epub_text_larger", false, /publisher/i);
+  await value(filter(), "gruvbox");
+  check(rows().length === 0, "preference chooser leaked document themes");
+  await value(filter(), "");
+  await execute("back_to_commands");
+  await value(filter(), "gruvbox");
+  state("theme_gruvbox_dark", false, /not\s+current/i);
+  await value(filter(), "epub_set_font_family");
+  check(rows().length > 1 && rows().every((option) => option.hasAttribute("aria-describedby")),
+    "root search lost distinct described font choices sharing an action ID");
+  await value(filter(), "");
   await execute("continuous_layout", true);
   await openPalette();
   await until(() => isCurrent("continuous_layout"), "continuous EPUB layout did not update after the real engine reflow");
@@ -478,6 +520,11 @@ async function epubCase(width: number, height: number) {
     "continuous command did not change the actual EPUB engine's scroll presentation");
   state("continuous_layout", true, /current/i);
   state("paged_layout", false, /not\s+current/i);
+  check(/next.*screen/i.test(row("next_page").querySelector(".command-label")!.textContent!) &&
+    /previous.*screen/i.test(row("previous_page").querySelector(".command-label")!.textContent!),
+    "continuous EPUB commands misleadingly describe page turns");
+  check(!/\bj\b|\bk\b/.test(row("next_page").querySelector(".command-shortcut")!.textContent!),
+    "continuous EPUB screen command advertises line-movement keys");
   check(epubText().includes("Feedback EPUB"), "continuous reflow lost the actual EPUB content");
   await settledEpub();
   await excludedStatusWords(["current"]);

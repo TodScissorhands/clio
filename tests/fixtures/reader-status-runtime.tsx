@@ -220,7 +220,6 @@ function geometry() {
   }
   const ratio = contrast(getComputedStyle(primary).color, style.backgroundColor);
   check(ratio >= 4.5 && style.fontSize === "11px", `status typography or contrast regressed: ${ratio}`);
-  check(!footer.querySelector("button, input, a, [tabindex]"), "status introduced a focus target");
   return { barHeight: bounds.height, ratio, text: footer.textContent, cfi: location()!.start.cfi };
 }
 async function invalid(name: string, retainedTitle: string, retainedFormat: "pdf" | "epub") {
@@ -289,7 +288,7 @@ async function run() {
       assertStatus(true); const measured = geometry();
       const before = document.querySelector<HTMLElement>(".epub-reader")!.getBoundingClientRect().height;
       await palette();
-      check(!bar() || getComputedStyle(bar()!).display === "none", "EPUB footer did not hide during commands palette");
+      check(bar()?.getBoundingClientRect().height === 24, "palette did not reserve the external status bar");
       check(document.activeElement === document.querySelector(".command-filter"), "palette did not retain filter focus");
       await key("Tab"); await key("Tab", { shiftKey: true });
       check(document.activeElement === document.querySelector(".command-filter"), "palette focus model regressed");

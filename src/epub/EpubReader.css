@@ -8,13 +8,23 @@
   background: var(--app-bg);
 }
 
+.epub-reader__surface {
+  display: flex;
+  justify-content: center;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
 .epub-reader__viewport {
   position: relative;
+  width: 100%;
+  min-width: 0;
   min-height: 0;
   flex: 1;
   overflow: hidden;
   overflow-anchor: none;
-  background: var(--surface);
+  background: #fff;
 }
 
 .epub-reader__viewport .epub-container {
