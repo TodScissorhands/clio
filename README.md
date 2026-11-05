@@ -64,6 +64,26 @@ Reopening restores the saved passage in paged mode. Paged/continuous switches an
 
 Position updates are debounced by 700 ms. Closing a document or replacing it flushes the latest stable location without waiting for that delay. Browser-selected files have no canonical path and do not persist positions, matching the PDF browser behavior. Abrupt application termination can lose updates that have not finished saving.
 
+## EPUB iframe keyboard lifecycle
+
+Embedded keyboard registrations belong to the current rendition's attached iframe Documents, including retained neighboring sections. Content hooks validate iframe and rendition ownership; a scoped child-list observer releases registrations at the removal microtask after trim, clear or reflow. Per-iframe load handlers also release a superseded Document and register its replacement only when the rendition owns it. No periodic polling or epub.js removal event is required.
+
+Close, replacement and effect cleanup synchronously dispose these registrations. Effect replay seeds still-live content without duplicating listeners. This does not change shortcuts, repeat policy, navigation guards, CFI persistence, sandbox permissions or the known native iframe-focus delivery limitation.
+
+Run `bun test tests/epub-keyboard-lifecycle-runtime.test.ts` for the real patched-epub.js/WebKit lifecycle regression, including historical retention, view removal, reflow, late callbacks, replacement and repeated reopen cycles. As with the other WebKit integration suites, Linux Python GObject/WebKitGTK 4.1 bindings and an X display are required; unsupported environments skip it.
+
+## Native filesystem execution
+
+The PDF/EPUB path, byte-read and reading-position commands are asynchronous Tauri handlers. Canonicalization, synchronous filesystem calls, JSON processing and position-lock acquisition run through `tauri::async_runtime::spawn_blocking`, not on the native application thread or async executor. Document bytes still use raw IPC responses; command names and payloads are unchanged.
+
+Position workers own a clone of one managed `Arc<Mutex<()>>`. The lock covers each complete store read or read/modify/temporary-write/rename transaction; no mutex guard crosses an await. The existing `reading-positions.json` format, canonical-path keys, unknown-record preservation and malformed-CFI handling are unchanged. Filesystem/validation errors retain their string errors; worker join failures reject with `Native I/O worker failed: …`.
+
+Await a save before a dependent load or save when ordering matters. Overlapping workers serialize in mutex-acquisition order, not invocation order; the last serialized write for a path wins. Existing EPUB per-path save/load ordering remains in place. The mutex is process-local, not a cross-process file lock.
+
+`cargo test --manifest-path src-tauri/Cargo.toml` covers path validation, raw bytes, compatible mixed records, overlapping real filesystem transactions, document replacement and worker errors. Native H01 verification additionally exercised the GTK picker, both reader lifecycles, position restoration, invalid replacement recovery and palette/feedback. A bounded delayed-read comparison confirmed native resize/input and independent IPC can proceed while a filesystem worker waits.
+
+This removes one native-thread blocking source, not PDF.js/epub.js or JavaScript rendering stalls. The historical intermittent freeze has not been reproduced or established as fixed. Existing PDF saves remain debounced by 700 ms; closing before a pending save finishes can lose that unsaved position.
+
 
 ## Search performance
 

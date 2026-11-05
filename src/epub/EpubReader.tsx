@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { NavItem, Rendition } from "epubjs";
 import type { EpubBook } from "./engine";
 import { createEpubPositionSession, epubLocationCfi, resolveEpubCfi } from "./readingPosition";
+import { attachEpubKeyboard } from "./iframeKeyboard";
 import {
   filterReaderCommands,
   useReaderKeyboard,
@@ -412,32 +413,7 @@ export function EpubReader({ book, path, onClose, onOpenDocument }: EpubReaderPr
     });
     resizeObserver.observe(viewport);
 
-    const keyboardCleanups = new Map<Document, () => void>();
-    const getFrameDocument = (source: unknown): Document | null => {
-      if (!source || typeof source !== "object") return null;
-      const content = "contents" in source ? source.contents : source;
-      if (!content || typeof content !== "object" || !("document" in content)) return null;
-      const candidate = content.document;
-      if (!candidate || typeof candidate !== "object" || !("addEventListener" in candidate) ||
-        typeof candidate.addEventListener !== "function" || !("removeEventListener" in candidate) ||
-        typeof candidate.removeEventListener !== "function") return null;
-      return candidate as Document;
-    };
-    const registerFrameDocument = (frameDocument: Document | null) => {
-      if (!frameDocument) return;
-      frameDocument.documentElement.style.overflowAnchor = "none";
-      if (frameDocument.body) frameDocument.body.style.overflowAnchor = "none";
-      if (!keyboardCleanups.has(frameDocument)) {
-        keyboardCleanups.set(frameDocument, registerKeyboardTarget(frameDocument));
-      }
-    };
-    const onContent = (contents: unknown) => registerFrameDocument(getFrameDocument(contents));
-    const onRemoved = (_section: unknown, view: unknown) => {
-      const frameDocument = getFrameDocument(view);
-      if (!frameDocument) return;
-      keyboardCleanups.get(frameDocument)?.();
-      keyboardCleanups.delete(frameDocument);
-    };
+    const disposeKeyboard = attachEpubKeyboard(rendition, viewport, registerKeyboardTarget);
     const onRelocated = (location: unknown) => {
       if (!location || typeof location !== "object" || !("start" in location)) return;
       const start = location.start;
@@ -446,8 +422,6 @@ export function EpubReader({ book, path, onClose, onOpenDocument }: EpubReaderPr
       }
       if (active && initialDisplayReadyRef.current) position.update(epubLocationCfi(book, location));
     };
-    rendition.hooks.content.register(onContent);
-    rendition.on("removed", onRemoved);
     rendition.on("relocated", onRelocated);
 
     void book.loaded.navigation
@@ -525,11 +499,8 @@ export function EpubReader({ book, path, onClose, onOpenDocument }: EpubReaderPr
       resizeSchedulerRef.current = () => {};
       changeLayoutRef.current = () => {};
       window.removeEventListener("pagehide", onPageHide);
-      rendition.hooks.content.deregister(onContent);
-      rendition.off("removed", onRemoved);
+      disposeKeyboard();
       rendition.off("relocated", onRelocated);
-      keyboardCleanups.forEach((cleanup) => cleanup());
-      keyboardCleanups.clear();
       deferBookDestroy();
     };
   }, [book, path, registerKeyboardTarget]);

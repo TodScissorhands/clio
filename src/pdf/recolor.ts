@@ -32,6 +32,11 @@ export type NormalizedRect = {
   maxY: number;
 };
 
+export type CpuRecolorOptions = {
+  signal?: AbortSignal;
+  isCurrent?: () => boolean;
+};
+
 export const RECOLOR_WEIGHTS = [0.30, 0.59, 0.11] as const;
 
 export const RECOLOR_PRESETS: Record<PdfRecolorPresetId, PdfRecolorPreset> = {
@@ -284,15 +289,171 @@ export function recolorImageDataCpu(
       continue;
     }
 
-    const r = data[offset] / 255;
-    const g = data[offset + 1] / 255;
-    const b = data[offset + 2] / 255;
+    recolorPixelInPlace(data, offset, dark, light, keephue, adjustLightness);
+  }
+}
 
-    const [outR, outG, outB] = recolorPixelZathura([r, g, b], dark, light, keephue, adjustLightness);
+function recolorPixelInPlace(
+  data: Uint8ClampedArray,
+  offset: number,
+  dark: [number, number, number],
+  light: [number, number, number],
+  keephue: boolean,
+  adjustLightness: boolean,
+): void {
+  const r = data[offset] / 255;
+  const g = data[offset + 1] / 255;
+  const b = data[offset + 2] / 255;
+  const [outR, outG, outB] = recolorPixelZathura([r, g, b], dark, light, keephue, adjustLightness);
+  data[offset] = Math.round(outR * 255);
+  data[offset + 1] = Math.round(outG * 255);
+  data[offset + 2] = Math.round(outB * 255);
+}
 
-    data[offset] = Math.round(outR * 255);
-    data[offset + 1] = Math.round(outG * 255);
-    data[offset + 2] = Math.round(outB * 255);
+/** Synchronous hot loop; only its two cursors survive cooperative checkpoints. */
+class CpuRecolorProcessor {
+  private idx = 0;
+  private rectIndex = 0;
+
+  constructor(
+    private readonly data: Uint8ClampedArray,
+    private readonly width: number,
+    private readonly height: number,
+    private readonly dark: [number, number, number],
+    private readonly light: [number, number, number],
+    private readonly keephue: boolean,
+    private readonly adjustLightness: boolean,
+    private readonly imageRects: NormalizedRect[],
+    private readonly numRects: number,
+  ) {}
+
+  process(units: number): number {
+    const { data, width, height, dark, light, keephue, adjustLightness, imageRects, numRects } = this;
+    const pixelCount = width * height;
+    let idx = this.idx;
+    let rectIndex = this.rectIndex;
+    if (numRects === 0) {
+      const pixelEnd = Math.min(pixelCount, idx + units);
+      for (; idx < pixelEnd; idx += 1) {
+        recolorPixelInPlace(data, idx * 4, dark, light, keephue, adjustLightness);
+      }
+    } else {
+      let remaining = units;
+      let u = (idx % width) / width;
+      let v = Math.floor(idx / width) / height;
+      while (remaining > 0 && idx < pixelCount) {
+        const rectEnd = Math.min(numRects, rectIndex + remaining);
+        const rectStart = rectIndex;
+        let insideImage = false;
+        // A large rectangle list can stop at any comparison. Matching or
+        // exhausting the list always finishes the pixel in this same batch.
+        for (; rectIndex < rectEnd; rectIndex += 1) {
+          const rect = imageRects[rectIndex];
+          if (u >= rect.minX && u <= rect.maxX && v >= rect.minY && v <= rect.maxY) {
+            insideImage = true;
+            rectIndex += 1;
+            break;
+          }
+        }
+        remaining -= rectIndex - rectStart;
+        if (!insideImage && rectIndex < numRects) break;
+        if (!insideImage) {
+          recolorPixelInPlace(data, idx * 4, dark, light, keephue, adjustLightness);
+        }
+        // Finishing a pixel may exceed the comparison budget by one unit.
+        remaining -= 1;
+        idx += 1;
+        rectIndex = 0;
+        u = (idx % width) / width;
+        v = Math.floor(idx / width) / height;
+      }
+    }
+    this.idx = idx;
+    this.rectIndex = rectIndex;
+    return idx;
+  }
+}
+
+/**
+ * Mutates only the caller-owned pixel buffer. A false result must be discarded.
+ * Both pixels and rectangle comparisons count toward the cooperative work budget.
+ */
+export async function recolorImageDataCpuCooperative(
+  data: Uint8ClampedArray,
+  width: number,
+  height: number,
+  dark: [number, number, number],
+  light: [number, number, number],
+  keephue: boolean,
+  adjustLightness: boolean,
+  reverseVideo: boolean,
+  imageRects: NormalizedRect[],
+  options: CpuRecolorOptions = {},
+): Promise<boolean> {
+  const isCurrent = () => !options.signal?.aborted && (options.isCurrent?.() ?? true);
+  if (!isCurrent()) return false;
+
+  let channel: MessageChannel | undefined;
+  let resume: ((current: boolean) => void) | undefined;
+  const abort = () => {
+    if (channel) {
+      channel.port1.onmessage = null;
+      channel.port1.close();
+      channel.port2.close();
+      channel = undefined;
+    }
+    const pending = resume;
+    resume = undefined;
+    pending?.(false);
+  };
+  // The frontend targets ES2020, so Promise.withResolvers is not available.
+  const yieldToTask = () => new Promise<boolean>((resolve) => {
+    resume = resolve;
+    if (!channel) {
+      channel = new MessageChannel();
+      channel.port1.onmessage = () => {
+        const pending = resume;
+        resume = undefined;
+        pending?.(true);
+      };
+    }
+    channel.port2.postMessage(null);
+    if (options.signal?.aborted) abort();
+  });
+  options.signal?.addEventListener("abort", abort, { once: true });
+
+  const pixelCount = width * height;
+  const processor = new CpuRecolorProcessor(
+    data, width, height, dark, light, keephue, adjustLightness, imageRects,
+    reverseVideo ? imageRects.length : 0,
+  );
+  let idx = 0;
+  let batchUnits = 128;
+
+  try {
+    while (idx < pixelCount) {
+      if (!isCurrent()) return false;
+      const chunkStarted = performance.now();
+      let batchFinished: number;
+      do {
+        const batchStarted = performance.now();
+        idx = processor.process(batchUnits);
+        batchFinished = performance.now();
+        const elapsed = batchFinished - batchStarted;
+        // Aim for ~1ms clock/checkpoint intervals, growing conservatively from
+        // a small first batch. No single rectangle list can bypass a checkpoint.
+        batchUnits = Math.max(16, Math.min(65536, Math.round(
+          elapsed > 0 ? batchUnits * Math.min(2, 1 / elapsed) : batchUnits * 2,
+        )));
+        if (!isCurrent()) return false;
+      } while (idx < pixelCount && batchFinished - chunkStarted < 7);
+
+      if (idx < pixelCount && !await yieldToTask()) return false;
+    }
+    return isCurrent();
+  } finally {
+    options.signal?.removeEventListener("abort", abort);
+    abort();
   }
 }
 
@@ -498,9 +659,14 @@ export class RecolorShaderRenderer {
     targetCanvas: HTMLCanvasElement,
     settings: PdfRecolorSettings,
     imageRects: NormalizedRect[] = [],
-  ): boolean {
+    options: CpuRecolorOptions = {},
+  ): boolean | Promise<boolean> {
     const { width, height } = sourceCanvas;
-    if (width === 0 || height === 0) return false;
+    const isCurrent = () => !options.signal?.aborted
+      && (options.isCurrent?.() ?? true)
+      && sourceCanvas.width === width && sourceCanvas.height === height
+      && targetCanvas.width === width && targetCanvas.height === height;
+    if (width === 0 || height === 0 || !isCurrent()) return false;
 
     const dark = parseHexColor(settings.recolorDarkcolor);
     const light = parseHexColor(settings.recolorLightcolor);
@@ -547,7 +713,7 @@ export class RecolorShaderRenderer {
         gl.drawArrays(gl.TRIANGLES, 0, 6);
 
         const targetCtx = targetCanvas.getContext("2d");
-        if (targetCtx) {
+        if (targetCtx && isCurrent()) {
           targetCtx.drawImage(this.canvas, 0, 0);
           return true;
         }
@@ -556,25 +722,46 @@ export class RecolorShaderRenderer {
       }
     }
 
-    // CPU fallback
-    const srcCtx = sourceCanvas.getContext("2d");
-    const targetCtx = targetCanvas.getContext("2d");
-    if (!srcCtx || !targetCtx) return false;
+    return this.renderCpu(sourceCanvas, targetCanvas, settings, imageRects, dark, light, width, height, {
+      signal: options.signal,
+      isCurrent,
+    });
+  }
 
-    const imgData = srcCtx.getImageData(0, 0, width, height);
-    recolorImageDataCpu(
-      imgData.data,
-      width,
-      height,
-      dark,
-      light,
-      settings.recolorKeephue,
-      settings.recolorAdjustLightness,
-      settings.recolorReverseVideo,
-      imageRects,
-    );
-    targetCtx.putImageData(imgData, 0, 0);
-    return true;
+  private async renderCpu(
+    sourceCanvas: HTMLCanvasElement,
+    targetCanvas: HTMLCanvasElement,
+    settings: PdfRecolorSettings,
+    imageRects: NormalizedRect[],
+    dark: [number, number, number],
+    light: [number, number, number],
+    width: number,
+    height: number,
+    options: CpuRecolorOptions & { isCurrent: () => boolean },
+  ): Promise<boolean> {
+    let imgData: ImageData | null = null;
+    let srcCtx: CanvasRenderingContext2D | null = null;
+    let targetCtx: CanvasRenderingContext2D | null = null;
+    try {
+      if (options.signal?.aborted || !options.isCurrent()) return false;
+      srcCtx = sourceCanvas.getContext("2d");
+      targetCtx = targetCanvas.getContext("2d");
+      if (!srcCtx || !targetCtx || options.signal?.aborted || !options.isCurrent()) return false;
+
+      imgData = srcCtx.getImageData(0, 0, width, height);
+      const complete = await recolorImageDataCpuCooperative(
+        imgData.data, width, height, dark, light,
+        settings.recolorKeephue, settings.recolorAdjustLightness,
+        settings.recolorReverseVideo, imageRects, options,
+      );
+      if (!complete || options.signal?.aborted || !options.isCurrent()) return false;
+      targetCtx.putImageData(imgData, 0, 0);
+      return true;
+    } finally {
+      imgData = null;
+      srcCtx = null;
+      targetCtx = null;
+    }
   }
 }
 
