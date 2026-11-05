@@ -1,0 +1,35 @@
+.status-bar {
+  position: fixed;
+  z-index: 2;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 24px;
+  padding: 0 12px;
+  background: #000;
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.status-document {
+  display: flex;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.status-page {
+  flex: 0 0 auto;
+}
+
+@media (max-width: 960px) {
+  .status-bar {
+    gap: 9px;
+    padding: 0 8px;
+  }
+}

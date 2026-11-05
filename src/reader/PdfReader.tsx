@@ -1,13 +1,12 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { createPdfLoadingTask, getPdfPageSizes, pdfErrorMessage } from "../pdf/engine";
-import type { PdfDocument, PdfLoadingTask } from "../pdf/engine";
+import { preparePdfDocument, pdfErrorMessage } from "../pdf/engine";
+import type { PdfDocument, PdfLoadingTask, PdfReaderOpenRequest } from "../pdf/engine";
 import { PdfViewerSurface } from "../pdf/PdfViewerSurface";
 import type { PdfViewerHandle } from "../pdf/PdfViewerSurface";
 import { normalizeSearchQuery, usePdfSearch } from "../pdf/search";
 import type { SearchMatch } from "../pdf/search";
 import { loadReadingPosition } from "../platform/readingPosition";
 import type { ReadingPosition } from "../platform/readingPosition";
-import type { ReaderFileSource } from "../platform/tauriReaderFiles";
 import {
   computeSvgColorMatrix,
   isValidHexColor,
@@ -45,9 +44,9 @@ import { getPdfCommandStates } from "./commandState";
 import { deferPdfOpen } from "./deferPdfOpen";
 import { useReadingPosition } from "./useReadingPosition";
 import "./Reader.css";
+import "./ReaderStatus.css";
 
 
-type PdfReaderSource = Extract<ReaderFileSource, { kind: "pdf" }>;
 type ZoomPoint = { x: number; y: number };
 type ZoomAnchor = {
   pageIndices: number[];
@@ -74,12 +73,16 @@ export function PdfReader({
   onOpenDocument,
   initialSource,
   onInitialSourceConsumed,
+  onDocumentChange,
+  openGeneration,
 }: {
   nightMode: boolean;
   onToggleNightMode: () => void;
   onOpenDocument: (restoreFocus?: () => void) => void;
-  initialSource: PdfReaderSource | null;
-  onInitialSourceConsumed: () => void;
+  initialSource: PdfReaderOpenRequest | null;
+  onInitialSourceConsumed: (request: PdfReaderOpenRequest) => void;
+  onDocumentChange: (name: string | null) => void;
+  openGeneration: number;
 }) {
 
   const [documentPath, setDocumentPath] = useState<string | null>(null);
@@ -124,7 +127,12 @@ export function PdfReader({
   const pendingWheelZoomRef = useRef<{ direction: -1 | 1; point: ZoomPoint } | null>(null);
   const pageNumberRef = useRef(1);
   const loadingTaskRef = useRef<PdfLoadingTask | null>(null);
+  const committedTaskRef = useRef<PdfLoadingTask | null>(null);
+  const ownedTasksRef = useRef(new Set<PdfLoadingTask>());
   const generationRef = useRef(0);
+  const openGenerationRef = useRef(openGeneration);
+  openGenerationRef.current = openGeneration;
+  const pendingOpenRef = useRef<{ generation: number; localGeneration: number } | null>(null);
   const totalPages = document?.numPages ?? 0;
   pageNumberRef.current = pageNumber;
 
@@ -318,42 +326,72 @@ export function PdfReader({
     return () => window.removeEventListener("focus", restoreReaderFocus);
   }, [overlay, focusReader]);
 
+  const releaseTask = useCallback(async (task: PdfLoadingTask | null) => {
+    if (!task || !ownedTasksRef.current.delete(task)) return;
+    try { await task.destroy(); } catch { /* Already destroyed. */ }
+  }, []);
+
   useEffect(() => () => {
     generationRef.current += 1;
-    void loadingTaskRef.current?.destroy();
-  }, []);
-  const openPdfSource = useCallback(async (source: PdfReaderSource) => {
-    if (!source.name.toLowerCase().endsWith(".pdf")) {
-      setError("Choose a file with a .pdf extension.");
-      return;
-    }
-    const generation = ++generationRef.current;
-    search.cancelSearch();
-    const previousTask = loadingTaskRef.current;
     loadingTaskRef.current = null;
+    committedTaskRef.current = null;
+    pendingOpenRef.current = null;
+    for (const task of ownedTasksRef.current) void releaseTask(task);
+  }, [releaseTask]);
+  useEffect(() => {
+    const pending = pendingOpenRef.current;
+    if (!pending || pending.generation === openGeneration) return;
+    generationRef.current += 1;
+    pendingOpenRef.current = null;
+    if (loadingTaskRef.current !== committedTaskRef.current) void releaseTask(loadingTaskRef.current);
+    loadingTaskRef.current = committedTaskRef.current;
+    setLoading(false);
+  }, [openGeneration, releaseTask]);
+  const openPdfSource = useCallback(async (request: PdfReaderOpenRequest) => {
+    if (request.generation !== openGenerationRef.current) return;
+    const { source } = request;
+    const generation = ++generationRef.current;
+    const isCurrent = () => generation === generationRef.current
+      && request.generation === openGenerationRef.current;
+    pendingOpenRef.current = { generation: request.generation, localGeneration: generation };
+    search.cancelSearch();
+    const previousTask = committedTaskRef.current;
+    if (loadingTaskRef.current !== previousTask) void releaseTask(loadingTaskRef.current);
+    loadingTaskRef.current = previousTask;
     setLoading(true);
     setError("");
     let replacementTask: PdfLoadingTask | null = null;
-    try {
-      const task = createPdfLoadingTask(source.bytes);
+    const takeTask = (task: PdfLoadingTask) => {
       replacementTask = task;
+      ownedTasksRef.current.add(task);
       loadingTaskRef.current = task;
-      const pdf = await task.promise;
-      const sizes = await getPdfPageSizes(pdf, () => generation === generationRef.current);
-      if (!sizes) {
-        await task.destroy();
+    };
+    // Claim a prepared task synchronously, before awaiting restoration or parsing.
+    if (request.prepared) takeTask(request.prepared.task);
+    try {
+      const prepared = request.prepared ?? await preparePdfDocument(
+        source.bytes,
+        isCurrent,
+        takeTask,
+      );
+      if (!prepared) {
+        if (isCurrent()) loadingTaskRef.current = previousTask;
+        await releaseTask(replacementTask);
         return;
       }
+      const { task, pdf, sizes } = prepared;
       let restoredPosition: ReadingPosition | null = null;
       if (source.path) {
         try {
           restoredPosition = await loadReadingPosition(source.path);
         } catch (cause) {
-          setError(`Could not restore reading position: ${pdfErrorMessage(cause)}`);
+          if (isCurrent()) {
+            setError(`Could not restore reading position: ${pdfErrorMessage(cause)}`);
+          }
         }
       }
-      if (generation !== generationRef.current) {
-        await task.destroy();
+      if (!isCurrent()) {
+        await releaseTask(task);
         return;
       }
       const restoredPage = restoredPosition
@@ -363,6 +401,7 @@ export function PdfReader({
         ? Math.max(0, Math.min(1, restoredPosition.offset))
         : 0;
       loadingTaskRef.current = task;
+      committedTaskRef.current = task;
       queueRestoration(source.path ? { page: restoredPage, offset: restoredOffset } : null);
       setPageNumber(restoredPage);
       setDocumentPath(source.path);
@@ -370,32 +409,39 @@ export function PdfReader({
       scrollAnchorRef.current = null;
       zoomAnchorRef.current = null;
       setDocument(pdf);
+      onDocumentChange(source.name);
       setPageSizes(sizes);
       setZoomState({ mode: "fit-page" });
       setContinuousScrolling(false);
       search.clear();
-      if (previousTask && previousTask !== task) {
-        try { await previousTask.destroy(); } catch { /* Already destroyed. */ }
-      }
+      if (previousTask && previousTask !== task) await releaseTask(previousTask);
     } catch (cause) {
-      if (generation === generationRef.current) {
+      await releaseTask(replacementTask);
+      if (isCurrent()) {
         loadingTaskRef.current = previousTask;
-        if (replacementTask && replacementTask !== previousTask) {
-          void replacementTask.destroy().catch(() => undefined);
-        }
         setError(`Could not open "${source.name}": ${pdfErrorMessage(cause)}`);
       }
     } finally {
-      if (generation === generationRef.current) setLoading(false);
+      if (isCurrent()) {
+        if (pendingOpenRef.current?.localGeneration === generation) pendingOpenRef.current = null;
+        setLoading(false);
+      }
     }
-  }, []);
+  }, [onDocumentChange, queueRestoration, releaseTask, search.cancelSearch, search.clear]);
 
 
   useEffect(() => {
     if (!initialSource) return;
     return deferPdfOpen(() => {
-      void openPdfSource(initialSource).finally(focusReader);
-      onInitialSourceConsumed();
+      if (initialSource.generation !== openGenerationRef.current) return;
+      const opening = openPdfSource(initialSource);
+      const generation = generationRef.current;
+      void opening.finally(() => {
+        if (generation === generationRef.current && initialSource.generation === openGenerationRef.current) {
+          focusReader();
+        }
+      });
+      onInitialSourceConsumed(initialSource);
     });
   }, [focusReader, initialSource, onInitialSourceConsumed, openPdfSource]);
 
@@ -406,9 +452,11 @@ export function PdfReader({
     search.clear();
     const activeTask = loadingTaskRef.current;
     loadingTaskRef.current = null;
+    committedTaskRef.current = null;
     pdfViewerRef.current?.setDocument(null);
-    if (activeTask) void activeTask.destroy().catch(() => undefined);
+    void releaseTask(activeTask);
     setDocument(null);
+    onDocumentChange(null);
     setDocumentPath(null);
     setPageNumber(1);
     pageNumberRef.current = 1;
@@ -427,7 +475,7 @@ export function PdfReader({
     scrollAnchorRef.current = null;
     zoomAnchorRef.current = null;
     queueRestoration(null);
-  }, [loading, queueRestoration, search.cancelSearch, search.clear]);
+  }, [loading, onDocumentChange, queueRestoration, releaseTask, search.cancelSearch, search.clear]);
 
   const goToPage = useCallback((page: number) => {
     if (!totalPages || !Number.isInteger(page)) return;
