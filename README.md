@@ -70,6 +70,8 @@ Embedded keyboard registrations belong to the current rendition's attached ifram
 
 Close, replacement and effect cleanup synchronously dispose these registrations. Effect replay seeds still-live content without duplicating listeners. This does not change shortcuts, repeat policy, navigation guards, CFI persistence, sandbox permissions or the known native iframe-focus delivery limitation.
 
+Task 09C1 confirmed that WebKitGTK 2.52.6 suppresses embedded JavaScript event listeners under the existing script-disabled sandbox. A deferred host-focus workaround restores shortcuts but breaks copying after selection; it is not shipped. See [EPUB keyboard-focus investigation](docs/epub-keyboard-focus.md) for native evidence, acceptance failures and the bounded native-widget alternative. Content-focused keyboard reliability remains unresolved.
+
 Run `bun test tests/epub-keyboard-lifecycle-runtime.test.ts` for the real patched-epub.js/WebKit lifecycle regression, including historical retention, view removal, reflow, late callbacks, replacement and repeated reopen cycles. As with the other WebKit integration suites, Linux Python GObject/WebKitGTK 4.1 bindings and an X display are required; unsupported environments skip it.
 
 ## Native filesystem execution
