@@ -74,6 +74,10 @@ Text-size percentages use each section's original body size. An explicit size se
 
 EPUB Original removes reader color overrides; transparent Original pages use a white backdrop independent of application chrome. Themes do not invert images or enable publication scripts. See [the interface specification](docs/DESIGN.md) for appearance semantics.
 
+## EPUB wheel input
+
+Continuous mode retains native scrolling. A paged wheel prototype was rejected: WebKitGTK retargeted events lose pressed-button state, and synchronous embedded CSS state can lag queued input. The candidate could turn a page during a primary-button hold before text selection existed. No paged wheel policy, Ctrl+Wheel font gesture, focus workaround or sandbox change ships. See [native wheel evidence and limitations](docs/epub-wheel-input.md).
+
 ## EPUB reading positions
 
 Native EPUBs save a debounced EPUB CFI in the same app-data `reading-positions.json` file used for PDFs, keyed by canonical file path. Different paths have independent positions; moving or renaming a file gives it a new identity.
