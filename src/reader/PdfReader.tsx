@@ -15,7 +15,7 @@ import {
   saveRecolorSettings,
 } from "../pdf/recolor";
 import type { PdfRecolorSettings } from "../pdf/recolor";
-import { applyPdfTheme, getPdfThemeState } from "../pdf/appearance";
+import { applyPdfTheme, getPdfSearchAppearance, getPdfThemeState } from "../pdf/appearance";
 import { DOCUMENT_THEMES } from "./appearance";
 import { commandTheme, pdfAdvancedAppearanceCommands, searchableReaderCommands, themeCommands } from "./appearanceCommands";
 import {
@@ -185,6 +185,7 @@ export function PdfReader({
     return stablePages;
   }, [matches]);
   const appearance = getPdfThemeState(recolorSettings);
+  const searchAppearance = useMemo(() => getPdfSearchAppearance(recolorSettings), [recolorSettings]);
   const themeLabel = DOCUMENT_THEMES.find((theme) => theme.id === appearance.effective)?.label ?? "Custom";
   const themes = themeCommands("pdf", appearance.effective, appearance.saved, "Saved — recoloring off");
   const advancedAppearance = pdfAdvancedAppearanceCommands();
@@ -1028,7 +1029,11 @@ export function PdfReader({
         className="reader-layout"
         data-recolor={recolorSettings.recolor ? "true" : "false"}
         data-recolor-mode={recolorSettings.recolorKeephue || recolorSettings.recolorReverseVideo ? "pixel" : "svg"}
-        style={recolorSettings.recolor ? { "--recolor-light-color": recolorSettings.recolorLightcolor } as React.CSSProperties : undefined}
+        style={{
+          "--recolor-light-color": recolorSettings.recolor ? recolorSettings.recolorLightcolor : undefined,
+          "--pdf-search-boundary": searchAppearance.boundary,
+          "--pdf-search-fill": searchAppearance.fill,
+        } as React.CSSProperties}
       >
         <div
           className="document-viewport"
@@ -1137,6 +1142,12 @@ export function PdfReader({
               />
             </>}
             {loading && <span className="status-loading">Opening PDF…</span>}
+            {overlay === null && <button className="status-commands" aria-label="Open reader commands (:)" onClick={() => {
+              setPaletteMode("commands");
+              setCommandQuery("");
+              setCommandIndex(0);
+              setOverlay("commands");
+            }}>Commands :</button>}
           </footer>
           {overlay === "commands" && <ReaderCommandPalette
             commands={visibleCommands}

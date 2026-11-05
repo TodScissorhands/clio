@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { DOCUMENT_THEMES } from "../src/reader/appearance";
-import { applyPdfTheme, getPdfThemeState } from "../src/pdf/appearance";
+import { applyPdfTheme, getPdfSearchAppearance, getPdfThemeState } from "../src/pdf/appearance";
 import {
   DEFAULT_RECOLOR_SETTINGS,
   loadRecolorSettings,
@@ -313,5 +313,35 @@ describe("PDF appearance persistence compatibility", () => {
         expect(getPdfThemeState(loadRecolorSettings()).effective).toBe("custom");
       });
     }
+  });
+});
+
+describe("PDF search boundary appearance", () => {
+  const luminance = (hex: string) => {
+    const channels = parseHexColor(hex).map((value) => value <= .04045 ? value / 12.92 : ((value + .055) / 1.055) ** 2.4);
+    return channels[0]! * .2126 + channels[1]! * .7152 + channels[2]! * .0722;
+  };
+  const contrast = (a: string, b: string) => {
+    const low = Math.min(luminance(a), luminance(b));
+    const high = Math.max(luminance(a), luminance(b));
+    return (high + .05) / (low + .05);
+  };
+  test("selects a ≥3:1 boundary for all stock surfaces and custom midtone boundaries", () => {
+    const settings = [
+      ...DOCUMENT_THEMES.map((theme) => applyPdfTheme(custom, theme.id)),
+      ...["#757575", "#767676", "#777777", "#00FF00", "#FF00FF", "#FFFF00"].map((background) => ({ ...custom, recolorLightcolor: background })),
+    ];
+    for (const setting of settings) {
+      const background = setting.recolor ? setting.recolorLightcolor : "#FFFFFF";
+      const appearance = getPdfSearchAppearance(setting);
+      const ratio = contrast(appearance.boundary, background);
+      expect(ratio).toBeGreaterThanOrEqual(3);
+      expect(ratio).toBeGreaterThanOrEqual(Math.max(contrast("#000000", background), contrast("#FFFFFF", background)) - 1e-9);
+    }
+  });
+  test("Original uses the native white surface, not the disabled saved dark pair or chrome", () => {
+    const dark = applyPdfTheme(custom, "dark");
+    expect(getPdfSearchAppearance(dark).boundary).toBe("#FFFFFF");
+    expect(getPdfSearchAppearance(applyPdfTheme(dark, "original")).boundary).toBe("#000000");
   });
 });

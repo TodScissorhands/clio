@@ -220,6 +220,12 @@ function geometry() {
   }
   const ratio = contrast(getComputedStyle(primary).color, style.backgroundColor);
   check(ratio >= 4.5 && style.fontSize === "11px", `status typography or contrast regressed: ${ratio}`);
+  const commands = footer.querySelector<HTMLButtonElement>(".status-commands")!;
+  check(commands?.getAttribute("aria-label") === "Open reader commands (:)", "status lacks an accessible commands entry");
+  const button = commands.getBoundingClientRect();
+  check(button.height === 24 && button.left >= bounds.left && button.right <= bounds.right, "commands target escapes the reserved status bar");
+  check(footer.querySelector(".status-document")!.getBoundingClientRect().right <= button.left, "commands target overlaps reading location");
+  check(contrast(getComputedStyle(commands).color, style.backgroundColor) >= 4.5, "commands entry lacks readable contrast");
   return { barHeight: bounds.height, ratio, text: footer.textContent, cfi: location()!.start.cfi };
 }
 async function invalid(name: string, retainedTitle: string, retainedFormat: "pdf" | "epub") {
@@ -284,10 +290,14 @@ async function run() {
   for (const dark of [false, true]) {
     app.appearance(dark); await settle();
     for (const [width, height] of [[420, 600], [1000, 700], [1440, 800]]) {
+      const focusBeforeResize = document.activeElement;
       await resize(width!, height!); await readyEpub();
+      check(document.activeElement === focusBeforeResize, "status/resize updates stole keyboard focus");
       assertStatus(true); const measured = geometry();
       const before = document.querySelector<HTMLElement>(".epub-reader")!.getBoundingClientRect().height;
-      await palette();
+      bar()!.querySelector<HTMLButtonElement>(".status-commands")!.click();
+      await until(() => document.querySelector(".command-filter"), "commands entry did not open the real palette");
+      check(!bar()!.querySelector(".status-commands"), "commands entry remains focusable behind the palette");
       check(bar()?.getBoundingClientRect().height === 24, "palette did not reserve the external status bar");
       check(document.activeElement === document.querySelector(".command-filter"), "palette did not retain filter focus");
       await key("Tab"); await key("Tab", { shiftKey: true });

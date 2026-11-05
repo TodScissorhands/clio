@@ -11,7 +11,10 @@ const probe = process.platform === "linux" && process.env.DISPLAY && python
   ? Bun.spawnSync([python, "-c", "import gi; gi.require_version('WebKit2', '4.1'); from gi.repository import WebKit2"], { stdout: "ignore", stderr: "ignore" })
   : null;
 
-test.skipIf(!probe || probe.exitCode !== 0)("live PDF and EPUB command settings in real WebKitGTK", async () => {
+test.skipIf(!probe || probe.exitCode !== 0).each([
+  { label: "live PDF and EPUB command settings in real WebKitGTK", appearanceOnly: false },
+  { label: "PDF legacy persistence and Original restoration in real WebKitGTK", appearanceOnly: true },
+])("$label", async ({ appearanceOnly }) => {
   const directory = await mkdtemp(join(tmpdir(), "clio-command-state-test-"));
   let server: Server<undefined> | undefined;
   let child: Subprocess<"ignore", "pipe", "pipe"> | undefined;
@@ -52,7 +55,7 @@ test.skipIf(!probe || probe.exitCode !== 0)("live PDF and EPUB command settings 
         return asset === undefined ? new Response(null, { status: 404 }) : new Response(asset, { headers: { "content-type": type } });
       },
     });
-    child = Bun.spawn([python!, join(import.meta.dir, "fixtures/run-palette-webkit.py"), `http://127.0.0.1:${server.port}/`], {
+    child = Bun.spawn([python!, join(import.meta.dir, "fixtures/run-palette-webkit.py"), `http://127.0.0.1:${server.port}/${appearanceOnly ? "?appearance=1" : ""}`], {
       env: { ...process.env, GDK_BACKEND: "x11" }, stdout: "pipe", stderr: "pipe",
     });
     const [stdout, stderr, exitCode] = await Promise.all([
@@ -61,11 +64,13 @@ test.skipIf(!probe || probe.exitCode !== 0)("live PDF and EPUB command settings 
     if (exitCode !== 0) throw new Error(`WebKit command-state regression failed:\n${stdout}\n${stderr}`);
     const result = JSON.parse(stdout);
     expect(result.passed).toBe(true);
-    expect(result.cases.map((entry: { width: number; height: number; dark: boolean }) => [entry.width, entry.height, entry.dark])).toEqual([
-      [420, 600, false], [1000, 700, false], [1440, 800, false],
-      [420, 600, true], [1000, 700, true], [1440, 800, true],
-    ]);
-    console.info("WebKit command-state results:", JSON.stringify(result));
+    if (!appearanceOnly) {
+      expect(result.cases.map((entry: { width: number; height: number; dark: boolean }) => [entry.width, entry.height, entry.dark])).toEqual([
+        [420, 600, false], [1000, 700, false], [1440, 800, false],
+        [420, 600, true], [1000, 700, true], [1440, 800, true],
+      ]);
+    }
+    console.info(`WebKit ${appearanceOnly ? "appearance persistence" : "command-state"} results:`, JSON.stringify(result));
   } finally {
     child?.kill();
     server?.stop(true);

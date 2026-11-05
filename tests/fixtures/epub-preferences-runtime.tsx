@@ -38,8 +38,15 @@ let app: Access;
 let rendition: Rendition;
 let book: EpubBook;
 let serial = 0;
+let openingFeedback: { busy: string | null; message: string } | null = null;
 window.__preferencesApp = (value) => { app = value; };
-window.__preferencesRendition = (value, owner) => { rendition = value; book = owner; serial += 1; };
+window.__preferencesRendition = (value, owner) => {
+  rendition = value; book = owner; serial += 1;
+  openingFeedback = {
+    busy: document.querySelector('[aria-label="EPUB reading area"]')?.getAttribute("aria-busy") ?? null,
+    message: document.querySelector('.epub-status [role="status"]')?.textContent ?? "",
+  };
+};
 window.__preferencesPositions = new Map();
 const coverage: string[] = [];
 const geometries: object[] = [];
@@ -87,6 +94,7 @@ async function open(name = "preferences.epub", path: string | null = "/canonical
   const bytes = new Uint8Array(await (await fetch(`/__fixtures/${name}`)).arrayBuffer());
   await app.open({ kind: "epub", bytes, name, path });
   await until(() => serial > previous, "replacement did not create rendition");
+  check(openingFeedback?.busy === "true" && /Opening EPUB/i.test(openingFeedback.message), "initial EPUB display lacks busy state and loading feedback");
   await ready();
 }
 async function close() {
@@ -156,8 +164,10 @@ async function run() {
     for (let index = 0; index < 3; index += 1) await choose("epub_text_smaller");
     await applied("24px");
     check(stored().fontScale === 120, "latest typography intent lost");
+    const fullWidth = document.querySelector(".epub-reader__viewport")!.getBoundingClientRect().width;
     await choose("Reading column: Comfortable"); await choose("Margins: Comfortable");
-    await until(() => document.querySelector<HTMLElement>('.epub-reader__viewport')!.style.maxWidth === "44rem", "column preference not applied outside iframe");
+    await until(() => document.querySelector(".epub-reader__viewport")!.getBoundingClientRect().width < fullWidth,
+      "comfortable column did not reduce the rendered reading width");
     for (const theme of DOCUMENT_THEMES) {
       await choose(`theme_${theme.id.replace(/-/g, "_")}`);
       await until(() => stored().theme === theme.id, "theme did not persist");
@@ -184,11 +194,16 @@ async function run() {
     coverage.push(continuous ? "continuous-typography-reset-anchor" : "paged-typography-reset-anchor");
   }
   coverage.push("absolute-and-inline-css-exception", "protected-content-and-style-collision", "rapid-preferences-latest-wins", "eight-independent-themes");
-  await command("Font: Sans"); await choose("epub_text_larger"); await choose("epub_text_larger"); await applied("24px"); await dismiss();
+  await command("Font: Sans"); await choose("epub_text_larger"); await choose("epub_text_larger");
+  await choose("Reading column: Comfortable"); await choose("Margins: Comfortable");
+  await applied("24px"); await dismiss();
   const savedAnchor = first().cfiFromNode(first().document.getElementById("p20")!);
   await rendition.display(savedAnchor); await settle();
+  const savedWidth = document.querySelector(".epub-reader__viewport")!.getBoundingClientRect().width;
   await close(); await open(); await applied("24px");
   check(anchorVisible(savedAnchor), "CFI reopening lost the saved passage");
+  check(document.querySelector(".epub-reader__viewport")!.getBoundingClientRect().width === savedWidth,
+    "reopening lost saved rendered reading width");
   coverage.push("cfi-reopen-and-preference-persistence");
   for (const name of ["fixed.epub", "mixed.epub", "vertical.epub"]) {
     await open(name, `/canonical/${name}`);

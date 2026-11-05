@@ -614,7 +614,8 @@ export function EpubReader({ book, path, onClose, onOpenDocument, nightMode, onT
         navigationInFlightRef.current += 1;
         let displayReady = false;
         try {
-          await rendition.started;
+          // started resolves before attachTo(); saved geometry needs the attached stage.
+          await rendition.q.enqueue(() => undefined);
           const metadata = await book.loaded.metadata;
           if (!active) return;
           fixedLayout = metadata.layout === "pre-paginated" || rendition.settings.layout === "pre-paginated" ||
@@ -711,6 +712,7 @@ export function EpubReader({ book, path, onClose, onOpenDocument, nightMode, onT
           <span className="epub-status__chapter" title={status.label}>{status.label}</span>
           {status.page !== null && <span className="epub-status__detail"> · Page {status.page} / {status.total} in section</span>}
         </span>
+        {overlay === null && <button className="status-commands" aria-label="Open reader commands (:)" onClick={openCommandPalette}>Commands :</button>}
       </footer>
       {overlay === "commands" && <ReaderCommandPalette
         commands={visibleCommands}

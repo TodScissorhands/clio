@@ -1,6 +1,6 @@
 import { DOCUMENT_THEMES } from "../reader/appearance";
 import type { ReaderThemeId } from "../reader/appearance";
-import { isValidHexColor, normalizeHexColor, RECOLOR_PRESETS } from "./recolor";
+import { isValidHexColor, normalizeHexColor, parseHexColor, RECOLOR_PRESETS } from "./recolor";
 import type { PdfRecolorSettings } from "./recolor";
 
 export function applyPdfTheme(settings: PdfRecolorSettings, theme: ReaderThemeId): PdfRecolorSettings {
@@ -33,4 +33,15 @@ export function getPdfThemeState(settings: PdfRecolorSettings): {
     saved,
     advanced: settings.recolorKeephue || settings.recolorReverseVideo || settings.recolorAdjustLightness,
   };
+}
+
+/** Higher-contrast boundary on a uniform effective page; image content can vary. */
+export function getPdfSearchAppearance(settings: PdfRecolorSettings): { boundary: string; fill: string } {
+  const [r, g, b] = parseHexColor(settings.recolor ? settings.recolorLightcolor : "#FFFFFF");
+  const linear = (channel: number) => channel <= .04045 ? channel / 12.92 : ((channel + .055) / 1.055) ** 2.4;
+  const luminance = linear(r) * .2126 + linear(g) * .7152 + linear(b) * .0722;
+  const darkBoundary = (luminance + .05) / .05 >= 1.05 / (luminance + .05);
+  return darkBoundary
+    ? { boundary: "#000000", fill: "255 255 255" }
+    : { boundary: "#FFFFFF", fill: "0 0 0" };
 }

@@ -17,6 +17,8 @@ Clio is a keyboard-first PDF and EPUB reader built with Tauri, React, PDF.js and
 
 The PDF/EPUB palette keeps focus in its filter. Arrow keys select an option and reveal it inside the list; `Enter` executes it. Pointer movement selects a row and clicking executes that row. `Tab` and `Shift+Tab` stay in the palette; `Esc` closes it and returns focus to the reader.
 
+The trailing **Commands :** status-bar button opens the same palette in either reader, including the closed reader. It is hidden while another overlay/input is active. This is an explicit command entry point, not automatic recovery of sandboxed EPUB keyboard input.
+
 Command searches accept readable phrases such as `zoom in` and `fit to page width`, original identifiers such as `zoom_in`, and shortcut text. Chapter searches use titles and destination paths, not the shared `select_chapter` action ID. Unmatched chapter queries show “No matching chapters.”
 
 State-bearing commands show a checkmark and a short setting description, separate from the highlighted command selected by the keyboard. Descriptions are exposed to assistive technology and do not participate in filtering. Ordinary actions and chapter destinations have no setting marker.
@@ -68,7 +70,7 @@ For PDF, **Original** disables recoloring without discarding the saved theme, cu
 
 Open `:` → **Reading preferences…** for Publisher/Serif/Sans, text size (80–200%), line spacing, logical Start/Justify alignment, outer margins and reading-column width. Publisher is the default for every typography/layout field. **Reset typography and layout to Publisher** leaves the independent **Document theme…** choice intact. Root command searches also find individual choices; a chooser stays focused after selection.
 
-Preferences are global to EPUBs, stored in `clio:epub-reading-preferences`, separately from canonical-path CFIs and PDF settings. Reflow preserves the captured CFI; rapid choices retain the latest intent. A storage failure leaves session preferences usable and reports a nonblocking warning. Fixed/mixed-fixed publications retain Publisher presentation; vertical writing retains Publisher typography/geometry. Saved choices remain available for other books.
+Preferences are global to EPUBs, stored in `clio:epub-reading-preferences`, separately from canonical-path CFIs and PDF settings. Saved geometry waits for rendition stage attachment. Reflow preserves the captured CFI; rapid choices retain the latest intent. A storage failure leaves session preferences usable and reports a nonblocking warning. Fixed/mixed-fixed publications retain Publisher presentation; vertical writing retains Publisher typography/geometry. Saved choices remain available for other books.
 
 Text-size percentages use each section's original body size. An explicit size sets ordinary paragraphs to that reading size, including pixel/em/rem declarations; Publisher restores their original differences. The implementation uses epub.js theme APIs and one opt-in stylesheet, not descendant snapshots or inline rewrites. Code, tables, media, declared verse and manual-break/preserved-whitespace blocks are excluded from that paragraph rule. Native probes found API-only absolute-size failures and column overflow with Readium-style zoom; the real WebKit preference regression exercises the selected API/CSS path and exact reset. Arbitrary publisher CSS is not universally normalized.
 
@@ -112,6 +114,8 @@ This removes one native-thread blocking source, not PDF.js/epub.js or JavaScript
 ## Search performance
 
 Search caches normalized text and source-offset mappings per PDF page for the lifetime of the in-memory document. First search still extracts every page; later queries reuse that index. To benchmark a generated 400-page PDF or an existing PDF, run `bun scripts/benchmark-pdf-search.ts [path/to/file.pdf]`.
+
+PDF matches use a high-contrast black/white boundary chosen from the effective document background. The active match has a thicker solid outline; other matches use a thinner dashed outline, with restrained translucent fills. This does not change search geometry, navigation or recoloring pixels. Stock/uniform backgrounds are checked; scanned/image-heavy pages and arbitrary custom palettes remain content-dependent.
 
 ## Dependency patch
 

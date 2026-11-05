@@ -731,7 +731,11 @@ async function run() {
   state("recolor_toggle_adjust_lightness", true, /\bon\b/i);
   check(savedSettings().activePreset === "zathura-dark" && savedSettings().recolorLightcolor === "#123456", "opening a stale stock setting repaired persisted preferences");
   await closePalette();
-  await appearancePersistence();
+  if (new URLSearchParams(location.search).has("appearance")) {
+    await appearancePersistence();
+    bridge({ passed: true, coverage: ["legacy-persistence", "fresh-Original-r-settings-and-rendered-pixels"] });
+    return;
+  }
   const cases: RuntimeCase[] = [];
   for (const dark of [false, true]) {
     if (!document.querySelector(".pdfViewer .page")) {

@@ -27,6 +27,29 @@
   flex: 0 0 auto;
 }
 
+.status-commands {
+  flex: 0 0 auto;
+  height: 24px;
+  margin-left: auto;
+  padding: 0 4px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  line-height: 24px;
+  cursor: pointer;
+}
+
+.status-commands:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.status-commands:focus-visible {
+  outline: 1px solid currentColor;
+  outline-offset: -3px;
+}
+
 @media (max-width: 960px) {
   .status-bar {
     gap: 9px;

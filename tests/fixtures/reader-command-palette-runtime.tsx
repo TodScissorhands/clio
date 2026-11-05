@@ -205,11 +205,6 @@ async function run() {
     checkVisible();
     await resize(width!, height!);
     checkVisible();
-    list.scrollTop = 10;
-    const pointerRow = list.children[1]!;
-    pointerRow.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, movementY: 1 }));
-    await settle();
-    check(list.scrollTop === 10, "pointer selection overrode ordinary list scrolling");
     await query("fit to page");
     checkActive(); checkVisible();
     await key("ArrowDown");
@@ -302,6 +297,13 @@ async function run() {
     const chapterBounds = chapterList.getBoundingClientRect();
     check(tall.top <= chapterBounds.top + 1 && tall.bottom >= chapterBounds.bottom - 1,
       "oversized active row must retain its visible portion");
+    chapterList.scrollTop = 10;
+    const pointerScroll = chapterList.scrollTop;
+    check(pointerScroll > 0, "chapter fixture must exercise an actually scrolled list");
+    chapterList.children[1]!.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, movementY: 1 }));
+    await settle();
+    check(selected() === chapterList.children[1], "pointer movement did not select its hovered chapter");
+    check(chapterList.scrollTop === pointerScroll, "pointer selection overrode ordinary list scrolling");
     for (let n = 0; n < chapters.length; n++) await key("ArrowDown");
     check(selected().textContent!.includes("Destination 36"), "last chapter is unreachable");
     checkVisible(); checkActive();

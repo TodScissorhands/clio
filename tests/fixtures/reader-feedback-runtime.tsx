@@ -1,6 +1,8 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "../../src/App";
+import { DOCUMENT_THEMES } from "../../src/reader/appearance";
+import { parseHexColor } from "../../src/pdf/recolor";
 import "../../src/index.css";
 
 declare global {
@@ -81,6 +83,12 @@ function statusLayout(input?: HTMLInputElement) {
   const info = document.querySelector<HTMLElement>(".status-page")!;
   check(info.getBoundingClientRect().width <= document.querySelector<HTMLElement>(".status-document")!.clientWidth + 1,
     "essential page information was clipped before optional metadata");
+  const commands = bar.querySelector<HTMLButtonElement>(".status-commands");
+  check(Boolean(commands) === !bar.dataset.overlay, "commands entry competes with an active status input");
+  if (commands) {
+    const button = commands.getBoundingClientRect();
+    check(button.height === 24 && info.getBoundingClientRect().right <= button.left, "commands entry overlaps essential page information");
+  }
   if (input) {
     check(document.activeElement === input && !input.disabled, "active status input lost focus or editability");
     const style = getComputedStyle(input);
@@ -101,6 +109,27 @@ function contrast(foreground: string, background: string) {
   };
   const [low, high] = [luminance(foreground), luminance(background)].sort((a, b) => a - b);
   return (high! + .05) / (low! + .05);
+}
+function searchPresentation(foreground?: string) {
+  const active = document.querySelector<HTMLElement>(".pdfjs-search-highlight.is-active")!;
+  const inactive = document.querySelector<HTMLElement>(".pdfjs-search-highlight:not(.is-active)")!;
+  check(active && inactive, "real search did not render active/inactive match rectangles");
+  const selected = getComputedStyle(active), ordinary = getComputedStyle(inactive);
+  const background = getComputedStyle(document.querySelector(".pdfViewer .page")!).backgroundColor;
+  check(selected.outlineStyle === "solid" && ordinary.outlineStyle === "dashed" &&
+    parseFloat(selected.outlineWidth) > parseFloat(ordinary.outlineWidth) && parseFloat(ordinary.outlineWidth) > 0,
+    `active search match lacks structural distinction: ${selected.outline} / ${ordinary.outline}`);
+  const ratio = contrast(selected.outlineColor, background);
+  check(ratio >= 3 && contrast(ordinary.outlineColor, background) >= 3, "search match boundaries disappear against the page theme");
+  const fill = selected.backgroundColor.match(/[\d.]+/g)!.map(Number);
+  check(fill.length === 4 && fill[3]! > 0 && fill[3]! < 1, "search fill is not translucent");
+  if (foreground) {
+    const composite = (channels: number[]) => `rgb(${channels.map((channel, index) => Math.round(channel * (1 - fill[3]!) + fill[index]! * fill[3]!)).join(", ")})`;
+    const ink = parseHexColor(foreground).map((channel) => channel * 255);
+    const paper = background.match(/[\d.]+/g)!.slice(0, 3).map(Number);
+    check(contrast(composite(ink), composite(paper)) >= 4.5, "match fill degrades controlled stock text contrast");
+  }
+  return { ratio, active: selected.outline, inactive: ordinary.outline, fill: selected.backgroundColor };
 }
 function errorPresentation() {
   const banner = document.querySelector<HTMLElement>(".error-banner")!;
@@ -134,6 +163,9 @@ async function run() {
   await resize(420, 600);
   statusLayout();
   check(document.querySelector(".status-page")!.textContent!.includes("Ctrl+O"), "empty reader lost opening feedback");
+  document.querySelector<HTMLButtonElement>(".status-commands")!.click();
+  await until(() => document.activeElement?.classList.contains("command-filter"), "closed reader commands entry did not focus the palette");
+  await key("Escape"); check(readerFocused(), "closed reader commands Escape did not restore focus");
   await openFile("feedback.pdf");
   await until(() => document.querySelector(".loading-indicator"), "real PDF loading state was not observed");
   for (const dark of [false, true]) {
@@ -148,6 +180,7 @@ async function run() {
   await until(() => !document.querySelector(".loading-indicator") && document.querySelector(".pdfViewer .textLayer"), "PDF did not finish opening");
   const cases: object[] = [];
   const errorRatios: object[] = [];
+  const searchThemes: object[] = [];
   for (const dark of [false, true]) {
     if (!document.querySelector(".pdfViewer .page")) {
       await openFile("feedback.pdf");
@@ -163,6 +196,19 @@ async function run() {
       await value(search, "needle"); await key("Enter");
       await until(() => document.querySelector(".search-status")?.textContent?.includes("/ 2280 matches"), "search match feedback did not finish");
       const searchLayout = statusLayout(search);
+      searchPresentation();
+      if (width === 420) {
+        await key("Escape");
+        for (const theme of DOCUMENT_THEMES) {
+          await command(`theme_${theme.id.replace(/-/g, "_")}`);
+          searchThemes.push({ theme: theme.id, dark, ...searchPresentation(theme.foreground ?? "#000000") });
+        }
+        await command("recolor_set_lightcolor");
+        await value(document.querySelector<HTMLInputElement>('[aria-label="Background hex color"]')!, "#EFE7D8"); await key("Enter");
+        searchThemes.push({ theme: "custom", dark, ...searchPresentation() });
+        await command("theme_sepia");
+        await key("f", { ctrlKey: true });
+      }
       const count = document.querySelector<HTMLElement>(".search-status")!;
       check(count.scrollWidth <= count.clientWidth + 1, "search count was sacrificed before optional preset metadata");
       const preset = document.querySelector<HTMLElement>(".status-preset")!;
@@ -237,6 +283,6 @@ async function run() {
     await command("Close document");
     await until(() => document.querySelector(".document-viewport"), "EPUB close did not return to the empty PDF reader");
   }
-  bridge({ passed: true, cases, errorRatios });
+  bridge({ passed: true, cases, errorRatios, searchThemes });
 }
 void run().catch((error: unknown) => bridge({ passed: false, error: String(error), stack: error instanceof Error ? error.stack : undefined }));

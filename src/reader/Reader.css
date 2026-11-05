@@ -123,12 +123,13 @@
 .pdfjs-search-highlight {
   position: absolute;
   border-radius: 1px;
-  background: rgb(73 106 150 / 28%);
+  background: rgb(var(--pdf-search-fill, 255 255 255) / 1.5%);
+  outline: 1px dashed var(--pdf-search-boundary, #000);
 }
 
 .pdfjs-search-highlight.is-active {
-  background: rgb(222 166 50 / 48%);
-  outline: 1px solid rgb(73 106 150 / 75%);
+  background: rgb(var(--pdf-search-fill, 255 255 255) / 3%);
+  outline: 2px solid var(--pdf-search-boundary, #000);
 }
 
 
