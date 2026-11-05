@@ -12,10 +12,12 @@ import {
   isValidHexColor,
   loadRecolorSettings,
   normalizeHexColor,
-  RECOLOR_PRESETS,
   saveRecolorSettings,
 } from "../pdf/recolor";
-import type { PdfRecolorPresetId, PdfRecolorSettings } from "../pdf/recolor";
+import type { PdfRecolorSettings } from "../pdf/recolor";
+import { applyPdfTheme, getPdfThemeState } from "../pdf/appearance";
+import { DOCUMENT_THEMES } from "./appearance";
+import { commandTheme, pdfAdvancedAppearanceCommands, searchableReaderCommands, themeCommands } from "./appearanceCommands";
 import {
   calculateFitScale,
   getCenterPreservingScrollDelta,
@@ -35,6 +37,7 @@ import {
 import type { PageSize, RectBounds, ViewMode, ViewportSize, ZoomState } from "./layout";
 import {
   filterReaderCommands,
+  READER_COMMANDS,
   useReaderKeyboard,
 } from "./interactions";
 import type { PdfPanDirection, PdfZoomOverflow, ReaderCommandId, ReaderOverlay } from "./interactions";
@@ -103,6 +106,7 @@ export function PdfReader({
   const jumpRangeId = useId();
   const [commandQuery, setCommandQuery] = useState("");
   const [commandIndex, setCommandIndex] = useState(0);
+  const [paletteMode, setPaletteMode] = useState<"commands" | "themes" | "advanced-appearance">("commands");
   const [recolorSettings, setRecolorSettings] = useState<PdfRecolorSettings>(() => loadRecolorSettings());
   const [customColorTarget, setCustomColorTarget] = useState<"light" | "dark" | null>(null);
   const [colorInput, setColorInput] = useState("");
@@ -180,7 +184,13 @@ export function PdfReader({
     matchesByPageRef.current = stablePages;
     return stablePages;
   }, [matches]);
-  const visibleCommands = filterReaderCommands(commandQuery, document !== null && !loading);
+  const appearance = getPdfThemeState(recolorSettings);
+  const themeLabel = DOCUMENT_THEMES.find((theme) => theme.id === appearance.effective)?.label ?? "Custom";
+  const themes = themeCommands("pdf", appearance.effective, appearance.saved, "Saved — recoloring off");
+  const advancedAppearance = pdfAdvancedAppearanceCommands();
+  const visibleCommands = filterReaderCommands(commandQuery, document !== null && !loading, "pdf",
+    paletteMode === "themes" ? themes : paletteMode === "advanced-appearance" ? advancedAppearance
+      : searchableReaderCommands(READER_COMMANDS, [themes, advancedAppearance], commandQuery));
   const effectiveViewMode: ViewMode = viewMode === "spread" &&
     viewerSize.width >= MIN_SPREAD_PAGE_WIDTH * 2 + SPREAD_GAP ? "spread" : "single";
   const commandStates = useMemo(() => getPdfCommandStates({
@@ -819,6 +829,15 @@ export function PdfReader({
   }, [captureScrollAnchor]);
 
   const runReaderCommand = useCallback((command: ReaderCommandId) => {
+    const theme = commandTheme(command);
+    if (theme) {
+      setRecolorSettings((current) => {
+        const next = applyPdfTheme(current, theme);
+        saveRecolorSettings(next);
+        return next;
+      });
+      return;
+    }
     switch (command) {
       case "open_document":
         onOpenDocument(focusReader);
@@ -892,35 +911,6 @@ export function PdfReader({
           return next;
         });
         break;
-      case "recolor_preset_original":
-        setRecolorSettings((current) => {
-          const next = { ...current, recolor: false, activePreset: "original" as const };
-          saveRecolorSettings(next);
-          return next;
-        });
-        break;
-      case "recolor_preset_zathura_dark":
-      case "recolor_preset_gruvbox_dark":
-      case "recolor_preset_solarized_dark":
-      case "recolor_preset_rose_pine_dawn":
-      case "recolor_preset_sepia_warm": {
-        const presetId = command.replace("recolor_preset_", "").replace(/_/g, "-") as PdfRecolorPresetId;
-        const preset = RECOLOR_PRESETS[presetId];
-        if (preset) {
-          setRecolorSettings((current) => {
-            const next = {
-              ...current,
-              recolor: true,
-              activePreset: presetId,
-              recolorLightcolor: preset.lightColor,
-              recolorDarkcolor: preset.darkColor,
-            };
-            saveRecolorSettings(next);
-            return next;
-          });
-        }
-        break;
-      }
       case "recolor_toggle_keephue":
         setRecolorSettings((current) => {
           const next = { ...current, recolorKeephue: !current.recolorKeephue };
@@ -958,6 +948,18 @@ export function PdfReader({
   }, [search.moveMatch, totalPages, goToPage, effectiveViewMode, handleZoomChange, restoreFitWidth, changeViewMode, captureScrollAnchor, onToggleNightMode, onOpenDocument, closeDocument, document, recolorSettings]);
 
   const executePaletteCommand = useCallback((command: ReaderCommand) => {
+    if (command.disabled) return;
+    if (command.id === "document_appearance" || command.id === "pdf_advanced_appearance" || command.id === "back_to_commands") {
+      setPaletteMode(command.id === "document_appearance" ? "themes" : command.id === "pdf_advanced_appearance" ? "advanced-appearance" : "commands");
+      setCommandQuery("");
+      setCommandIndex(0);
+      return;
+    }
+    if (commandTheme(command.id) || command.id === "toggle_recolor" || command.id.startsWith("recolor_toggle_")) {
+      runReaderCommand(command.id);
+      return;
+    }
+    setPaletteMode("commands");
     setOverlay(null);
     runReaderCommand(command.id);
     if (command.id !== "open_document" && command.id !== "search" && command.id !== "goto_page_with_page_number" && command.id !== "recolor_set_lightcolor" && command.id !== "recolor_set_darkcolor") {
@@ -967,6 +969,7 @@ export function PdfReader({
 
   const closeOverlay = useCallback(() => {
     setOverlay(null);
+    setPaletteMode("commands");
     requestAnimationFrame(() => viewerRef.current?.focus());
   }, []);
 
@@ -1000,7 +1003,10 @@ export function PdfReader({
       scrollPdfContinuous,
       setCommandQuery,
       setCommandIndex,
-      setOverlay,
+      setOverlay: (next) => {
+        if (next === "commands") setPaletteMode("commands");
+        setOverlay(next);
+      },
     },
   );
 
@@ -1052,11 +1058,11 @@ export function PdfReader({
             onPageRendered={handlePageRendered}
             recolorSettings={recolorSettings}
           />
-          {overlay !== "commands" && <footer className="status-bar" data-overlay={overlay ?? undefined} aria-live="polite">
+          <footer className="status-bar" data-overlay={overlay ?? undefined} aria-live="polite">
             <span className="status-document">
               <span className="status-page">{document ? `Page ${pageNumber} / ${totalPages}` : "Ctrl+O Open PDF or EPUB"}</span>
-              {recolorSettings.recolor && <span className="status-preset" title={RECOLOR_PRESETS[recolorSettings.activePreset]?.label ?? "Recolor"}>
-                · {RECOLOR_PRESETS[recolorSettings.activePreset]?.label ?? "Recolor"}
+              {recolorSettings.recolor && <span className="status-preset" title={themeLabel}>
+                · {themeLabel}
               </span>}
             </span>
             {overlay === "search" && <>
@@ -1131,12 +1137,14 @@ export function PdfReader({
               />
             </>}
             {loading && <span className="status-loading">Opening PDF…</span>}
-          </footer>}
+          </footer>
           {overlay === "commands" && <ReaderCommandPalette
             commands={visibleCommands}
             commandStates={commandStates}
             commandIndex={commandIndex}
             query={commandQuery}
+            placeholder={paletteMode === "themes" ? "Filter document themes" : paletteMode === "advanced-appearance" ? "Filter advanced PDF appearance" : "Filter commands"}
+            ariaLabel={paletteMode === "themes" ? "Document themes" : paletteMode === "advanced-appearance" ? "Advanced PDF appearance" : "Reader commands"}
             onQueryChange={setCommandQuery}
             onCommandIndexChange={setCommandIndex}
             onExecute={executePaletteCommand}

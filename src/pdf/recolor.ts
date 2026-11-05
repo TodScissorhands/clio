@@ -1,5 +1,10 @@
+import { DOCUMENT_THEMES } from "../reader/appearance";
+import type { ReaderThemeId } from "../reader/appearance";
+
 export type PdfRecolorPresetId =
   | "original"
+  | "light"
+  | "dark"
   | "zathura-dark"
   | "gruvbox-dark"
   | "solarized-dark"
@@ -39,6 +44,17 @@ export type CpuRecolorOptions = {
 
 export const RECOLOR_WEIGHTS = [0.30, 0.59, 0.11] as const;
 
+function stockPreset(themeId: Exclude<ReaderThemeId, "original">): PdfRecolorPreset {
+  const theme = DOCUMENT_THEMES.find((candidate) => candidate.id === themeId)!;
+  return {
+    id: themeId === "sepia" ? "sepia-warm" : themeId,
+    label: theme.label,
+    lightColor: theme.background!,
+    darkColor: theme.foreground!,
+    recolor: true,
+  };
+}
+
 export const RECOLOR_PRESETS: Record<PdfRecolorPresetId, PdfRecolorPreset> = {
   original: {
     id: "original",
@@ -47,41 +63,13 @@ export const RECOLOR_PRESETS: Record<PdfRecolorPresetId, PdfRecolorPreset> = {
     darkColor: "#000000",
     recolor: false,
   },
-  "zathura-dark": {
-    id: "zathura-dark",
-    label: "Zathura Dark",
-    lightColor: "#14161B",
-    darkColor: "#DCD7BA",
-    recolor: true,
-  },
-  "gruvbox-dark": {
-    id: "gruvbox-dark",
-    label: "Gruvbox Dark",
-    lightColor: "#282828",
-    darkColor: "#EBDBB2",
-    recolor: true,
-  },
-  "solarized-dark": {
-    id: "solarized-dark",
-    label: "Solarized Dark",
-    lightColor: "#002B36",
-    darkColor: "#839496",
-    recolor: true,
-  },
-  "rose-pine-dawn": {
-    id: "rose-pine-dawn",
-    label: "Rose Pine Dawn",
-    lightColor: "#FAF4ED",
-    darkColor: "#575279",
-    recolor: true,
-  },
-  "sepia-warm": {
-    id: "sepia-warm",
-    label: "Sepia Warm",
-    lightColor: "#FBF0D9",
-    darkColor: "#3C3836",
-    recolor: true,
-  },
+  light: stockPreset("light"),
+  dark: stockPreset("dark"),
+  "zathura-dark": stockPreset("zathura-dark"),
+  "gruvbox-dark": stockPreset("gruvbox-dark"),
+  "solarized-dark": stockPreset("solarized-dark"),
+  "rose-pine-dawn": stockPreset("rose-pine-dawn"),
+  "sepia-warm": stockPreset("sepia"),
   custom: {
     id: "custom",
     label: "Custom",
@@ -768,26 +756,31 @@ export class RecolorShaderRenderer {
 const STORAGE_KEY = "clio:pdf-recolor-settings";
 
 export function loadRecolorSettings(): PdfRecolorSettings {
-  if (typeof window === "undefined" || !window.localStorage) {
-    return { ...DEFAULT_RECOLOR_SETTINGS };
-  }
+  if (typeof window === "undefined") return { ...DEFAULT_RECOLOR_SETTINGS };
   try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
+    const raw = window.localStorage?.getItem(STORAGE_KEY);
     if (!raw) return { ...DEFAULT_RECOLOR_SETTINGS };
-    const parsed = JSON.parse(raw) as Partial<PdfRecolorSettings>;
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      return { ...DEFAULT_RECOLOR_SETTINGS };
+    }
+    const value = parsed as Record<string, unknown>;
     return {
-      recolor: typeof parsed.recolor === "boolean" ? parsed.recolor : DEFAULT_RECOLOR_SETTINGS.recolor,
-      recolorLightcolor: isValidHexColor(parsed.recolorLightcolor ?? "")
-        ? normalizeHexColor(parsed.recolorLightcolor!)
+      recolor: typeof value.recolor === "boolean" ? value.recolor : DEFAULT_RECOLOR_SETTINGS.recolor,
+      recolorLightcolor: typeof value.recolorLightcolor === "string" && isValidHexColor(value.recolorLightcolor)
+        ? normalizeHexColor(value.recolorLightcolor)
         : DEFAULT_RECOLOR_SETTINGS.recolorLightcolor,
-      recolorDarkcolor: isValidHexColor(parsed.recolorDarkcolor ?? "")
-        ? normalizeHexColor(parsed.recolorDarkcolor!)
+      recolorDarkcolor: typeof value.recolorDarkcolor === "string" && isValidHexColor(value.recolorDarkcolor)
+        ? normalizeHexColor(value.recolorDarkcolor)
         : DEFAULT_RECOLOR_SETTINGS.recolorDarkcolor,
-      recolorKeephue: Boolean(parsed.recolorKeephue),
-      recolorReverseVideo: Boolean(parsed.recolorReverseVideo),
-      recolorAdjustLightness: Boolean(parsed.recolorAdjustLightness),
-      activePreset: (parsed.activePreset && parsed.activePreset in RECOLOR_PRESETS)
-        ? parsed.activePreset
+      recolorKeephue: typeof value.recolorKeephue === "boolean"
+        ? value.recolorKeephue : DEFAULT_RECOLOR_SETTINGS.recolorKeephue,
+      recolorReverseVideo: typeof value.recolorReverseVideo === "boolean"
+        ? value.recolorReverseVideo : DEFAULT_RECOLOR_SETTINGS.recolorReverseVideo,
+      recolorAdjustLightness: typeof value.recolorAdjustLightness === "boolean"
+        ? value.recolorAdjustLightness : DEFAULT_RECOLOR_SETTINGS.recolorAdjustLightness,
+      activePreset: typeof value.activePreset === "string" && Object.prototype.hasOwnProperty.call(RECOLOR_PRESETS, value.activePreset)
+        ? value.activePreset as PdfRecolorPresetId
         : DEFAULT_RECOLOR_SETTINGS.activePreset,
     };
   } catch {
@@ -796,9 +789,9 @@ export function loadRecolorSettings(): PdfRecolorSettings {
 }
 
 export function saveRecolorSettings(settings: PdfRecolorSettings): void {
-  if (typeof window === "undefined" || !window.localStorage) return;
+  if (typeof window === "undefined") return;
   try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
+    window.localStorage?.setItem(STORAGE_KEY, JSON.stringify(settings));
   } catch {
     // ignore quota/security exceptions in private browsing
   }

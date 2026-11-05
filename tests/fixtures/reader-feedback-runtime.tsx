@@ -54,6 +54,11 @@ async function command(query: string) {
   await value(document.querySelector<HTMLInputElement>(".command-filter")!, query);
   check(document.querySelectorAll('[role="option"]').length === 1, `command query must identify one action: ${query}`);
   await key("Enter");
+  if (query.startsWith("theme_")) {
+    check(document.activeElement === document.querySelector(".command-filter"), "theme selection lost filter focus");
+    await key("Escape");
+    check(readerFocused(), "theme chooser Escape did not restore reader focus");
+  }
 }
 function page() {
   return Number(document.querySelector(".status-page")!.textContent!.match(/Page (\d+)/)![1]);
@@ -149,7 +154,7 @@ async function run() {
       await until(() => document.querySelector(".pdfViewer .textLayer"), "replacement PDF did not render");
     }
     if (document.querySelector<HTMLElement>(".clio-app")!.dataset.nightMode !== String(dark)) await key("i");
-    await command("recolor_preset_sepia_warm");
+    await command("theme_sepia");
     for (const [width, height] of [[420, 600], [1000, 700], [1440, 800]]) {
       await resize(width!, height!);
       statusLayout();

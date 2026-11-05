@@ -82,3 +82,15 @@ export function searchableReaderCommands(root: ReaderCommand[], catalogs: Reader
     return true;
   });
 }
+
+export function pdfAdvancedAppearanceCommands(): ReaderCommand[] {
+  return [
+    { id: "back_to_commands", shortcut: "", label: "Back to commands" },
+    { id: "toggle_recolor", shortcut: "r", label: "Toggle saved document colors" },
+    { id: "recolor_toggle_keephue", shortcut: "", label: "Toggle hue preservation (recolor-keephue)" },
+    { id: "recolor_toggle_reverse_video", shortcut: "", label: "Toggle image preservation (recolor-reverse-video)" },
+    { id: "recolor_toggle_adjust_lightness", shortcut: "", label: "Toggle lightness adjustment (recolor-adjust-lightness)" },
+    { id: "recolor_set_lightcolor", shortcut: "", label: "Set recolor background color (hex)…" },
+    { id: "recolor_set_darkcolor", shortcut: "", label: "Set recolor foreground color (hex)…" },
+  ];
+}

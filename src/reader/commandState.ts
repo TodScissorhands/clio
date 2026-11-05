@@ -1,4 +1,7 @@
-import { normalizeHexColor, RECOLOR_PRESETS } from "../pdf/recolor";
+import { normalizeHexColor } from "../pdf/recolor";
+import { getPdfThemeState } from "../pdf/appearance";
+import { DOCUMENT_THEMES } from "./appearance";
+import { themeCommandId } from "./appearanceCommands";
 import type { PdfRecolorSettings } from "../pdf/recolor";
 import type { ReaderCommandId } from "./interactions";
 import type { ViewMode, ZoomState } from "./layout";
@@ -27,11 +30,9 @@ export function getPdfCommandStates(state: {
   const fitState = (mode: ZoomState["mode"]): CommandState => zoomMode === "manual"
     ? { active: false, text: "Not current — custom zoom" }
     : current(zoomMode === mode);
-  const preset = RECOLOR_PRESETS[recolorSettings.activePreset];
-  const lightColor = normalizeHexColor(recolorSettings.recolorLightcolor);
-  const darkColor = normalizeHexColor(recolorSettings.recolorDarkcolor);
-  const matchingStock = preset.id !== "original" && preset.id !== "custom" &&
-    lightColor === preset.lightColor && darkColor === preset.darkColor;
+  const appearance = getPdfThemeState(recolorSettings);
+  const savedLabel = DOCUMENT_THEMES.find((theme) => theme.id === appearance.saved)?.label ?? "Custom colors";
+  const effectiveLabel = DOCUMENT_THEMES.find((theme) => theme.id === appearance.effective)?.label ?? "Custom colors";
   const recolorOption = (saved: boolean): CommandState => recolorSettings.recolor
     ? toggle(saved)
     : { active: false, text: saved ? "Saved on — recoloring off" : "Off — recoloring off" };
@@ -50,24 +51,25 @@ export function getPdfCommandStates(state: {
       : fitState("fit-spread"),
     toggle_continuous_scrolling: toggle(state.continuousScrolling),
     toggle_night_mode: toggle(state.nightMode),
+    document_appearance: { active: false, text: appearance.effective === "original" ? `Original — saved ${savedLabel}` : `${effectiveLabel}${appearance.advanced ? " — advanced adjustments" : ""}` },
+    pdf_advanced_appearance: { active: recolorSettings.recolor && appearance.advanced, text: appearance.advanced ? "Saved advanced adjustments" : "Default adjustments" },
     toggle_recolor: {
       active: recolorSettings.recolor,
-      text: !recolorSettings.recolor ? "Off"
-        : matchingStock ? `On — ${preset.label}` : "On — custom colors",
+      text: recolorSettings.recolor ? `On — ${savedLabel}` : `Off — saved ${savedLabel}`,
     },
-    recolor_preset_original: current(!recolorSettings.recolor),
+    theme_original: current(!recolorSettings.recolor),
+    recolor_set_lightcolor: { active: false, text: normalizeHexColor(recolorSettings.recolorLightcolor) },
+    recolor_set_darkcolor: { active: false, text: normalizeHexColor(recolorSettings.recolorDarkcolor) },
     recolor_toggle_keephue: recolorOption(recolorSettings.recolorKeephue),
     recolor_toggle_reverse_video: recolorOption(recolorSettings.recolorReverseVideo),
     recolor_toggle_adjust_lightness: recolorOption(recolorSettings.recolorAdjustLightness),
   };
 
-  for (const stock of Object.values(RECOLOR_PRESETS)) {
-    if (stock.id === "original" || stock.id === "custom") continue;
-    const matches = matchingStock && preset.id === stock.id;
-    const commandId = `recolor_preset_${stock.id.replace(/-/g, "_")}` as ReaderCommandId;
-    states[commandId] = !recolorSettings.recolor && matches
+  for (const theme of DOCUMENT_THEMES) {
+    if (theme.id === "original") continue;
+    states[themeCommandId(theme.id)] = !recolorSettings.recolor && appearance.saved === theme.id
       ? { active: false, text: "Saved — recoloring off" }
-      : current(recolorSettings.recolor && matches);
+      : current(appearance.effective === theme.id);
   }
   return states;
 }

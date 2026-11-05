@@ -352,7 +352,10 @@ async function run() {
   coverage.push("failed-replacements-both-formats");
   focusReader(); await key("J");
   await until(() => document.querySelector(".status-page")?.textContent?.includes("Page 2 / 3"), "PDF physical-page navigation regressed");
-  await command("recolor_preset_sepia_warm");
+  await command("theme_sepia");
+  check(document.activeElement === document.querySelector(".command-filter"), "PDF theme selection lost filter focus");
+  await key("Escape");
+  check(document.activeElement?.getAttribute("aria-label") === "PDF reading area", "PDF theme chooser Escape did not restore reader focus");
   check(document.querySelector(".status-preset")?.textContent, "PDF preset status disappeared");
   focusReader(); await key("g");
   const pageInput = document.querySelector<HTMLInputElement>('[aria-label="Page number"]')!;

@@ -1,16 +1,16 @@
 # Clio
 
-Clio is a keyboard-first PDF reader built with Tauri, React, and PDF.js.
+Clio is a keyboard-first PDF and EPUB reader built with Tauri, React, PDF.js and epub.js.
 
 ## Reading
 
-- Open a PDF: `Ctrl+O` or `o`.
+- Open a document: `Ctrl/Cmd+O`; close: `Ctrl/Cmd+W`. EPUB also retains `o` to open.
 - Search: `Ctrl+F` or `/`; matching text is highlighted on the PDF text layer. `Enter` and `Shift+Enter` move between individual matches and wrap at either end. `Esc` closes search. Image-only pages without extractable text are not searchable.
 - PDF page navigation: `Ctrl+PageDown` / `Ctrl+PageUp` and `J` / `K` explicitly move to the next/previous logical page group, regardless of zoom. Groups are single pages or spreads, including the narrow-window single-page fallback, and clamp at document boundaries.
 - `PageDown` / `PageUp` retain viewport paging followed by page navigation at a boundary. Arrows and `h/j/k/l` retain their context-sensitive movement. `Home` / `End` and `Ctrl+Home` / `Ctrl+End` use the existing beginning/end commands. `g` opens page jump. `Shift+PageUp` / `Shift+PageDown` keep their ordinary page-key behavior, not ten-page jumps.
 - PDF zoom: bare `+` / `-` or `Ctrl++` / `Ctrl+-` change manual zoom in 5% multiplicative steps, preserving the fit basis, limits, and viewport-center anchor. `Ctrl+=` is also zoom-in, including `Ctrl+Shift+=` when Shift produces `+`; `Ctrl+NumpadAdd` / `Ctrl+NumpadSubtract` are supported. Bare `=` fits width, `w` fits a page, and `F` fits a spread. Reader shortcuts do not take over typing or overlays.
 - `:` opens the command palette. Choose “Single page view” or “Two page spread” to switch layouts. Spreads pair pages 1–2, 3–4, and so on, and fall back to single pages in narrow windows.
-- `i` or `toggle_night_mode` switches the application to dark mode and inverts displayed PDF pixels together. It never changes the PDF file.
+- `i` switches application chrome between Light and Dark; document themes control page appearance independently.
 - Clio saves a debounced page and within-page reading offset for each canonical file path in app data. The PDF stays at its original location; moving or renaming a file gives it a new reading-position identity.
 
 ## Command palette
@@ -56,6 +56,14 @@ Initial PDF opens are deferred by one microtask so effect replay, unmount, or so
 
 Run `bun test tests/pdf-open-lifecycle.test.ts` to verify replay and cancellation with real transferable PDF buffers.
 
+## Document appearance
+
+Both formats offer **Document theme…**: Original, Light, Dark, Sepia, Zathura Dark, Gruvbox Dark, Solarized Dark and Rose Pine Dawn. Each format saves its own choice. Empty-query palettes show the chooser rather than every theme; root searches still find theme names and advanced controls.
+
+For PDF, **Original** disables recoloring without discarding the saved theme, custom colors or advanced flags. `r` restores/toggles those saved colors. The palette distinguishes effective Original from the saved/off appearance. Legacy settings whose preset identity was already replaced by `original` retain their exact colors and flags and are truthfully shown as Custom when enabled; Clio does not guess the lost identity.
+
+**Advanced PDF appearance…** retains hue preservation, image preservation, lightness adjustment, hexadecimal background/foreground colors and the saved-color toggle. Existing PDF settings, custom colors and recoloring algorithms remain supported; the persistent `sepia-warm` ID maps to the shared Sepia label without migration.
+
 ## EPUB reading preferences
 
 Open `:` → **Reading preferences…** for Publisher/Serif/Sans, text size (80–200%), line spacing, logical Start/Justify alignment, outer margins and reading-column width. Publisher is the default for every typography/layout field. **Reset typography and layout to Publisher** leaves the independent **Document theme…** choice intact. Root command searches also find individual choices; a chooser stays focused after selection.
@@ -64,7 +72,7 @@ Preferences are global to EPUBs, stored in `clio:epub-reading-preferences`, sepa
 
 Text-size percentages use each section's original body size. An explicit size sets ordinary paragraphs to that reading size, including pixel/em/rem declarations; Publisher restores their original differences. The implementation uses epub.js theme APIs and one opt-in stylesheet, not descendant snapshots or inline rewrites. Code, tables, media, declared verse and manual-break/preserved-whitespace blocks are excluded from that paragraph rule. Native probes found API-only absolute-size failures and column overflow with Readium-style zoom; the real WebKit preference regression exercises the selected API/CSS path and exact reset. Arbitrary publisher CSS is not universally normalized.
 
-Eight EPUB document themes are available: Original, Light, Dark, Sepia, Zathura Dark, Gruvbox Dark, Solarized Dark and Rose Pine Dawn. Original removes reader color overrides; transparent Original pages use a white backdrop independent of application chrome. Themes do not invert images or enable publication scripts. See [the interface specification](docs/DESIGN.md) for appearance semantics.
+EPUB Original removes reader color overrides; transparent Original pages use a white backdrop independent of application chrome. Themes do not invert images or enable publication scripts. See [the interface specification](docs/DESIGN.md) for appearance semantics.
 
 ## EPUB reading positions
 

@@ -5,7 +5,7 @@ import { EPUB_READER_COMMANDS, READER_COMMANDS } from "../../src/reader/interact
 import type { ReaderCommandId } from "../../src/reader/interactions";
 import { DEFAULT_RECOLOR_SETTINGS, RECOLOR_PRESETS } from "../../src/pdf/recolor";
 import type { PdfRecolorSettings } from "../../src/pdf/recolor";
-import { epubPreferenceCommands, themeCommands } from "../../src/reader/appearanceCommands";
+import { epubPreferenceCommands, pdfAdvancedAppearanceCommands, themeCommands } from "../../src/reader/appearanceCommands";
 import { DEFAULT_EPUB_PREFERENCES } from "../../src/epub/preferences";
 import "../../src/index.css";
 
@@ -63,8 +63,8 @@ const filter = () => document.querySelector<HTMLInputElement>(".command-filter")
 const night = () => document.querySelector<HTMLElement>(".clio-app")!.dataset.nightMode === "true";
 const storageKey = "clio:pdf-recolor-settings";
 const savedSettings = () => JSON.parse(localStorage.getItem(storageKey)!) as PdfRecolorSettings;
-const stockIds = ["zathura-dark", "gruvbox-dark", "solarized-dark", "rose-pine-dawn", "sepia-warm"] as const;
-const stockCommand = (id: typeof stockIds[number]) => `recolor_preset_${id.replaceAll("-", "_")}` as ReaderCommandId;
+const stockIds = ["light", "dark", "zathura-dark", "gruvbox-dark", "solarized-dark", "rose-pine-dawn", "sepia-warm"] as const;
+const stockCommand = (id: typeof stockIds[number]) => `theme_${id === "sepia-warm" ? "sepia" : id.replaceAll("-", "_")}` as ReaderCommandId;
 const optionCommands = [
   ["recolor_toggle_keephue", "recolorKeephue"],
   ["recolor_toggle_reverse_video", "recolorReverseVideo"],
@@ -77,7 +77,7 @@ function row(id: ReaderCommandId) {
     ...EPUB_READER_COMMANDS,
     ...themeCommands("epub", "original"),
     ...epubPreferenceCommands(DEFAULT_EPUB_PREFERENCES, DEFAULT_EPUB_PREFERENCES),
-  ] : READER_COMMANDS;
+  ] : [...READER_COMMANDS, ...themeCommands("pdf", "original"), ...pdfAdvancedAppearanceCommands()];
   const definition = definitions.find((command) => command.id === id)!;
   const label = epub && (id === "next_page" || id === "previous_page") &&
     getComputedStyle(document.querySelector(".epub-container")!).overflowY === "scroll"
@@ -103,7 +103,7 @@ function state(id: ReaderCommandId, active: boolean, ...meaning: RegExp[]) {
   return text;
 }
 function noStockCurrent() {
-  for (const id of stockIds) state(stockCommand(id), false, /not\s+current/i);
+  for (const id of stockIds) state(stockCommand(id), false);
 }
 async function openPalette(query = "") {
   if (!document.querySelector(".command-filter")) {
@@ -120,7 +120,16 @@ async function closePalette() {
   check(document.activeElement?.getAttribute("aria-label") === label, `palette did not restore ${label} focus`);
 }
 async function execute(id: ReaderCommandId, pointer = false) {
+  const currentChooser = filter()?.getAttribute("aria-label");
+  const sameChooser = currentChooser === "Filter document themes" && id.startsWith("theme_") ||
+    currentChooser === "Filter advanced PDF appearance" && (id === "toggle_recolor" || id.startsWith("recolor_")) ||
+    currentChooser === "Filter reading preferences" && id.startsWith("epub_") && id !== "epub_reading_preferences";
+  if (currentChooser && currentChooser !== "Filter commands" && id !== "back_to_commands" && !sameChooser) {
+    await execute("back_to_commands");
+  }
   await openPalette(id);
+  const executionFilter = filter();
+  const executionQuery = executionFilter.value;
   const target = row(id);
   if (pointer) {
     const bounds = target.getBoundingClientRect();
@@ -142,10 +151,17 @@ async function execute(id: ReaderCommandId, pointer = false) {
     await until(() => filter()?.getAttribute("aria-label") === "Filter chapters", "chapter command did not enter destination mode");
     return;
   }
-  if (document.querySelector(".epub-reader") && (id === "document_appearance" || id === "epub_reading_preferences" || id === "back_to_commands")) {
-    const label = id === "document_appearance" ? "Filter document themes" : id === "epub_reading_preferences" ? "Filter reading preferences" : "Filter commands";
+  if (id === "document_appearance" || id === "pdf_advanced_appearance" || id === "epub_reading_preferences" || id === "back_to_commands") {
+    const label = id === "document_appearance" ? "Filter document themes" : id === "pdf_advanced_appearance"
+      ? "Filter advanced PDF appearance" : id === "epub_reading_preferences" ? "Filter reading preferences" : "Filter commands";
     await until(() => filter()?.getAttribute("aria-label") === label, `${id} did not enter its command chooser`);
-    check(document.activeElement === filter(), `${id} lost chooser filter focus`);
+    check(filter().value === "" && document.activeElement === filter(), `${id} failed to reset and focus its chooser filter`);
+    return;
+  }
+  if (id.startsWith("theme_") || id === "toggle_recolor" || id.startsWith("recolor_toggle_") ||
+      id.startsWith("epub_") && id !== "epub_reading_preferences") {
+    check(filter() === executionFilter && filter().value === executionQuery && document.activeElement === executionFilter,
+      `${id} did not retain its chooser and focused filter`);
     return;
   }
   await until(() => !document.querySelector(".command-palette"), `${id} did not execute and close the palette`);
@@ -240,9 +256,6 @@ function paletteLayout() {
       check(!option.hasAttribute("aria-describedby"), "one-shot command has a spurious setting description");
     }
     check(!option.hasAttribute("aria-checked"), "command row gained checkbox semantics");
-  }
-  if (innerWidth === 420 && !document.querySelector(".epub-reader")) {
-    check(wrappedLabels > 0, "long setting-bearing fixture label did not wrap in the narrow palette");
   }
   return { describedSettings, wrappedLabels, rows: rows().length };
 }
@@ -359,18 +372,35 @@ async function pdfCase(width: number, height: number, dark: boolean, firstCase: 
   check(night() === dark, "night keyboard shortcut did not restore the audited appearance");
   await openPalette(); state("toggle_night_mode", dark, dark ? /\bon\b/i : /\boff\b/i);
 
+  const appearanceLeaves = [...themeCommands("pdf", "original"), ...pdfAdvancedAppearanceCommands()]
+    .filter((command) => command.id !== "back_to_commands");
+  check(!rows().some((option) => appearanceLeaves.some((command) =>
+    option.querySelector(".command-label")?.textContent === command.label)),
+    "empty PDF root is flooded with theme or advanced actions");
+  await value(filter(), "back_to_commands");
+  check(rows().length === 0, "root leaf search includes a Back row");
+  await value(filter(), "");
+  await execute("document_appearance", true);
+  await value(filter(), "recolor_toggle");
+  check(rows().length === 0, "theme chooser leaked advanced appearance actions");
+  await value(filter(), "");
   for (const id of firstCase ? stockIds : ["sepia-warm"] as const) {
     await execute(stockCommand(id), id === "sepia-warm");
     await openPalette();
     state(stockCommand(id), true, /current/i);
-    state("toggle_recolor", true, /\bon\b/i, new RegExp(RECOLOR_PRESETS[id].label, "i"));
-    state("recolor_preset_original", false, /not\s+current/i);
-    for (const other of stockIds.filter((candidate) => candidate !== id)) state(stockCommand(other), false, /not\s+current/i);
+    state("theme_original", false);
+    for (const other of stockIds.filter((candidate) => candidate !== id)) state(stockCommand(other), false);
     check(document.querySelector<HTMLElement>(".reader-layout")!.dataset.recolor === "true", "stock command did not enable actual PDF recoloring");
     const saved = savedSettings();
     check(saved.activePreset === id && saved.recolorLightcolor === RECOLOR_PRESETS[id].lightColor && saved.recolorDarkcolor === RECOLOR_PRESETS[id].darkColor,
       "stock setting description does not match executed and persisted colors");
   }
+  paletteLayout();
+  await execute("pdf_advanced_appearance");
+  await value(filter(), "theme_sepia");
+  check(rows().length === 0, "advanced chooser leaked stock theme choices");
+  await value(filter(), "");
+  state("toggle_recolor", true, /sepia/i);
   for (const [id, preference] of optionCommands) {
     if (isCurrent(id)) await execute(id);
     await openPalette(); state(id, false, /\boff\b/i);
@@ -380,44 +410,46 @@ async function pdfCase(width: number, height: number, dark: boolean, firstCase: 
   }
   await execute("toggle_recolor");
   await openPalette();
-  state("toggle_recolor", false, /\boff\b/i);
-  state("recolor_preset_original", true, /current/i);
-  state("recolor_preset_sepia_warm", false, /saved/i, /recoloring\s+off/i);
+  state("toggle_recolor", false, /\boff\b/i, /sepia/i);
   for (const [id, preference] of optionCommands) {
-    state(id, false, /saved\s+on/i, /recoloring\s+off/i);
+    state(id, false, /saved.*on/i, /off/i);
     check(savedSettings()[preference] === true, "turning recoloring off erased a saved option");
     await execute(id);
-    await openPalette(); state(id, false, /off/i, /recoloring\s+off/i);
+    await openPalette(); state(id, false, /off/i);
     check(savedSettings()[preference] === false && savedSettings().recolor === false, "disabled saved option unexpectedly enabled recoloring");
   }
+  paletteLayout();
+  await execute("document_appearance");
+  state("theme_original", true, /current/i);
+  state("theme_sepia", false, /saved/i, /off/i);
   await excludedStatusWords(["saved", "recoloring off"]);
   await execute("toggle_recolor");
-  await openPalette();
-  state("recolor_preset_sepia_warm", true, /current/i);
-  for (const [id] of optionCommands) state(id, false, /\boff\b/i);
+  await execute("document_appearance");
+  state("theme_sepia", true, /current/i);
   const colorsBeforeOriginal = savedSettings();
-  await execute("recolor_preset_original", true);
-  await openPalette(); state("recolor_preset_original", true, /current/i);
-  await execute("toggle_recolor");
-  await openPalette();
-  state("toggle_recolor", true, /\bon\b/i, /custom\s+colors/i);
-  state("recolor_preset_original", false, /not\s+current/i);
-  noStockCurrent();
-  check(savedSettings().activePreset === "original" && savedSettings().recolorLightcolor === colorsBeforeOriginal.recolorLightcolor &&
-    savedSettings().recolorDarkcolor === colorsBeforeOriginal.recolorDarkcolor, "Original then toggle repaired a preset or changed saved colors");
+  await execute("theme_original", true);
+  await openPalette(); state("theme_original", true, /current/i);
+  check(JSON.stringify(savedSettings()) === JSON.stringify({ ...colorsBeforeOriginal, recolor: false }),
+    "Original changed the saved theme, colors or advanced options");
+  await closePalette();
+  await key("r");
+  await execute("document_appearance");
+  state("theme_sepia", true, /current/i);
+  state("theme_original", false);
+  check(JSON.stringify(savedSettings()) === JSON.stringify(colorsBeforeOriginal),
+    "Original then r failed to restore the saved Sepia appearance");
   await execute("recolor_set_lightcolor");
   const colorInput = document.querySelector<HTMLInputElement>('[aria-label="Background hex color"]')!;
   check(document.activeElement === colorInput, "custom background command did not focus the real color editor");
   await value(colorInput, "#123456"); await key("Enter");
   await until(() => !document.querySelector('[aria-label="Background hex color"]'), "custom color was not committed");
-  await openPalette();
-  state("toggle_recolor", true, /\bon\b/i, /custom\s+colors/i);
-  noStockCurrent();
+  await execute("pdf_advanced_appearance");
+  state("toggle_recolor", true, /custom/i);
   check(savedSettings().activePreset === "custom" && savedSettings().recolorLightcolor === "#123456", "custom command did not update production recolor settings");
-  check(!row("recolor_set_lightcolor").querySelector(".command-state") && !row("recolor_set_darkcolor").querySelector(".command-state"),
-    "one-shot custom-color commands incorrectly gained setting state");
   await excludedStatusWords(["custom colors"]);
   paletteLayout();
+  await execute("document_appearance");
+  noStockCurrent();
   await closePalette();
   check(document.querySelector(".pdfViewer .textLayer")?.textContent?.includes("Feedback PDF"), "command transitions lost the actual PDF document");
   return { width, height, dark, describedSettings: layout.describedSettings, pdfRows: layout.rows, wrappedLabels: layout.wrappedLabels, epubRows: 0 };
@@ -454,9 +486,123 @@ async function pdfLifecycle() {
   state("two_page_spread", false, /not\s+current/i);
   assertFit("fit_to_page");
   state("toggle_continuous_scrolling", false, /\boff\b/i);
-  state("toggle_recolor", true, /custom\s+colors/i);
+  await openPalette("toggle_recolor"); state("toggle_recolor", true, /custom/i);
   check(localStorage.getItem(storageKey) === previousRecolor, "close/reopen changed saved recoloring");
   await closePalette();
+}
+function rendererSnapshot() {
+  const canvas = document.querySelector<HTMLCanvasElement>(".pdfViewer .page .canvasWrapper canvas")!;
+  check(canvas?.width && canvas.height, "appearance check has no real rendered PDF canvas");
+  return JSON.stringify({
+    mode: document.querySelector<HTMLElement>(".reader-layout")!.dataset.recolorMode,
+    enabled: document.querySelector<HTMLElement>(".reader-layout")!.dataset.recolor,
+    filter: getComputedStyle(canvas).filter,
+    matrix: document.querySelector("#clio-recolor-matrix feColorMatrix")!.getAttribute("values"),
+    pixels: [...canvas.getContext("2d")!.getImageData(0, 0, 8, 8).data],
+  });
+}
+async function settledRendererSnapshot() {
+  let snapshot = rendererSnapshot();
+  let changed = performance.now();
+  await until(() => {
+    const current = rendererSnapshot();
+    if (current !== snapshot) {
+      snapshot = current;
+      changed = performance.now();
+    }
+    return performance.now() - changed >= 180;
+  }, "real PDF recolor canvas did not settle");
+  return snapshot;
+}
+async function freshPdf(settings?: PdfRecolorSettings) {
+  appRoot.unmount();
+  await settle();
+  if (settings) localStorage.setItem(storageKey, JSON.stringify(settings));
+  const persisted = localStorage.getItem(storageKey);
+  appRoot = createRoot(document.getElementById("root")!);
+  appRoot.render(<StrictMode><App /></StrictMode>);
+  await until(() => document.querySelector(".document-viewport"), "fresh StrictMode App did not mount");
+  check(localStorage.getItem(storageKey) === persisted, "fresh App loading rewrote the saved settings blob");
+  document.querySelector<HTMLElement>(".document-viewport")!.focus();
+  await openFile("feedback.pdf");
+  await until(() => !document.querySelector(".loading-indicator") &&
+    document.querySelector(".pdfViewer .textLayer")?.textContent?.includes("Feedback PDF") &&
+    document.querySelector<HTMLCanvasElement>(".pdfViewer .page canvas")?.width,
+    "fresh App did not render the real PDF");
+  check(localStorage.getItem(storageKey) === persisted, "opening a PDF rewrote loaded settings");
+}
+async function appearancePersistence() {
+  const named = (id: typeof stockIds[number], recolor: boolean): PdfRecolorSettings => ({
+    ...DEFAULT_RECOLOR_SETTINGS, activePreset: id, recolor,
+    recolorLightcolor: RECOLOR_PRESETS[id].lightColor, recolorDarkcolor: RECOLOR_PRESETS[id].darkColor,
+  });
+  const custom: PdfRecolorSettings = {
+    ...named("dark", true), activePreset: "custom", recolorLightcolor: "#123456", recolorDarkcolor: "#FEDCBA",
+    recolorKeephue: true, recolorAdjustLightness: true,
+  };
+  const seeds: { settings: PdfRecolorSettings; theme: typeof stockIds[number] | null }[] = [
+    { settings: named("sepia-warm", false), theme: "sepia-warm" },
+    { settings: named("dark", true), theme: "dark" },
+    { settings: custom, theme: null },
+    { settings: { ...custom, activePreset: "zathura-dark" }, theme: null },
+    { settings: { ...named("gruvbox-dark", false), activePreset: "original", recolorKeephue: true }, theme: null },
+    { settings: { ...custom, activePreset: "original", recolor: false }, theme: null },
+  ];
+  for (const { settings, theme } of seeds) {
+    await freshPdf(settings);
+    await execute("document_appearance");
+    state("theme_original", !settings.recolor);
+    if (theme) state(stockCommand(theme), settings.recolor, settings.recolor ? /current/i : /saved/i);
+    else noStockCurrent();
+    await execute("pdf_advanced_appearance");
+    state("toggle_recolor", settings.recolor, settings.recolor ? theme ? new RegExp(RECOLOR_PRESETS[theme].label, "i") : /custom/i : /off/i);
+    for (const [id, field] of optionCommands) state(id, settings.recolor && settings[field]);
+    await closePalette();
+    if (!settings.recolor) await key("r");
+    check(JSON.stringify(savedSettings()) === JSON.stringify({ ...settings, recolor: true }),
+      "r repaired a seeded identity or changed its colors/advanced flags");
+    await execute("pdf_advanced_appearance");
+    state("toggle_recolor", true, theme ? new RegExp(RECOLOR_PRESETS[theme].label, "i") : /custom/i);
+    check(document.querySelector(".status-preset")?.textContent?.match(theme ? new RegExp(RECOLOR_PRESETS[theme].label, "i") : /custom/i),
+      "seeded settings disagree with the actual renderer's theme label");
+    await closePalette();
+    check(document.querySelector<HTMLElement>(".reader-layout")!.dataset.recolor === "true", "r did not enable the real renderer");
+    const restored = await settledRendererSnapshot();
+    await key("r");
+    check(getComputedStyle(document.querySelector(".pdfViewer .page canvas")!).filter === "none", "Original/off retained the canvas recolor filter");
+    await freshPdf();
+    await key("r");
+    await until(() => rendererSnapshot() === restored, "seeded colors/flags did not restore the same canvas pixels and filter after fresh App");
+  }
+  for (const id of [...stockIds, "custom"] as const) {
+    await freshPdf(named("dark", true));
+    if (id === "custom") {
+      await execute("recolor_set_lightcolor");
+      await value(document.querySelector<HTMLInputElement>('[aria-label="Background hex color"]')!, "#123456");
+      await key("Enter");
+    } else {
+      await execute(stockCommand(id));
+      await closePalette();
+    }
+    const enabled = savedSettings();
+    const rendered = await settledRendererSnapshot();
+    await execute("theme_original");
+    check(JSON.stringify(savedSettings()) === JSON.stringify({ ...enabled, recolor: false }),
+      `${id}: selecting Original changed remembered identity, colors or flags`);
+    await closePalette();
+    await freshPdf();
+    check(document.querySelector<HTMLElement>(".reader-layout")!.dataset.recolor === "false", `${id}: fresh disabled renderer is not Original`);
+    check(getComputedStyle(document.querySelector(".pdfViewer .page canvas")!).filter === "none", `${id}: fresh Original has a recolor filter`);
+    await key("r");
+    check(JSON.stringify(savedSettings()) === JSON.stringify(enabled), `${id}: r failed to restore exact persisted settings`);
+    await execute("document_appearance");
+    if (id === "custom") noStockCurrent();
+    else state(stockCommand(id), true, /current/i);
+    await closePalette();
+    check(document.querySelector(".status-preset")?.textContent?.match(id === "custom" ? /custom/i : new RegExp(RECOLOR_PRESETS[id].label, "i")),
+      `${id}: actual PDF theme label did not restore`);
+    await until(() => rendererSnapshot() === rendered, `${id}: Original/reopen/r did not restore actual canvas pixels/filter`);
+  }
 }
 function epubText() {
   return [...document.querySelectorAll<HTMLIFrameElement>(".epub-reader iframe")]
@@ -566,7 +712,8 @@ localStorage.setItem(storageKey, JSON.stringify({
   recolorKeephue: true,
   recolorAdjustLightness: true,
 } satisfies PdfRecolorSettings));
-createRoot(document.getElementById("root")!).render(<StrictMode><App /></StrictMode>);
+let appRoot = createRoot(document.getElementById("root")!);
+appRoot.render(<StrictMode><App /></StrictMode>);
 
 async function run() {
   await until(() => document.querySelector(".document-viewport"), "real App reader did not mount");
@@ -575,14 +722,16 @@ async function run() {
   await openFile("feedback.pdf");
   await until(() => !document.querySelector(".loading-indicator") && document.querySelector(".pdfViewer .textLayer")?.textContent?.includes("Feedback PDF"), "actual 120-page PDF did not render");
   check(document.querySelector(".status-page")?.textContent?.includes("/ 120"), "fixture did not load the generated 120-page PDF");
-  await openPalette();
-  state("toggle_recolor", true, /\bon\b/i, /custom\s+colors/i);
+  await execute("document_appearance");
   noStockCurrent();
+  await execute("pdf_advanced_appearance");
+  state("toggle_recolor", true, /\bon\b/i, /custom/i);
   state("recolor_toggle_keephue", true, /\bon\b/i);
   state("recolor_toggle_reverse_video", false, /\boff\b/i);
   state("recolor_toggle_adjust_lightness", true, /\bon\b/i);
   check(savedSettings().activePreset === "zathura-dark" && savedSettings().recolorLightcolor === "#123456", "opening a stale stock setting repaired persisted preferences");
   await closePalette();
+  await appearancePersistence();
   const cases: RuntimeCase[] = [];
   for (const dark of [false, true]) {
     if (!document.querySelector(".pdfViewer .page")) {

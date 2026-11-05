@@ -8,6 +8,7 @@ import type { PdfDocument, PdfLoadingTask } from "../../src/pdf/engine";
 import { DEFAULT_RECOLOR_SETTINGS, parseHexColor, recolorImageDataCpu } from "../../src/pdf/recolor";
 import type { CpuRecolorOptions, PdfRecolorSettings } from "../../src/pdf/recolor";
 import { READER_COMMANDS } from "../../src/reader/interactions";
+import { pdfAdvancedAppearanceCommands } from "../../src/reader/appearanceCommands";
 import type { ReaderCommandId } from "../../src/reader/interactions";
 import "../../src/index.css";
 
@@ -197,9 +198,12 @@ async function command(id: ReaderCommandId) {
   const input = document.querySelector<HTMLInputElement>(".command-filter")!;
   Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, id);
   input.dispatchEvent(new Event("input", { bubbles: true })); await settle();
-  const label = READER_COMMANDS.find((entry) => entry.id === id)!.label;
+  const label = [...READER_COMMANDS, ...pdfAdvancedAppearanceCommands()].find((entry) => entry.id === id)!.label;
   const option = [...document.querySelectorAll<HTMLElement>('.command-list [role="option"]')].find((entry) => entry.querySelector(".command-label")?.textContent === label);
   check(option, `App command unavailable: ${id}`); option.click();
+  if (id === "toggle_recolor" || id.startsWith("recolor_toggle_")) {
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+  }
   await until(() => !document.querySelector(".command-palette"), `${id} did not execute`);
 }
 async function openFile(name: string) {

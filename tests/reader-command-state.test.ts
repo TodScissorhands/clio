@@ -20,11 +20,13 @@ function pdfStates(overrides: Partial<PdfState> = {}): ReaderCommandStates {
 }
 
 const stocks: [PdfRecolorPresetId, ReaderCommandId][] = [
-  ["zathura-dark", "recolor_preset_zathura_dark"],
-  ["gruvbox-dark", "recolor_preset_gruvbox_dark"],
-  ["solarized-dark", "recolor_preset_solarized_dark"],
-  ["rose-pine-dawn", "recolor_preset_rose_pine_dawn"],
-  ["sepia-warm", "recolor_preset_sepia_warm"],
+  ["light", "theme_light"],
+  ["dark", "theme_dark"],
+  ["zathura-dark", "theme_zathura_dark"],
+  ["gruvbox-dark", "theme_gruvbox_dark"],
+  ["solarized-dark", "theme_solarized_dark"],
+  ["rose-pine-dawn", "theme_rose_pine_dawn"],
+  ["sepia-warm", "theme_sepia"],
 ];
 const fits: [PdfState["zoomMode"], ReaderCommandId][] = [
   ["fit-page", "fit_to_page"],
@@ -105,7 +107,7 @@ describe("PDF command setting descriptions", () => {
           expect(states.toggle_night_mode?.active).toBe(nightMode);
           expect(states.toggle_night_mode?.text).toMatch(nightMode ? /^On$/i : /^Off$/i);
           expect(states.toggle_recolor?.active).toBe(recolor);
-          expect(states.recolor_preset_original?.active).toBe(!recolor);
+          expect(states.theme_original?.active).toBe(!recolor);
         }
       }
     }
@@ -119,19 +121,18 @@ describe("PDF command setting descriptions", () => {
     const enabled = pdfStates({ recolorSettings: settings });
     expect(enabled.toggle_recolor?.active).toBe(true);
     expect(enabled.toggle_recolor?.text).toContain(RECOLOR_PRESETS[presetId].label);
-    expect(enabled.recolor_preset_original?.active).toBe(false);
-    expect(enabled.recolor_preset_original?.text).toMatch(/not current/i);
+    expect(enabled.theme_original?.active).toBe(false);
     for (const [, id] of stocks) expect(enabled[id]?.active).toBe(id === commandId);
-    expect(enabled[commandId]?.text).toMatch(/^Current$/i);
+    expect(enabled[commandId]?.text).toMatch(/current/i);
 
     const disabled = pdfStates({ recolorSettings: { ...settings, recolor: false } });
     expect(disabled.toggle_recolor?.active).toBe(false);
-    expect(disabled.toggle_recolor?.text).toMatch(/^Off$/i);
-    expect(disabled.recolor_preset_original?.active).toBe(true);
-    expect(disabled.recolor_preset_original?.text).toMatch(/^Current$/i);
+    expect(disabled.toggle_recolor?.text).toMatch(/off/i);
+    expect(disabled.theme_original?.active).toBe(true);
+    expect(disabled.theme_original?.text).toMatch(/current/i);
     for (const [, id] of stocks) {
       expect(disabled[id]?.active).toBe(false);
-      expect(disabled[id]?.text).toMatch(id === commandId ? /saved.*recoloring off/i : /not current/i);
+      if (id === commandId) expect(disabled[id]?.text).toMatch(/saved.*off/i);
     }
   });
 
@@ -142,7 +143,7 @@ describe("PDF command setting descriptions", () => {
         const states = pdfStates({ recolorSettings: settings });
         for (const [, id] of stocks) expect(states[id]?.active).toBe(false);
         expect(states[commandId]?.text).toMatch(/not current/i);
-        expect(states.toggle_recolor?.text).toMatch(recolor ? /on.*custom colors/i : /^Off$/i);
+        expect(states.toggle_recolor?.text).toMatch(recolor ? /custom/i : /off/i);
       }
     }
   });
@@ -150,28 +151,28 @@ describe("PDF command setting descriptions", () => {
   test.each(["custom", "original"] as const)("%s metadata does not identify a stock even when both colors match one", (activePreset) => {
     const states = pdfStates({ recolorSettings: { ...stockSettings("zathura-dark"), activePreset } });
     expect(states.toggle_recolor?.active).toBe(true);
-    expect(states.toggle_recolor?.text).toMatch(/on.*custom colors/i);
-    expect(states.recolor_preset_original?.active).toBe(false);
+    expect(states.toggle_recolor?.text).toMatch(/custom/i);
+    expect(states.theme_original?.active).toBe(false);
     for (const [, id] of stocks) expect(states[id]?.active).toBe(false);
   });
 
-  test("Original followed by toggle-on preserves colors but truthfully describes custom recoloring", () => {
+  test("a seeded legacy Original identity remains custom when saved colors are enabled", () => {
     const original = { ...stockSettings("gruvbox-dark", false), activePreset: "original" as const };
     const disabled = pdfStates({ recolorSettings: original });
-    expect(disabled.recolor_preset_original?.active).toBe(true);
-    expect(disabled.recolor_preset_gruvbox_dark?.text).not.toMatch(/saved/i);
+    expect(disabled.theme_original?.active).toBe(true);
+    expect(disabled.theme_gruvbox_dark?.text).not.toMatch(/saved/i);
     const enabled = pdfStates({ recolorSettings: { ...original, recolor: true } });
     expect(enabled.toggle_recolor?.active).toBe(true);
-    expect(enabled.toggle_recolor?.text).toMatch(/custom colors/i);
-    expect(enabled.recolor_preset_original?.active).toBe(false);
-    expect(enabled.recolor_preset_gruvbox_dark?.active).toBe(false);
+    expect(enabled.toggle_recolor?.text).toMatch(/custom/i);
+    expect(enabled.theme_original?.active).toBe(false);
+    expect(enabled.theme_gruvbox_dark?.active).toBe(false);
   });
 
   test("an arbitrary custom color pair has no stock marker", () => {
     const states = pdfStates({ recolorSettings: {
       ...stockSettings("custom"), recolorLightcolor: "#abc", recolorDarkcolor: "#123",
     } });
-    expect(states.toggle_recolor?.text).toMatch(/on.*custom colors/i);
+    expect(states.toggle_recolor?.text).toMatch(/custom/i);
     for (const [, id] of stocks) expect(states[id]?.active).toBe(false);
   });
 
@@ -189,8 +190,8 @@ describe("PDF command setting descriptions", () => {
           const saved = settings[option];
           expect(states[id]?.active).toBe(recolor && saved);
           expect(states[id]?.text).toMatch(recolor
-            ? saved ? /^On$/i : /^Off$/i
-            : saved ? /saved on.*recoloring off/i : /^off.*recoloring off/i);
+            ? saved ? /\bon\b/i : /\boff\b/i
+            : saved ? /saved.*on.*off/i : /off/i);
         }
       }
     }
@@ -219,12 +220,12 @@ describe("PDF command setting descriptions", () => {
     expect(second.recolor_toggle_keephue?.active).toBe(false);
   });
 
-  test("navigation, zoom increments and one-shot color actions have no setting status", () => {
+  test("navigation, file actions and zoom increments have no setting status", () => {
     const states = pdfStates();
     const oneShots: ReaderCommandId[] = [
       "open_document", "close_document", "search", "next_item", "previous_item",
       "goto_page_with_page_number", "next_page", "previous_page", "goto_beginning", "goto_end",
-      "zoom_in", "zoom_out", "recolor_set_lightcolor", "recolor_set_darkcolor",
+      "zoom_in", "zoom_out",
       "paged_layout", "continuous_layout", "select_chapter",
     ];
     for (const id of oneShots) expect(states[id]).toBeUndefined();

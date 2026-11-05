@@ -50,12 +50,7 @@ export type ReaderCommandId =
   | "epub_text_smaller"
   | "epub_reset_typography"
   | "toggle_recolor"
-  | "recolor_preset_original"
-  | "recolor_preset_zathura_dark"
-  | "recolor_preset_gruvbox_dark"
-  | "recolor_preset_solarized_dark"
-  | "recolor_preset_rose_pine_dawn"
-  | "recolor_preset_sepia_warm"
+  | "pdf_advanced_appearance"
   | "recolor_toggle_keephue"
   | "recolor_toggle_reverse_video"
   | "recolor_toggle_adjust_lightness"
@@ -81,8 +76,8 @@ export const READER_COMMANDS: ReaderCommand[] = [
   { id: "next_item", shortcut: "n · Enter", label: "Next search match" },
   { id: "previous_item", shortcut: "N · Shift+Enter", label: "Previous search match" },
   { id: "goto_page_with_page_number", shortcut: "g", label: "Go to page number" },
-  { id: "next_page", shortcut: "PageDown · ↓ · → · j · l · J", label: "Next page" },
-  { id: "previous_page", shortcut: "PageUp · ↑ · ← · h · k · K", label: "Previous page" },
+  { id: "next_page", shortcut: "Ctrl+PageDown · Shift+J", label: "Next page" },
+  { id: "previous_page", shortcut: "Ctrl+PageUp · Shift+K", label: "Previous page" },
   { id: "goto_beginning", shortcut: "Home", label: "Go to beginning" },
   { id: "goto_end", shortcut: "End", label: "Go to end" },
   { id: "zoom_in", shortcut: "+", label: "Zoom in" },
@@ -93,19 +88,9 @@ export const READER_COMMANDS: ReaderCommand[] = [
   { id: "fit_to_page", shortcut: "w", label: "Fit to page" },
   { id: "fit_to_spread", shortcut: "F", label: "Fit to spread" },
   { id: "toggle_continuous_scrolling", shortcut: "", label: "Toggle continuous scrolling" },
-  { id: "toggle_night_mode", shortcut: "i", label: "Toggle night mode" },
-  { id: "toggle_recolor", shortcut: "r", label: "Toggle recoloring" },
-  { id: "recolor_preset_original", shortcut: "", label: "Recolor: Original (native PDF colors)" },
-  { id: "recolor_preset_zathura_dark", shortcut: "", label: "Recolor: Zathura Dark (#14161B / #DCD7BA)" },
-  { id: "recolor_preset_gruvbox_dark", shortcut: "", label: "Recolor: Gruvbox Dark (#282828 / #EBDBB2)" },
-  { id: "recolor_preset_solarized_dark", shortcut: "", label: "Recolor: Solarized Dark (#002B36 / #839496)" },
-  { id: "recolor_preset_rose_pine_dawn", shortcut: "", label: "Recolor: Rose Pine Dawn (#FAF4ED / #575279)" },
-  { id: "recolor_preset_sepia_warm", shortcut: "", label: "Recolor: Sepia Warm (#FBF0D9 / #3C3836)" },
-  { id: "recolor_toggle_keephue", shortcut: "", label: "Toggle hue preservation (recolor-keephue)" },
-  { id: "recolor_toggle_reverse_video", shortcut: "", label: "Toggle image preservation (recolor-reverse-video)" },
-  { id: "recolor_toggle_adjust_lightness", shortcut: "", label: "Toggle lightness adjustment (recolor-adjust-lightness)" },
-  { id: "recolor_set_lightcolor", shortcut: "", label: "Set recolor background color (hex)..." },
-  { id: "recolor_set_darkcolor", shortcut: "", label: "Set recolor foreground color (hex)..." },
+  { id: "toggle_night_mode", shortcut: "i", label: "Toggle application appearance" },
+  { id: "document_appearance", shortcut: "", label: "Document theme…" },
+  { id: "pdf_advanced_appearance", shortcut: "", label: "Advanced PDF appearance…" },
 ];
 
 export const EPUB_READER_COMMANDS: ReaderCommand[] = [
@@ -135,7 +120,8 @@ export function filterReaderCommands(
   return commands.filter((command) => {
     if ((command.scope ?? "pdf") !== readerKind) return false;
     if (!hasDocument && command.id !== "open_document" && command.id !== "toggle_night_mode" &&
-      !command.id.startsWith("recolor_") && command.id !== "toggle_recolor") return false;
+      !command.id.startsWith("recolor_") && !command.id.startsWith("theme_") && command.id !== "toggle_recolor" &&
+      command.id !== "document_appearance" && command.id !== "pdf_advanced_appearance" && command.id !== "back_to_commands") return false;
     const terms = command.id === "select_chapter"
       ? `${command.label ?? ""} ${command.targetHref ?? ""}`
       : `${command.label ?? ""} ${command.id} ${command.id.replace(/_/g, " ")} ${command.shortcut}`;

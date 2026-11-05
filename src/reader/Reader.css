@@ -86,17 +86,6 @@
   background-color: inherit;
 }
 
-.clio-app[data-night-mode="true"] .pdfViewer {
-  --page-bg-color: #050607;
-}
-
-.clio-app[data-night-mode="true"] .pdfViewer .page {
-  background-color: var(--page-bg-color, #050607);
-}
-
-.clio-app[data-night-mode="true"] .pdfViewer .canvasWrapper canvas {
-  filter: invert(1);
-}
 
 .reader-layout[data-recolor="true"] .document-viewport,
 .clio-app[data-recolor="true"] .document-viewport {
@@ -113,7 +102,7 @@
   background-color: var(--recolor-light-color, #14161B);
 }
 
-/* When recolor is active, override night mode invert(1) filter */
+/* The engine-specific recolor filter is independent of application chrome. */
 .reader-layout[data-recolor="true"] .pdfViewer .canvasWrapper canvas,
 .clio-app[data-recolor="true"] .pdfViewer .canvasWrapper canvas {
   filter: none;
