@@ -117,12 +117,19 @@ function metrics() {
 }
 function anchorVisible(cfi: string) {
   const range = rendition.getRange(cfi).cloneRange();
-  // Check the CFI's character, not a paragraph bounding box spanning columns.
+  // A CFI is a text boundary, which epub.js may place before collapsed
+  // whitespace. Measure its next non-whitespace character in the same node,
+  // never a paragraph bounding box that can span offscreen columns.
   if (range.startContainer.nodeType === Node.TEXT_NODE) {
     const node = range.startContainer;
+    const text = node.textContent ?? "";
     const offset = range.startOffset;
-    if (offset < (node.textContent?.length ?? 0)) range.setEnd(node, offset + 1);
-    else if (offset > 0) range.setStart(node, offset - 1);
+    if (offset < text.length) {
+      const next = text.slice(offset).search(/\S/u);
+      if (next < 0) return false;
+      range.setStart(node, offset + next);
+      range.setEnd(node, offset + next + 1);
+    } else if (offset > 0) range.setStart(node, offset - 1);
   } else range.selectNodeContents(range.startContainer);
   const frame = range.startContainer.ownerDocument!.defaultView!.frameElement!.getBoundingClientRect();
   const viewport = document.querySelector('.epub-reader__viewport')!.getBoundingClientRect();
@@ -160,6 +167,31 @@ async function run() {
     // actual reading start, which need not be the requested paragraph.
     const captured = epubLocationCfi(book, rendition.currentLocation());
     check(captured && anchorVisible(captured), "pre-reflow reading start is not visible");
+    check(!anchorVisible(first().cfiFromNode(documentBefore.getElementById("p63")!)), "offscreen passage passed the visibility probe");
+    const boundary = rendition.getRange(captured);
+    const node = boundary.startContainer;
+    check(node.nodeType === Node.TEXT_NODE, "reading-start control needs a real text boundary");
+    const text = node.textContent ?? "";
+    const offset = boundary.startOffset;
+    const parent = node.parentElement!;
+    const display = parent.style.getPropertyValue("display");
+    const priority = parent.style.getPropertyPriority("display");
+    try {
+      // Force the collapsed-whitespace boundary even when local font metrics
+      // happen to map the spread start directly to a painted character.
+      node.textContent = text.slice(0, offset) + "  " + text.slice(offset);
+      check(anchorVisible(captured), "collapsed whitespace obscured the visible reading-start text");
+      node.textContent = text.slice(0, offset) + "   ";
+      check(!anchorVisible(captured), "missing reading-start text passed the visibility probe");
+      node.textContent = text;
+      parent.style.setProperty("display", "none", "important");
+      check(!anchorVisible(captured), "hidden reading-start text passed the visibility probe");
+    } finally {
+      node.textContent = text;
+      if (display) parent.style.setProperty("display", display, priority);
+      else parent.style.removeProperty("display");
+    }
+    check(anchorVisible(captured), "visibility controls did not restore the reading-start text");
     await command("Font: Sans");
     check(document.activeElement?.classList.contains("command-filter"), "preference selection lost chooser focus");
     await choose("epub_text_larger"); await choose("epub_text_larger");
@@ -211,7 +243,7 @@ async function run() {
     await dismiss();
     coverage.push(continuous ? "continuous-typography-reset-anchor" : "paged-typography-reset-anchor");
   }
-  coverage.push("absolute-and-inline-css-exception", "protected-content-and-style-collision", "rapid-preferences-latest-wins", "eight-independent-themes");
+  coverage.push("absolute-and-inline-css-exception", "protected-content-and-style-collision", "rapid-preferences-latest-wins", "eight-independent-themes", "reading-start-visibility-positive-and-negative-controls");
   await command("Font: Sans"); await choose("epub_text_larger"); await choose("epub_text_larger");
   await choose("Reading column: Comfortable"); await choose("Margins: Comfortable");
   await applied("24px"); await dismiss();
