@@ -13,32 +13,36 @@ import type { NormalizedRect, PdfRecolorSettings } from "./recolor";
 
 export type PdfViewerHandle = { current: PDFViewerInstance | null };
 type PageMatch = { index: number; match: SearchMatch };
-type PageViewLayers = {
+type RenderViewLayers = { canvas?: HTMLCanvasElement; renderingState?: number };
+type PageViewLayers = RenderViewLayers & {
   id?: number;
   div?: HTMLDivElement;
-  canvas?: HTMLCanvasElement;
-  renderingState?: number;
-  detailView?: unknown;
+  detailView?: RenderViewLayers;
   imageCoordinates?: unknown;
   pdfPage?: { imageCoordinates?: unknown };
 };
+type DetailPristine = { canvas: HTMLCanvasElement; pristine: HTMLCanvasElement };
 
 type PageRecolorRequest = {
   pageNumber: number;
   pageView: PageViewLayers;
+  renderView: RenderViewLayers;
   pdf: PdfDocument;
   pristine: HTMLCanvasElement;
   canvas: HTMLCanvasElement;
   width: number;
   height: number;
   settings: PdfRecolorSettings | undefined;
-  visibility: string;
   controller: AbortController;
 };
 
-function extractNormalizedImageRects(rawCoords: ArrayLike<number> | undefined): NormalizedRect[] {
+function extractNormalizedImageRects(rawCoords: ArrayLike<number> | undefined, crop?: NormalizedRect): NormalizedRect[] {
   const rects: NormalizedRect[] = [];
   if (!rawCoords || rawCoords.length < 6) return rects;
+  const left = crop?.minX ?? 0;
+  const top = crop?.minY ?? 0;
+  const width = (crop?.maxX ?? 1) - left;
+  const height = (crop?.maxY ?? 1) - top;
   for (let i = 0; i < rawCoords.length; i += 6) {
     const x1 = rawCoords[i];
     const y1 = rawCoords[i + 1];
@@ -48,12 +52,13 @@ function extractNormalizedImageRects(rawCoords: ArrayLike<number> | undefined): 
     const y3 = rawCoords[i + 5];
     const x4 = x2 + x3 - x1;
     const y4 = y2 + y3 - y1;
-    rects.push({
-      minX: Math.max(0, Math.min(x1, x2, x3, x4)),
-      minY: Math.max(0, Math.min(y1, y2, y3, y4)),
-      maxX: Math.min(1, Math.max(x1, x2, x3, x4)),
-      maxY: Math.min(1, Math.max(y1, y2, y3, y4)),
-    });
+    const rect = {
+      minX: Math.max(0, (Math.min(x1, x2, x3, x4) - left) / width),
+      minY: Math.max(0, (Math.min(y1, y2, y3, y4) - top) / height),
+      maxX: Math.min(1, (Math.max(x1, x2, x3, x4) - left) / width),
+      maxY: Math.min(1, (Math.max(y1, y2, y3, y4) - top) / height),
+    };
+    if (rect.minX <= rect.maxX && rect.minY <= rect.maxY) rects.push(rect);
   }
   return rects;
 }
@@ -89,6 +94,14 @@ function clearPristineCanvases(pristineMap: Map<number, HTMLCanvasElement>): voi
     canvas.height = 0;
   }
   pristineMap.clear();
+}
+
+function clearDetailPristines(details: Map<number, DetailPristine>): void {
+  for (const { pristine } of details.values()) {
+    pristine.width = 0;
+    pristine.height = 0;
+  }
+  details.clear();
 }
 
 export function PdfViewerSurface({
@@ -154,49 +167,87 @@ export function PdfViewerSurface({
   const recolorSettingsRef = useRef(recolorSettings);
   recolorSettingsRef.current = recolorSettings;
   const pristineCanvasesRef = useRef<Map<number, HTMLCanvasElement>>(new Map());
+  const detailPristineCanvasesRef = useRef<Map<number, DetailPristine>>(new Map());
   const cancelRecolorRef = useRef<() => void>(() => {});
-  const refreshRecolorRef = useRef<() => void>(() => {});
+  const refreshRecolorRef = useRef<(appearanceChanged?: boolean) => void>(() => {});
 
   useEffect(() => {
     let disposed = false;
     let eventBus: EventBus | null = null;
     let viewer: PDFViewerInstance | null = null;
     let listeners: [string, (event: { pageNumber?: number; error?: unknown }) => void][] = [];
-    const requests = new Map<number, PageRecolorRequest>();
+    const requests = new Map<HTMLCanvasElement, PageRecolorRequest>();
     let completed = new WeakMap<HTMLCanvasElement, {
       pristine: HTMLCanvasElement; settings: PdfRecolorSettings | undefined; width: number; height: number;
     }>();
     let active: PageRecolorRequest | null = null;
     let queuedTimer: number | undefined;
+    const hiddenVisibility = new WeakMap<HTMLCanvasElement, string>();
+    const hideCanvas = (canvas: HTMLCanvasElement) => {
+      if (!hiddenVisibility.has(canvas)) hiddenVisibility.set(canvas, canvas.style.visibility);
+      canvas.style.visibility = "hidden";
+    };
+    const showCanvas = (canvas: HTMLCanvasElement) => {
+      const visibility = hiddenVisibility.get(canvas);
+      if (visibility !== undefined && canvas.style.visibility === "hidden") canvas.style.visibility = visibility;
+      hiddenVisibility.delete(canvas);
+    };
 
-    const restoreVisibility = (request: PageRecolorRequest) => {
-      if (request.canvas.style.visibility === "hidden") request.canvas.style.visibility = request.visibility;
+    const pixelMode = () => {
+      const settings = recolorSettingsRef.current;
+      return settings?.recolor && (settings.recolorKeephue || settings.recolorReverseVideo);
     };
     const current = (request: PageRecolorRequest) => !disposed && !request.controller.signal.aborted &&
-      requests.get(request.pageNumber) === request && pdfRef.current === request.pdf &&
+      requests.get(request.canvas) === request && pdfRef.current === request.pdf &&
       viewer?.pdfDocument === request.pdf && viewer.getPageView(request.pageNumber - 1) === request.pageView &&
-      request.pageView.canvas === request.canvas && request.pageView.renderingState === 3 &&
-      pristineCanvasesRef.current.get(request.pageNumber) === request.pristine &&
+      (request.renderView === request.pageView || request.pageView.detailView === request.renderView) &&
+      request.renderView.canvas === request.canvas && request.renderView.renderingState === 3 &&
+      (request.renderView === request.pageView
+        ? pristineCanvasesRef.current.get(request.pageNumber)
+        : detailPristineCanvasesRef.current.get(request.pageNumber)?.pristine) === request.pristine &&
       recolorSettingsRef.current === request.settings &&
       request.pristine.width === request.width && request.pristine.height === request.height &&
       request.canvas.width === request.width && request.canvas.height === request.height;
-    const cancelPage = (pageNumber: number) => {
-      const request = requests.get(pageNumber);
+    const cancelCanvas = (canvas: HTMLCanvasElement) => {
+      const request = requests.get(canvas);
       if (!request) return;
-      requests.delete(pageNumber);
+      requests.delete(canvas);
       request.controller.abort();
-      restoreVisibility(request);
+      // A cancelled raw/old-theme output stays hidden until a current result
+      // commits. PDF.js alone removes or replaces its output canvases.
     };
     const cancelRecolor = () => {
       window.clearTimeout(queuedTimer);
       queuedTimer = undefined;
-      for (const pageNumber of requests.keys()) cancelPage(pageNumber);
+      for (const canvas of requests.keys()) cancelCanvas(canvas);
       active?.controller.abort();
       // Completed metadata also owns pristine references while PDF.js holds its
       // canvas keys. Drop that document's metadata even if those keys survive.
       if (disposed || !pdfRef.current) completed = new WeakMap();
     };
     cancelRecolorRef.current = cancelRecolor;
+    const pruneDetailPristines = () => {
+      for (const [number, detail] of detailPristineCanvasesRef.current) {
+        const page = viewer?.getPageView(number - 1) as PageViewLayers | undefined;
+        if (page?.detailView?.canvas === detail.canvas && detail.canvas.width && detail.canvas.height) continue;
+        cancelCanvas(detail.canvas);
+        completed.delete(detail.canvas);
+        detail.pristine.width = 0;
+        detail.pristine.height = 0;
+        detailPristineCanvasesRef.current.delete(number);
+      }
+    };
+    const captureDetailPristine = (pageNumber: number, pageView: PageViewLayers) => {
+      const detail = pageView.detailView;
+      const canvas = detail?.canvas;
+      if (!pixelMode() || detail?.renderingState !== 3 || !canvas?.width || !canvas.height ||
+        detailPristineCanvasesRef.current.has(pageNumber)) return;
+      const pristine = document.createElement("canvas");
+      pristine.width = canvas.width;
+      pristine.height = canvas.height;
+      pristine.getContext("2d")?.drawImage(canvas, 0, 0);
+      detailPristineCanvasesRef.current.set(pageNumber, { canvas, pristine });
+    };
 
     const schedule = () => {
       if (disposed || active || queuedTimer !== undefined || requests.size === 0) return;
@@ -207,14 +258,14 @@ export function PdfViewerSurface({
     };
     const finish = (request: PageRecolorRequest, applied: boolean, error?: unknown) => {
       const wasCurrent = current(request);
-      if (requests.get(request.pageNumber) === request) {
+      if (requests.get(request.canvas) === request) {
         if (applied && wasCurrent) {
           completed.set(request.canvas, {
             pristine: request.pristine, settings: request.settings, width: request.width, height: request.height,
           });
+          showCanvas(request.canvas);
         }
-        requests.delete(request.pageNumber);
-        restoreVisibility(request);
+        requests.delete(request.canvas);
       }
       active = null;
       schedule();
@@ -229,7 +280,7 @@ export function PdfViewerSurface({
       const page = viewer?.currentPageNumber ?? pageNumberRef.current;
       for (const request of requests.values()) {
         if (!current(request)) {
-          cancelPage(request.pageNumber);
+          cancelCanvas(request.canvas);
           continue;
         }
         const distance = Math.abs(request.pageNumber - page);
@@ -246,8 +297,17 @@ export function PdfViewerSurface({
         const settings = request.settings;
         if (settings?.recolor && (settings.recolorKeephue || settings.recolorReverseVideo)) {
           const rawCoords = (request.pageView.imageCoordinates ?? request.pageView.pdfPage?.imageCoordinates) as ArrayLike<number> | undefined;
+          // PDF.js positions a detail canvas as percentages of the full page.
+          // Image coordinates belong to that full page, not to its cropped bitmap.
+          const style = request.canvas.style;
+          const crop = request.renderView === request.pageView ? undefined : {
+            minX: parseFloat(style.left) / 100,
+            minY: parseFloat(style.top) / 100,
+            maxX: (parseFloat(style.left) + parseFloat(style.width)) / 100,
+            maxY: (parseFloat(style.top) + parseFloat(style.height)) / 100,
+          };
           const result = RecolorShaderRenderer.getInstance().render(
-            request.pristine, request.canvas, settings, extractNormalizedImageRects(rawCoords),
+            request.pristine, request.canvas, settings, extractNormalizedImageRects(rawCoords, crop),
             { signal: request.controller.signal, isCurrent: () => current(request) },
           );
           if (typeof result === "boolean") {
@@ -267,47 +327,74 @@ export function PdfViewerSurface({
         finish(request, false, error);
       }
     }
-    const enqueue = (pageNumber: number) => {
+    const enqueue = (pageNumber: number, detail = false) => {
       const pdf = pdfRef.current;
       if (!viewer || !pdf || viewer.pdfDocument !== pdf) return;
       const pageView = viewer.getPageView(pageNumber - 1) as PageViewLayers | undefined;
-      const canvas = pageView?.canvas;
-      const pristine = pristineCanvasesRef.current.get(pageNumber);
-      if (!pageView || pageView.renderingState !== 3 || !canvas || !pristine ||
+      const renderView = detail ? pageView?.detailView : pageView;
+      const canvas = renderView?.canvas;
+      const pristine = detail
+        ? detailPristineCanvasesRef.current.get(pageNumber)?.pristine
+        : pristineCanvasesRef.current.get(pageNumber);
+      if (!pageView || !renderView || renderView.renderingState !== 3 || !canvas || !pristine ||
         !canvas.width || !canvas.height || canvas.width !== pristine.width || canvas.height !== pristine.height) return;
       const settings = recolorSettingsRef.current;
-      const previous = requests.get(pageNumber);
+      const previous = requests.get(canvas);
       if (previous && current(previous)) return;
       const applied = completed.get(canvas);
       if (applied?.pristine === pristine && applied.settings === settings &&
-        applied.width === canvas.width && applied.height === canvas.height) return;
-      const visibility = previous?.canvas === canvas ? previous.visibility : canvas.style.visibility;
-      if (previous) {
-        requests.delete(pageNumber);
-        previous.controller.abort();
-        if (previous.canvas !== canvas) restoreVisibility(previous);
+        applied.width === canvas.width && applied.height === canvas.height) {
+        showCanvas(canvas);
+        return;
       }
+      if (previous) cancelCanvas(canvas);
       const request: PageRecolorRequest = {
-        pageNumber, pageView, pdf, pristine, canvas, settings, visibility,
+        pageNumber, pageView, renderView, pdf, pristine, canvas, settings,
         width: canvas.width, height: canvas.height, controller: new AbortController(),
       };
-      requests.set(pageNumber, request);
+      requests.set(canvas, request);
       // Only a complete current image may become visible, including cached pages.
-      canvas.style.visibility = "hidden";
+      hideCanvas(canvas);
     };
     const cancelStaleRequests = () => {
       for (const request of requests.values()) {
-        if (!current(request)) cancelPage(request.pageNumber);
+        if (!current(request)) cancelCanvas(request.canvas);
       }
     };
-    const refreshRecolor = () => {
+    const refreshRecolor = (appearanceChanged = false) => {
       if (!viewer || viewer.pdfDocument !== pdfRef.current) return;
+      if (appearanceChanged) {
+        // Include PDF.js's previous canvases and off-DOM render targets. Old
+        // outputs must not flash when settings change during a replacement.
+        const hideStale = (canvas?: HTMLCanvasElement) => {
+          if (canvas && (pixelMode() || completed.has(canvas) || hiddenVisibility.has(canvas))) hideCanvas(canvas);
+        };
+        viewerRef.current?.querySelectorAll<HTMLCanvasElement>(".canvasWrapper canvas").forEach(hideStale);
+        for (let index = 0; index < viewer.pagesCount; index++) {
+          const pageView = viewer.getPageView(index) as PageViewLayers;
+          hideStale(pageView?.canvas);
+          hideStale(pageView?.detailView?.canvas);
+        }
+      }
       cancelStaleRequests();
-      for (const pageNumber of pristineCanvasesRef.current.keys()) enqueue(pageNumber);
-      if (active && active.pageNumber !== viewer.currentPageNumber && requests.has(viewer.currentPageNumber)) {
-        const pageNumber = active.pageNumber;
-        cancelPage(pageNumber);
+      pruneDetailPristines();
+      for (const pageNumber of pristineCanvasesRef.current.keys()) {
+        const pageView = viewer.getPageView(pageNumber - 1) as PageViewLayers | undefined;
+        if (pageView) {
+          captureDetailPristine(pageNumber, pageView);
+          if (!detailPristineCanvasesRef.current.has(pageNumber) &&
+            pageView.detailView?.renderingState === 3 && pageView.detailView.canvas) showCanvas(pageView.detailView.canvas);
+        }
         enqueue(pageNumber);
+      }
+      for (const pageNumber of detailPristineCanvasesRef.current.keys()) enqueue(pageNumber, true);
+      const visible = viewer.getPageView(viewer.currentPageNumber - 1) as PageViewLayers | undefined;
+      if (active && active.pageNumber !== viewer.currentPageNumber &&
+        ((visible?.canvas && requests.has(visible.canvas)) ||
+          (visible?.detailView?.canvas && requests.has(visible.detailView.canvas)))) {
+        const pageNumber = active.pageNumber;
+        cancelCanvas(active.canvas);
+        enqueue(pageNumber, active.renderView !== active.pageView);
       }
       if (!active && queuedTimer === undefined) processNext();
     };
@@ -321,6 +408,7 @@ export function PdfViewerSurface({
       });
       pageElementsRef.current(pages);
       prunePristineCanvases(pristineCanvasesRef.current, viewer);
+      pruneDetailPristines();
       cancelStaleRequests();
     };
     const syncHighlights = (number: number) => {
@@ -390,6 +478,18 @@ export function PdfViewerSurface({
         }
         refreshRecolor();
       };
+      const pageRendering = (event: { pageNumber?: number; source?: unknown }) => {
+        if (disposed || !viewer || !pdfRef.current || viewer.pdfDocument !== pdfRef.current || !event.pageNumber) return;
+        const pageView = viewer.getPageView(event.pageNumber - 1) as PageViewLayers | undefined;
+        if (!pageView || (event.source !== pageView && event.source !== pageView.detailView)) return;
+        const renderView = event.source as RenderViewLayers;
+        if (renderView.canvas) {
+          cancelCanvas(renderView.canvas);
+          // This event precedes PDF.js's progressive/complete canvas insertion.
+          if (pixelMode()) hideCanvas(renderView.canvas);
+        }
+        pruneDetailPristines();
+      };
       const pageRendered = (event: { pageNumber?: number; error?: unknown; source?: unknown; cssTransform?: boolean }) => {
         if (disposed || !viewer || !pdfRef.current || viewer.pdfDocument !== pdfRef.current) return;
         if (event.pageNumber) {
@@ -402,11 +502,11 @@ export function PdfViewerSurface({
             renderErrorRef.current(`Could not render page ${pageNum}: ${String(event.error)}`);
           }
           const canvas = pageView.canvas;
-          if (canvas && canvas.width > 0 && canvas.height > 0) {
-            cancelPage(pageNum);
-            const bitmapChanged = !event.cssTransform && event.source === pageView;
-            // CSS transforms and detail views do not repaint the main bitmap.
-            // Re-copying it here could make an already recolored image pristine.
+          if (event.source === pageView && canvas && canvas.width > 0 && canvas.height > 0) {
+            cancelCanvas(canvas);
+            const bitmapChanged = !event.cssTransform;
+            // Only this renderer's new bitmap is pristine. Detail completion
+            // and CSS transforms must never recapture the recolored main image.
             if (bitmapChanged) completed.delete(canvas);
             let pristine = pristineCanvasesRef.current.get(pageNum);
             if (bitmapChanged || !pristine || pristine.width !== canvas.width || pristine.height !== canvas.height) {
@@ -421,6 +521,13 @@ export function PdfViewerSurface({
                 pCtx.clearRect(0, 0, pristine.width, pristine.height);
                 pCtx.drawImage(canvas, 0, 0);
               }
+            }
+          }
+          pruneDetailPristines();
+          if (event.source === pageView.detailView) {
+            captureDetailPristine(pageNum, pageView);
+            if (!detailPristineCanvasesRef.current.has(pageNum) && pageView.detailView?.canvas) {
+              showCanvas(pageView.detailView.canvas);
             }
           }
           prunePristineCanvases(pristineCanvasesRef.current, viewer, pageNum);
@@ -455,6 +562,7 @@ export function PdfViewerSurface({
       listeners = [
         ["pagechanging", pageChanged],
         ["pagesinit", pagesInitialized],
+        ["pagerender", pageRendering],
         ["pagerendered", pageRendered],
         ["textlayerrendered", textRendered],
       ];
@@ -474,6 +582,7 @@ export function PdfViewerSurface({
       viewerHandle.current = null;
       pageElementsRef.current([]);
       clearPristineCanvases(pristineCanvasesRef.current);
+      clearDetailPristines(detailPristineCanvasesRef.current);
     };
   }, [containerRef, viewerRef, viewerHandle]);
 
@@ -484,6 +593,7 @@ export function PdfViewerSurface({
       pdfRef.current = null;
       cancelRecolorRef.current();
       clearPristineCanvases(pristineCanvasesRef.current);
+      clearDetailPristines(detailPristineCanvasesRef.current);
     };
   }, [pdf]);
 
@@ -529,7 +639,7 @@ export function PdfViewerSurface({
 
   useLayoutEffect(() => {
     cancelRecolorRef.current();
-    refreshRecolorRef.current();
+    refreshRecolorRef.current(true);
   }, [recolorSettings, viewerHandle]);
 
   return null;
