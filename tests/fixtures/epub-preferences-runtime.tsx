@@ -2,6 +2,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import type { Contents, Rendition } from "epubjs";
 import type { EpubBook } from "../../src/epub/engine";
+import { epubLocationCfi } from "../../src/epub/readingPosition";
 import type { ReaderFileSource } from "../../src/platform/tauriReaderFiles";
 import { DOCUMENT_THEMES } from "../../src/reader/appearance";
 import App from "../../src/App";
@@ -53,7 +54,11 @@ const geometries: object[] = [];
 const contents = () => rendition.getContents() as unknown as Contents[];
 const first = () => contents().find((content) => content.sectionIndex === rendition.location.start.index)!;
 const stored = () => JSON.parse(localStorage.getItem("clio:epub-reading-preferences")!);
-const bodyFont = () => first().window.getComputedStyle(first().document.body).fontSize;
+const bodyFont = () => {
+  // Reflow can temporarily retire all views before the replacement is live.
+  const content = first();
+  return content ? content.window.getComputedStyle(content.document.body).fontSize : null;
+};
 async function key(value: string, init: KeyboardEventInit = {}) {
   const target = document.activeElement ?? document.body;
   target.dispatchEvent(new KeyboardEvent("keydown", { key: value, bubbles: true, cancelable: true, ...init }));
@@ -111,17 +116,24 @@ function metrics() {
   }));
 }
 function anchorVisible(cfi: string) {
-  const range = rendition.getRange(cfi);
-  const node = range.startContainer;
-  const element = node.nodeType === 1 ? node as Element : node.parentElement!;
-  const rect = element.getBoundingClientRect();
-  const frame = element.ownerDocument.defaultView!.frameElement!.getBoundingClientRect();
+  const range = rendition.getRange(cfi).cloneRange();
+  // Check the CFI's character, not a paragraph bounding box spanning columns.
+  if (range.startContainer.nodeType === Node.TEXT_NODE) {
+    const node = range.startContainer;
+    const offset = range.startOffset;
+    if (offset < (node.textContent?.length ?? 0)) range.setEnd(node, offset + 1);
+    else if (offset > 0) range.setStart(node, offset - 1);
+  } else range.selectNodeContents(range.startContainer);
+  const frame = range.startContainer.ownerDocument!.defaultView!.frameElement!.getBoundingClientRect();
   const viewport = document.querySelector('.epub-reader__viewport')!.getBoundingClientRect();
-  const x = frame.left + rect.left, y = frame.top + rect.top;
-  return x < viewport.right && x + rect.width > viewport.left && y < viewport.bottom && y + rect.height > viewport.top;
+  return [...range.getClientRects()].some((rect) => {
+    const x = frame.left + rect.left, y = frame.top + rect.top;
+    return rect.width > 0 && rect.height > 0 && x < viewport.right && x + rect.width > viewport.left &&
+      y < viewport.bottom && y + rect.height > viewport.top;
+  });
 }
 async function applied(size: string) {
-  await until(() => Math.abs(parseFloat(bodyFont()) - parseFloat(size)) < .01 && !document.querySelector('.command-state-text')?.textContent?.includes("Requested"), `font ${size} did not apply`);
+  await until(() => Math.abs(parseFloat(bodyFont() ?? "") - parseFloat(size)) < .01 && !document.querySelector('.command-state-text')?.textContent?.includes("Requested"), `font ${size} did not apply`);
 }
 async function resize(width: number, height: number) {
   bridge({ resize: [width, height], scale: devicePixelRatio });
@@ -143,6 +155,11 @@ async function run() {
     const publisherCss = documentBefore.getElementById("epubjs-inserted-css-clio-reading-preferences")!.textContent;
     const anchor = first().cfiFromNode(documentBefore.getElementById("p20")!);
     await rendition.display(anchor); await settle();
+    check(anchorVisible(anchor), "requested passage was not displayed before reflow");
+    // display(target) exposes its whole page. Reflow preserves that page's
+    // actual reading start, which need not be the requested paragraph.
+    const captured = epubLocationCfi(book, rendition.currentLocation());
+    check(captured && anchorVisible(captured), "pre-reflow reading start is not visible");
     await command("Font: Sans");
     check(document.activeElement?.classList.contains("command-filter"), "preference selection lost chooser focus");
     await choose("epub_text_larger"); await choose("epub_text_larger");
@@ -155,7 +172,7 @@ async function run() {
     check(changed.code!.font === original.code!.font && changed.code!.family === original.code!.family, "code typography changed");
     for (const id of ["verse", "manual", "whitespace", "inline-code"]) check(changed[id]!.font === original[id]!.font, `${id}: protected prose changed`);
     check(changed.image!.width === 120 && changed.image!.height === 60 && changed.table!.width === 240, "media/table geometry changed");
-    check(anchorVisible(anchor), "captured passage lost after font reflow");
+    await until(() => anchorVisible(captured), "captured reading start lost after font reflow");
     check(first().document.getElementById("epubjs-inserted-css-clio-reading-preferences")!.textContent === publisherCss, "reader overwrote publisher CSS collision");
     await choose("Line spacing: Comfortable"); await choose("Alignment: Start");
     await until(() => first().window.getComputedStyle(first().document.getElementById("px")!).lineHeight === "38.400002px" || Math.abs(parseFloat(first().window.getComputedStyle(first().document.getElementById("px")!).lineHeight) - 38.4) < .1, "line spacing did not apply");
@@ -164,6 +181,7 @@ async function run() {
     for (let index = 0; index < 3; index += 1) await choose("epub_text_smaller");
     await applied("24px");
     check(stored().fontScale === 120, "latest typography intent lost");
+    await until(() => anchorVisible(captured), "rapid typography changes lost the captured reading start");
     const fullWidth = document.querySelector(".epub-reader__viewport")!.getBoundingClientRect().width;
     await choose("Reading column: Comfortable"); await choose("Margins: Comfortable");
     await until(() => document.querySelector(".epub-reader__viewport")!.getBoundingClientRect().width < fullWidth,

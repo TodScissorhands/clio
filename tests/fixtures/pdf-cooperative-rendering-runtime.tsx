@@ -351,15 +351,15 @@ async function run() {
   const appSettings = { ...pixel };
   exact(1, appSettings, "E valid reader finishes exact recolor after invalid replacement");
   document.querySelector<HTMLButtonElement>('[role="alert"] button')!.click(); await settle();
-  // The actual reader's ResizeObserver, fit-page calculation and Surface scale
-  // update must invalidate pending work when the available viewport changes.
+  // Shrink below the rendered page width: a fixed viewport width can leave
+  // fit-page height-limited, correctly requiring no new bitmap.
   const beforeResize = pair(1); const oldWidth = beforeResize.canvas.width;
   const oldHeight = beforeResize.canvas.height;
   cpu.hold = true; await command("recolor_toggle_adjust_lightness");
   await until(() => gates.size > 0, "F production resize did not start pending CPU work");
   pending(beforeResize, "F before production resize");
   const resizeCommits = commits.get(beforeResize.canvas) ?? 0;
-  document.querySelector<HTMLElement>(".document-viewport")!.style.width = "360px";
+  document.querySelector<HTMLElement>(".document-viewport")!.style.width = `${Math.max(1, Math.floor(beforeResize.canvas.getBoundingClientRect().width / 2))}px`;
   await until(() => {
     const canvas = pageView(1)?.canvas;
     return canvas && (canvas.width !== oldWidth || canvas.height !== oldHeight) && pageView(1)?.renderingState === 3;

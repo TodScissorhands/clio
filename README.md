@@ -122,3 +122,13 @@ PDF matches use a high-contrast black/white boundary chosen from the effective d
 Bun applies `patches/epubjs@0.3.93.patch` through `patchedDependencies` in `package.json`. Keep the Stage orientation-listener cleanup correction in both the source and compiled library files when refreshing the patch.
 
 Run `bun test tests/epub-stage-lifecycle.test.ts` to verify that destroyed stages stop receiving orientation events without affecting live stages or unrelated listeners.
+
+## Verification
+
+Use `bun install --frozen-lockfile` to install the committed frontend dependency versions. The full verification gates are `bunx tsc --noEmit`, `bun run build`, `bun test`, and `cargo test --manifest-path src-tauri/Cargo.toml`.
+
+Eight Bun suites (nine runtime cases) require real WebKitGTK 4.1, Python GObject bindings and an X11 display. Plain `bun test` skips those suites when prerequisites are unavailable. On a configured Linux desktop, run `bash scripts/test-webkit-required.sh` to require that environment and execute the complete Bun suite. For headless Linux use `xvfb-run -a bash scripts/test-webkit-required.sh`. A missing native prerequisite is then an error, not a passing-but-skipped run.
+
+Native geometry checks follow renderer semantics: PDF resize coverage crosses the active fit constraint; EPUB typography coverage preserves the pre-reflow visible-start CFI, not every passage on the old page. EPUB checks await visible text fragments and tolerate temporarily absent views during reflow without extending deadlines.
+
+GitHub Actions runs these checks on Ubuntu with WebKitGTK and Xvfb, plus locked Rust tests. This covers automated native WebKit integration; it does not replace physical input, Tauri window, or assistive-technology acceptance.
