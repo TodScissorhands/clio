@@ -194,8 +194,11 @@ function pixels(settings: PdfRecolorSettings, label: string) {
   const page = pageView()!;
   const canvases = [page.canvas!, ...(page.detailView?.canvas ? [page.detailView.canvas] : [])];
   const expectedBackground = settings.recolor ? parseHexColor(settings.recolorLightcolor).map((channel) => Math.round(channel * 255)) : [255, 255, 255];
+  // PDF.js may display the lower-resolution backing canvas or its overlapping
+  // detail canvas during cached-page navigation. Require visible current output,
+  // then verify both layers' pixels and the actual compositor result below.
+  check(canvases.some((canvas) => canvas.isConnected && visible(canvas)), `${label}: no current page output is visible`);
   for (const canvas of canvases) {
-    check(visible(canvas), `${label}: finished output is hidden`);
     near(samplePage(canvas, .26, .08), expectedBackground, `${label}: actual ${canvas === page.canvas ? "main" : "detail"} background`);
     if (settings.recolorReverseVideo) near(samplePage(canvas, .17, .20), [224, 32, 16], `${label}: embedded image was recolored`);
     if (settings.recolor) {
@@ -368,7 +371,19 @@ async function run() {
   pixels(configuration.recolorSettings, "F page 2");
   await update({ pageNumber: 1 }); await ready(long, 1); await detailReady("F page 1 return");
   pixels(configuration.recolorSettings, "F cached page return");
-  for (let pageNumber = 2; pageNumber <= 12; pageNumber++) { await update({ pageNumber }); await ready(long, pageNumber); await detailReady(`F cache ${pageNumber}`); }
+  for (let pageNumber = 2; pageNumber <= 12; pageNumber++) {
+    await update({ pageNumber }); await ready(long, pageNumber);
+    const currentDetail = await detailReady(`F cache ${pageNumber}`);
+    if (pageNumber === 3) {
+      // Exercise the previously failing cache path at the composited pixel
+      // boundary, not the CSS visibility of each overlapping backing layer.
+      const settings = configuration.recolorSettings;
+      const background = settings.recolor
+        ? parseHexColor(settings.recolorLightcolor).map((channel) => Math.round(channel * 255))
+        : [255, 255, 255];
+      await snapshotBackground(currentDetail.canvas!, background, "F cache 3 visible page");
+    }
+  }
   check(!observed().map.has(1) && !observed().details.has(1), "F real PDF.js cache eviction retained page 1 resources");
   check(!oldSource.width && !oldSource.height, "F evicted detail retained independent backing");
   cases.push("F page navigation, cached return and real cache eviction");
