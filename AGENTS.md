@@ -1,6 +1,6 @@
 # Clio engineering rules
 
-Clio is a document-first Tauri reader with separate PDF.js and epub.js engines. Interface rules live in [docs/DESIGN.md](docs/DESIGN.md); do not duplicate them here.
+Clio is a document-first Tauri reader with separate PDF.js and epub.js engines. Interface rules live in [docs/DESIGN.md](docs/DESIGN.md); do not duplicate them here. Delivery priorities and quality gates are tracked in [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Ownership and security
 
