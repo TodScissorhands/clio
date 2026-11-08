@@ -3,33 +3,29 @@ import type { Book } from "epubjs";
 
 export type EpubBook = Book;
 
-export async function openEpubBook(bytes: Uint8Array): Promise<EpubBook> {
-  const book = ePub(Uint8Array.from(bytes).buffer);
-  let rejectOpen!: (cause: unknown) => void;
-  const openFailure = new Promise<never>((_, reject) => {
-    rejectOpen = reject;
-  });
-  const handleOpenFailure = () => rejectOpen(new Error("The selected file is not a valid EPUB or could not be read."));
-  book.on("openFailed", handleOpenFailure);
+/** App owns the candidate until full acquisition succeeds; the reader then owns it. */
+export async function openEpubBook(bytes: Uint8Array, signal?: AbortSignal): Promise<EpubBook> {
+  signal?.throwIfAborted();
+  const book = ePub();
+  let retired = false;
+  const cancel = () => {
+    if (retired) return;
+    retired = true;
+    book.destroy();
+  };
+  signal?.addEventListener("abort", cancel, { once: true });
   try {
-    await Promise.race([
-      Promise.all([
-        book.ready,
-        book.loaded.metadata,
-        book.loaded.navigation,
-        book.loaded.spine,
-      ]),
-      openFailure,
+    await Promise.all([
+      book.open(Uint8Array.from(bytes).buffer, "binary"),
+      book.opened,
+      book.ready,
     ]);
+    signal?.throwIfAborted();
     return book;
   } catch (cause) {
-    try {
-      book.destroy();
-    } catch {
-      // Preserve the opening error if cleanup also fails.
-    }
+    cancel();
     throw cause;
   } finally {
-    book.off("openFailed", handleOpenFailure);
+    signal?.removeEventListener("abort", cancel);
   }
 }

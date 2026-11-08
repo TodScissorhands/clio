@@ -28,6 +28,7 @@ function App() {
   const openGenerationRef = useRef(0);
   const [openGeneration, setOpenGeneration] = useState(0);
   const pendingPdfOwnershipRef = useRef<PendingPdfOwnership | null>(null);
+  const pendingEpubAbortRef = useRef<AbortController | null>(null);
   const activeEpubRef = useRef(activeEpub);
   useDocumentTitle(documentName);
   const toggleNightMode = useCallback(() => setNightMode((current) => !current), []);
@@ -36,29 +37,42 @@ function App() {
     pendingPdfOwnershipRef.current = null;
     if (pending) void pending.task.destroy().catch(() => undefined);
   }, []);
+  const cancelPendingEpub = useCallback(() => {
+    const pending = pendingEpubAbortRef.current;
+    pendingEpubAbortRef.current = null;
+    pending?.abort();
+  }, []);
   const beginOpenRequest = useCallback(() => {
     const generation = ++openGenerationRef.current;
     setOpenGeneration(generation);
     cancelPendingPdf();
+    cancelPendingEpub();
     setPendingPdfSource(null);
     setOpenError("");
     return generation;
-  }, [cancelPendingPdf]);
+  }, [cancelPendingPdf, cancelPendingEpub]);
   useEffect(() => () => {
     openGenerationRef.current += 1;
     cancelPendingPdf();
-  }, [cancelPendingPdf]);
+    cancelPendingEpub();
+  }, [cancelPendingPdf, cancelPendingEpub]);
   const openEpub = useCallback(async (source: EpubSource, generation: number) => {
-    const book = await openEpubBook(source.bytes);
-    if (generation !== openGenerationRef.current) {
-      book.destroy();
-      return;
+    const controller = new AbortController();
+    pendingEpubAbortRef.current = controller;
+    try {
+      const book = await openEpubBook(source.bytes, controller.signal);
+      if (generation !== openGenerationRef.current) {
+        book.destroy();
+        return;
+      }
+      setPendingPdfSource(null);
+      const epub = { book, path: source.path };
+      activeEpubRef.current = epub;
+      setActiveEpub(epub);
+      setDocumentName(source.name);
+    } finally {
+      if (pendingEpubAbortRef.current === controller) pendingEpubAbortRef.current = null;
     }
-    setPendingPdfSource(null);
-    const epub = { book, path: source.path };
-    activeEpubRef.current = epub;
-    setActiveEpub(epub);
-    setDocumentName(source.name);
   }, []);
   const clearPendingPdfSource = useCallback((request: PdfReaderOpenRequest) => {
     const pending = pendingPdfOwnershipRef.current;

@@ -1,0 +1,3 @@
+# Unified-diff context prefixes precede upstream tabs and empty lines.
+# Application source retains its ordinary whitespace checks.
+*.patch whitespace=-blank-at-eol,-space-before-tab

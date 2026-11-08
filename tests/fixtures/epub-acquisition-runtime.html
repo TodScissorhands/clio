@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>EPUB acquisition retirement regression</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script>
+      window.addEventListener("error", event => {
+        window.webkit.messageHandlers.test.postMessage(JSON.stringify({ passed: false, error: event.message, file: event.filename, line: event.lineno }));
+      });
+    </script>
+    <script type="module" src="./epub-acquisition-runtime.tsx"></script>
+  </body>
+</html>
