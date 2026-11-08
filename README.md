@@ -96,6 +96,8 @@ Close, replacement and effect cleanup synchronously dispose these registrations.
 
 Task 09C1 confirmed that WebKitGTK 2.52.6 suppresses embedded JavaScript event listeners under the existing script-disabled sandbox. A deferred host-focus workaround restores shortcuts but breaks copying after selection; it is not shipped. See [EPUB keyboard-focus investigation](docs/epub-keyboard-focus.md) for native evidence, acceptance failures and the bounded native-widget alternative. Content-focused keyboard reliability remains unresolved.
 
+Task 10B recorded widget-local native key signals and cross-chapter navigation policy requests in the actual Tauri WebView on niri/Wayland, not a safe command bridge or link-routing implementation. Its raw evidence archive is no longer available at the recorded path. See [the historical feasibility report and subsequent 09C findings](docs/epub-keyboard-focus.md#reconciliation-status).
+
 Run `bun test tests/epub-keyboard-lifecycle-runtime.test.ts` for the real patched-epub.js/WebKit lifecycle regression, including historical retention, view removal, reflow, late callbacks, replacement and repeated reopen cycles. As with the other WebKit integration suites, Linux Python GObject/WebKitGTK 4.1 bindings and an X display are required; unsupported environments skip it.
 
 ## Native filesystem execution
