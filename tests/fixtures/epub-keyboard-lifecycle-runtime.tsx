@@ -3,6 +3,7 @@ import type { Rendition } from "epubjs";
 import App from "../../src/App";
 import { openEpubBook } from "../../src/epub/engine";
 import { attachEpubKeyboard } from "../../src/epub/iframeKeyboard";
+import type { ReaderCommandId } from "../../src/reader/interactions";
 import "../../src/index.css";
 
 // This fixture uses installed epub.js and real sandboxed iframe views throughout.
@@ -435,18 +436,17 @@ async function appReady(previous?: RuntimeRendition) {
   production.assertLive(current.rendition, current.viewport, "app-ready");
   return current;
 }
-async function command(label: string) {
+async function command(id: ReaderCommandId) {
   hostKey(":", { code: "Semicolon", shiftKey: true });
   await until(() => document.querySelector(".command-filter"), "host key did not open production palette");
   const filter = document.querySelector<HTMLInputElement>(".command-filter")!;
-  Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(filter, label);
+  Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(filter, id);
   filter.dispatchEvent(new Event("input", { bubbles: true }));
   await settle();
-  const row = [...document.querySelectorAll<HTMLElement>('.command-list [role="option"]')]
-    .find((candidate) => candidate.querySelector(".command-label")?.textContent === label);
-  check(row, `missing production command: ${label}`);
-  row.click();
-  await until(() => !document.querySelector(".command-palette"), `${label} did not close the palette`);
+  const rows = document.querySelectorAll<HTMLElement>('.command-list [role="option"]');
+  check(rows.length === 1, `missing or ambiguous production command: ${id}`);
+  rows[0]!.click();
+  await until(() => !document.querySelector(".command-palette"), `${id} did not close the palette`);
 }
 async function appCases(bytes: Uint8Array) {
   root.render(<App />);
@@ -479,11 +479,11 @@ async function appCases(bytes: Uint8Array) {
   hostKey("PageUp"); await drain(current.rendition);
   production.assertLive(current.rendition, current.viewport, "app-host-back");
   for (let repeat = 0; repeat < 2; repeat++) {
-    for (const label of ["Continuous layout", "Paged layout"]) {
-      await command(label);
-      await until(() => current.rendition.manager.views.all().some((view) => view.displayed), `App ${label} did not render`);
+    for (const id of ["continuous_layout", "paged_layout"] as const) {
+      await command(id);
+      await until(() => current.rendition.manager.views.all().some((view) => view.displayed), `App ${id} did not render`);
       await drain(current.rendition);
-      production.assertLive(current.rendition, current.viewport, `app-${label}-${repeat}`);
+      production.assertLive(current.rendition, current.viewport, `app-${id}-${repeat}`);
     }
   }
   cases.push("app-open-host-keys-and-reflow");
@@ -495,7 +495,7 @@ async function appCases(bytes: Uint8Array) {
   check(currentApp().rendition === retainedRendition && currentApp().viewport === retainedViewport,
     "invalid replacement discarded the real committed reader");
   production.assertLive(retainedRendition, retainedViewport, "app-invalid-replacement");
-  await command("Continuous layout"); await drain(retainedRendition);
+  await command("continuous_layout"); await drain(retainedRendition);
   production.assertLive(retainedRendition, retainedViewport, "app-invalid-replacement-still-usable");
   await openFile(bytes);
   current = await appReady(retainedRendition);
@@ -503,7 +503,7 @@ async function appCases(bytes: Uint8Array) {
   production.assertLive(current.rendition, current.viewport, "app-valid-replacement");
   cases.push("app-invalid-and-valid-replacement");
   for (let repeat = 0; repeat < 3; repeat++) {
-    await command("Close document");
+    await command("close_document");
     await until(() => !document.querySelector(".epub-reader"), "real App did not close EPUB");
     production.assertEmpty(`app-close-${repeat}`);
     await openFile(bytes);
@@ -514,7 +514,7 @@ async function appCases(bytes: Uint8Array) {
     await until(() => !document.querySelector(".command-palette"), "reopened palette did not close");
     production.assertLive(current.rendition, current.viewport, `app-reopen-${repeat}`);
   }
-  await command("Close document");
+  await command("close_document");
   await until(() => !document.querySelector(".epub-reader"), "final real App close failed");
   production.assertEmpty("app-final-close");
   root.unmount(); await settle();
