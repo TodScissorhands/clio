@@ -27,9 +27,9 @@ function observationPlugin() {
         return replace(source, anchor, `${anchor}\n        window.__readerStatusRendition?.(rendition, book);`);
       }
       if (id.endsWith("/src/epub/engine.ts")) {
-        source = replace(source, "const book = ePub(Uint8Array.from(bytes).buffer);",
-          'window.__readerStatusEngine?.("epub");\n  const book = ePub(Uint8Array.from(bytes).buffer);');
-        return replace(source, "    return book;", '    await window.__readerStatusGate?.("epub", book);\n    return book;');
+        source = replace(source, "const book = ePub();",
+          'window.__readerStatusEngine?.("epub");\n  const book = ePub();');
+        return replace(source, "    signal?.throwIfAborted();", '    await window.__readerStatusGate?.("epub", book);\n    signal?.throwIfAborted();');
       }
       if (id.endsWith("/src/pdf/engine.ts")) {
         return replace(source, "const pdf = await task.promise;", 'const pdf = await task.promise;\n  await window.__readerStatusGate?.("pdf", task);');
