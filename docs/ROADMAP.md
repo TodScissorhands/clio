@@ -10,24 +10,27 @@ Clio is a local-first, document-first PDF/EPUB desktop reader. Prefer a small, r
 
 | Order | Milestone | Deliverable and acceptance |
 | --- | --- | --- |
-| 1 — P0 | **09C: essential EPUB interactions** | After clicking publication text: Clio shortcuts work; text selection and native copy remain intact; internal chapter/fragment hyperlinks navigate correctly; untrusted EPUB scripts/URLs cannot gain native privileges; closing/replacing the document retires all events. Check paged and continuous modes, editable targets, held keys, and navigation history. |
+| 1 — P0, unresolved | **09C: essential EPUB interactions** | Ordinary reading, including after clicking publication text without activating links: Clio shortcuts and keyboard/palette chapter navigation work; text selection and native copy remain intact; untrusted EPUB scripts/URLs cannot gain native privileges; closing/replacing the document retires all events. Check paged and continuous modes, editable targets and held keys with native evidence. In-content hyperlinks are separately deferred in [Issue #5](https://github.com/TodScissorhands/clio/issues/5); 09C is **not fully accepted**. |
 | 2 — decision closed | **09C: wheel** | Keep native scrolling in continuous EPUB. Do **not** build paged EPUB wheel-to-turn or Ctrl+Wheel font gestures. Explicit keyboard/palette page navigation remains. |
-| 3 | **09D: interface design** | Prototype the lean command hierarchy, status feedback, focus/escape behavior, and PDF search visibility; approve one coherent design before implementing broader chrome. |
-| 4 | **09E: interface implementation** | Implement approved palette refinements and a clearly visible active PDF search match with reliable scroll/zoom positioning. Preserve selection/copying and a compact footer. |
-| 5 | **Task 10: core reading features** | EPUB publication-wide text search with snippets, stable locations and visible results; then bookmarks and link-navigation history. Reuse the same search interaction vocabulary in PDF and EPUB. |
+| 3 — proposed, awaiting approval | **09D: interface design** | Review the existing interface and finalize the minimal hierarchy, focus/Escape rules, status, PDF search visibility, EPUB preferences, terminology and responsive/accessibility decisions in [DESIGN.md](DESIGN.md#09d-review-and-09e-boundary). Documentation only; approve one coherent proposal before 09E. Deferred hyperlinks do not block 09D. |
+| 4 — after design approval | **09E: interface implementation** | Implement the approved 09D refinements within the existing palette/footer: consistent Back/discovery, grouped EPUB preferences, relevant status and clearly visible active PDF search matches with reliable scroll/zoom positioning. Preserve selection/copying and keyboard/wheel semantics; verify responsive layout and accessibility. This does not by itself accept unresolved 09C native keyboard/focus behavior. |
+| 5 | **Task 10: core reading features** | EPUB publication-wide text search with snippets, stable locations and visible results; then bookmarks. Link-navigation history follows the separately deferred hyperlink work, not a prerequisite for search/bookmarks. Reuse the same search interaction vocabulary in PDF and EPUB. |
 | 6 | **Task 10: reading tools** | Persistent highlights/notes, with format-specific location adapters and bounded storage/lifecycle work. |
 | Later | **Sessions and polish** | Tabs; multi-window/detach; optional motion, TTS/dictionary and other features only when requirements justify them. |
 | Pre-release | **Distribution** | Validate packaged builds, keyboard/IME/accessibility, file handling and behavior on Windows, macOS, and representative Linux distributions. Avoid OS-specific features without an explicit fallback. |
 
 A known, user-visible P0 safety or essential-reading failure blocks acceptance of its feature. Other reproducible defects are prioritized without restarting the whole roadmap. The historical intermittent full-app freeze remains an issue to observe; it is not established as fixed and is not automatically a new audit campaign.
 
-## 09C architecture decision still open
+## 09C acceptance and deferred hyperlinks
 
-- Current epub.js iframe uses script-disabled sandboxing; WebKitGTK suppresses its DOM event listeners, affecting Clio keyboard routing and internal links. Text selection/copying still works. See [native evidence](epub-keyboard-focus.md).
-- Never enable publication scripts, remove the sandbox, expose native APIs to EPUB documents, or steal focus from text selection as a shortcut.
-- Compare a **trusted, low-privilege isolated rendering surface** (portable interaction protocol; no publication native capabilities) against minimal native event integration. A separate iframe alone is not a security boundary if host permissions leak into it. Foliate/Readium are reference implementations, not an authorized migration.
-- Use one **bounded implementation-oriented prototype** with five concrete acceptance scenarios above. If the renderer boundary cannot be established safely without a large rewrite, stop, report the blocker and choose between a renderer migration and a documented limitation. No endless speculative probes.
-- Preserve the single existing keyboard command router and EPUB CFI/reader-generation ownership; do not create a second shortcut interpreter.
+- Ordinary EPUB keyboard/focus reliability remains an unresolved essential-reading acceptance requirement, not covered by the hyperlink deferral. A working on-screen Commands control is discoverability, not evidence that content-focused shortcuts work. See existing [native evidence](epub-keyboard-focus.md); require native WebKitGTK/Tauri verification before claiming acceptance.
+- In-content chapter/fragment/footnote hyperlinks are deferred as a known limitation in [Issue #5](https://github.com/TodScissorhands/clio/issues/5), including the reported blank-reader/focus disruption on activation. They do not block 09D or the current sequential-reading design track, provided ordinary reading and command-driven chapter navigation remain reliable. This is not a claim that link activation is safe or fixed.
+- Do not start 09C-A4, another speculative renderer prototype or a migration solely for Issue #5. Revisit after core keyboard/palette functionality, stability, the approved wheel policy and interface priorities are established; first consult established reader implementations and EPUB navigation semantics. Existing research stays evidence, not an instruction to repeat repository-wide architecture work.
+- Preserve script-disabled publication sandboxing, native permission boundaries, selection/copy, the single keyboard command router, CFI restoration and reader-generation cleanup. No focus theft or publication scripting as an input workaround.
+
+## 09D approval boundary
+
+The proposal and unchanged/refine/consolidate/09E/deferred split live in [DESIGN.md](DESIGN.md#09d-review-and-09e-boundary). User approval is still required for the preference field hierarchy, retained PDF search count and active-match visibility/positioning behavior before 09E begins. 09D changes no production UI, does not modify or merge PR #4, and does not close 09C. Keep the approved EPUB wheel decision above unchanged.
 
 ## Search baseline
 
