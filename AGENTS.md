@@ -11,13 +11,20 @@ Clio is a document-first Tauri reader with separate PDF.js and epub.js engines. 
 - EPUB publications are untrusted. Keep `allowScriptedContent: false`, the existing sandbox and Tauri permission boundaries. Never inject publication scripts, add unrestricted messaging or hide input defects with focus theft.
 - Content-focused EPUB keyboard delivery and internal hyperlinks have documented WebKitGTK limitations; do not claim them fixed without native evidence.
 
+## Delegation
+
+- Use one implementation owner by default.
+- Use ordinary tools for searching, inspection and deterministic checks.
+- Delegate only independent, bounded tasks with explicit deliverables.
+- Assign non-overlapping ownership; agents must not edit the same files concurrently.
+
 ## Implementation and verification
 
 Prefer small feature-owned modules, existing lifecycle boundaries and supported renderer APIs. Do not introduce a CSS normalization engine, new dependencies or wholesale refactoring without a demonstrated requirement.
 
 Validate persisted data as unknown, retain backward compatibility and handle unavailable storage. Distinguish requested, applied and effective settings. Cancel deferred work on close/replacement; stale callbacks cannot affect another document.
 
-Test consumer-visible behavior and boundary transitions. Run focused tests, actual WebKitGTK/Tauri smoke scenarios, and these complete gates:
+Test consumer-visible behavior and boundary transitions. During development, use focused local tests and relevant WebKitGTK/Tauri smoke scenarios. At the PR acceptance gate, run these complete gates:
 
 ```
 GDK_SCALE=1 GDK_DPI_SCALE=1 bun test
