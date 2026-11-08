@@ -221,6 +221,13 @@
   opacity: 1;
 }
 
+.command-hint {
+  flex: 0 0 auto;
+  margin: 8px 2px;
+  color: #b5bdc9;
+  font-size: 11px;
+}
+
 .command-list {
   min-height: 0;
   overflow: auto;
@@ -240,6 +247,10 @@
   color: inherit;
   text-align: left;
   cursor: pointer;
+}
+
+.command-row[aria-disabled="true"] {
+  cursor: not-allowed;
 }
 
 .command-row[aria-selected="true"] {

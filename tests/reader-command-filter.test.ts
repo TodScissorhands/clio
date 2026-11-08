@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { EPUB_READER_COMMANDS, filterReaderCommands } from "../src/reader/interactions";
 import type { ReaderCommand } from "../src/reader/interactions";
-import { epubPreferenceCommands, searchableReaderCommands, themeCommands } from "../src/reader/appearanceCommands";
+import { applyEpubPreferenceCommand, epubPreferenceCommands, epubPreferenceMenuCommands, searchableReaderCommands, themeCommands } from "../src/reader/appearanceCommands";
 import { DEFAULT_EPUB_PREFERENCES } from "../src/epub/preferences";
 
 describe("reader command discovery", () => {
@@ -58,6 +58,37 @@ describe("EPUB command discovery", () => {
     expect(discover("current")).toEqual([]);
     expect(discover("saved size")).toEqual([]);
   });
+});
+
+describe("EPUB preference chooser states", () => {
+  test("summaries and current marks follow applied values while preserving pending and suppressed choices", () => {
+    const requested = { ...DEFAULT_EPUB_PREFERENCES, fontFamily: "sans" as const, fontScale: 120 };
+    const summary = (applied = DEFAULT_EPUB_PREFERENCES, retained = "") =>
+      epubPreferenceMenuCommands(requested, applied, retained).find((command) => command.value === "fontFamily")!.state!;
+    expect(summary().text).toMatch(/Publisher.*requested.*Sans.*waiting/i);
+    expect(summary(requested).text).toBe("Sans");
+    const pending = epubPreferenceCommands(requested, DEFAULT_EPUB_PREFERENCES, "", "fontFamily");
+    expect(pending.find((command) => command.value === "publisher")!.state!.active).toBe(true);
+    expect(pending.find((command) => command.value === "sans")!.state!.active).toBe(false);
+    const reason = "Fixed-layout publication";
+    expect(summary(DEFAULT_EPUB_PREFERENCES, reason).text).toMatch(/Publisher retained.*Sans.*Fixed-layout/);
+    const suppressed = epubPreferenceCommands(requested, DEFAULT_EPUB_PREFERENCES, reason, "fontFamily");
+    expect(suppressed.some((command) => command.state?.active)).toBe(false);
+    expect(suppressed.find((command) => command.value === "sans")!.state!.text).toMatch(/saved choice.*Fixed-layout/);
+  });
+
+  test.each([[80, "epub_text_smaller", "epub_text_larger", 90], [200, "epub_text_larger", "epub_text_smaller", 190]] as const)(
+    "text size %s blocks the bound action but permits the reverse action",
+    (fontScale, disabledId, enabledId, next) => {
+      const preferences = { ...DEFAULT_EPUB_PREFERENCES, fontScale };
+      const commands = epubPreferenceCommands(preferences, preferences, "", "fontScale");
+      const disabled = commands.find((command) => command.id === disabledId)!;
+      const enabled = commands.find((command) => command.id === enabledId)!;
+      expect(disabled.disabled).toBe(true);
+      expect(applyEpubPreferenceCommand(preferences, disabled)).toBeNull();
+      expect(applyEpubPreferenceCommand(preferences, enabled)!.fontScale).toBe(next);
+    },
+  );
 });
 
 describe("chapter destination discovery", () => {

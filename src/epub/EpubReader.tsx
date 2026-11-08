@@ -9,7 +9,8 @@ import { createEpubStyles } from "./styles";
 import { DEFAULT_EPUB_PREFERENCES, loadEpubPreferences, saveEpubPreferences } from "./preferences";
 import type { EpubPreferences } from "./preferences";
 import { DOCUMENT_THEMES } from "../reader/appearance";
-import { applyEpubPreferenceCommand, commandTheme, epubPreferenceCommands, searchableReaderCommands, themeCommands } from "../reader/appearanceCommands";
+import { applyEpubPreferenceCommand, commandTheme, epubPreferenceCommands, epubPreferenceMenuCommands, searchableReaderCommands, themeCommands } from "../reader/appearanceCommands";
+import type { EpubPreferenceField } from "../reader/appearanceCommands";
 import {
   filterReaderCommands,
   EPUB_READER_COMMANDS,
@@ -21,7 +22,7 @@ import { getEpubCommandStates } from "../reader/commandState";
 import "../reader/ReaderStatus.css";
 import "./EpubReader.css";
 
-type PaletteMode = "commands" | "chapters" | "themes" | "preferences";
+type PaletteMode = "commands" | "chapters" | "themes" | "preferences" | EpubPreferenceField;
 
 type EpubReaderProps = {
   book: EpubBook;
@@ -117,17 +118,23 @@ export function EpubReader({ book, path, onClose, onOpenDocument, nightMode, onT
     toggle_night_mode: { active: nightMode, text: nightMode ? "Dark chrome" : "Light chrome" },
   }), [layoutMode, nightMode]);
 
-  const chapterCommands = useMemo(() => chapters.map((chapter, index): ReaderCommand => ({
-    id: "select_chapter",
-    scope: "epub",
-    key: `toc-${index}-${chapter.href}`,
-    label: chapter.label,
-    shortcut: "",
-    depth: chapter.depth,
-    targetHref: chapter.href,
-  })), [chapters]);
+  const chapterCommands = useMemo((): ReaderCommand[] => [
+    { id: "back_to_commands", scope: "epub", shortcut: "", label: "Back to commands" },
+    ...chapters.map((chapter, index): ReaderCommand => ({
+      id: "select_chapter",
+      scope: "epub",
+      key: `toc-${index}-${chapter.href}`,
+      label: chapter.label,
+      shortcut: "",
+      depth: chapter.depth,
+      targetHref: chapter.href,
+    })),
+  ], [chapters]);
   const themes = themeCommands("epub", applied.theme, preferences.theme, retained || "Requested — waiting for layout");
   const preferenceChoices = epubPreferenceCommands(preferences, applied, retained);
+  const preferenceMenu = epubPreferenceMenuCommands(preferences, applied, retained);
+  const fieldCommand = preferenceMenu.find((command) => command.value === paletteMode);
+  const fieldLabel = fieldCommand?.label?.replace(/…$/, "");
   const rootCommands = EPUB_READER_COMMANDS.map((command) => {
     if (layoutMode === "continuous" && (command.id === "next_page" || command.id === "previous_page")) {
       return { ...command, label: command.id === "next_page" ? "Next screen" : "Previous screen" };
@@ -136,8 +143,9 @@ export function EpubReader({ book, path, onClose, onOpenDocument, nightMode, onT
   });
   const visibleCommands = filterReaderCommands(commandQuery, true, "epub",
     paletteMode === "chapters" ? chapterCommands
-      : paletteMode === "themes" ? themes : paletteMode === "preferences" ? preferenceChoices
-        : searchableReaderCommands(rootCommands, [themes, preferenceChoices], commandQuery));
+      : paletteMode === "themes" ? themes : paletteMode === "preferences" ? preferenceMenu
+        : fieldCommand ? epubPreferenceCommands(preferences, applied, retained, paletteMode as EpubPreferenceField)
+          : searchableReaderCommands(rootCommands, [themes, preferenceMenu, preferenceChoices], commandQuery));
 
   const navigateToHref = useCallback((href: string) => {
     const rendition = renditionRef.current;
@@ -246,8 +254,17 @@ export function EpubReader({ book, path, onClose, onOpenDocument, nightMode, onT
 
   const executePaletteCommand = useCallback((command: ReaderCommand) => {
     if (command.disabled) return;
-    if (command.id === "document_appearance" || command.id === "epub_reading_preferences" || command.id === "back_to_commands") {
-      setPaletteMode(command.id === "document_appearance" ? "themes" : command.id === "epub_reading_preferences" ? "preferences" : "commands");
+    if (command.id === "epub_preference_field" && command.value &&
+        preferenceMenu.some((entry) => entry.value === command.value)) {
+      setPaletteMode(command.value as EpubPreferenceField);
+      setCommandQuery("");
+      setCommandIndex(0);
+      return;
+    }
+    if (command.id === "document_appearance" || command.id === "epub_reading_preferences" ||
+        command.id === "back_to_commands" || command.id === "back_to_preferences") {
+      setPaletteMode(command.id === "document_appearance" ? "themes"
+        : command.id === "epub_reading_preferences" || command.id === "back_to_preferences" ? "preferences" : "commands");
       setCommandQuery("");
       setCommandIndex(0);
       return;
@@ -274,7 +291,7 @@ export function EpubReader({ book, path, onClose, onOpenDocument, nightMode, onT
     setOverlay(null);
     runReaderCommand(command.id);
     if (command.id !== "close_document") requestAnimationFrame(() => viewportRef.current?.focus());
-  }, [choosePreferences, navigateToHref, runReaderCommand]);
+  }, [choosePreferences, navigateToHref, preferenceMenu, runReaderCommand]);
 
   const registerKeyboardTarget = useReaderKeyboard(
     {
@@ -719,8 +736,8 @@ export function EpubReader({ book, path, onClose, onOpenDocument, nightMode, onT
         commandStates={paletteMode === "commands" ? commandStates : undefined}
         commandIndex={commandIndex}
         query={commandQuery}
-        placeholder={paletteMode === "chapters" ? "Filter chapters" : paletteMode === "themes" ? "Filter document themes" : paletteMode === "preferences" ? "Filter reading preferences" : "Filter commands"}
-        ariaLabel={paletteMode === "chapters" ? "Choose a chapter" : paletteMode === "themes" ? "Document themes" : paletteMode === "preferences" ? "Reading preferences" : "Reader commands"}
+        placeholder={paletteMode === "chapters" ? "Filter chapters" : paletteMode === "themes" ? "Filter document themes" : paletteMode === "preferences" ? "Filter reading preferences" : fieldLabel ? `Filter ${fieldLabel.toLowerCase()}` : "Filter commands"}
+        ariaLabel={paletteMode === "chapters" ? "Choose a chapter" : paletteMode === "themes" ? "Document themes" : paletteMode === "preferences" ? "Reading preferences" : fieldLabel ?? "Reader commands"}
         emptyMessage={paletteMode === "chapters" ? "No matching chapters" : "No commands"}
         onQueryChange={setCommandQuery}
         onCommandIndexChange={setCommandIndex}

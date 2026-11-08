@@ -82,7 +82,10 @@ function row(id: ReaderCommandId) {
   const label = epub && (id === "next_page" || id === "previous_page") &&
     getComputedStyle(document.querySelector(".epub-container")!).overflowY === "scroll"
     ? id === "next_page" ? "Next screen" : "Previous screen" : definition.label;
-  const result = rows().find((candidate) => candidate.querySelector(".command-label")?.textContent === label);
+  const result = rows().find((candidate) => {
+    const text = candidate.querySelector(".command-label")?.textContent;
+    return text === label || id.startsWith("theme_") && text === `Document theme: ${label}`;
+  });
   check(result, `missing production command row: ${id}`);
   return result!;
 }
@@ -646,9 +649,32 @@ async function epubCase(width: number, height: number) {
   await value(filter(), "");
   await execute("back_to_commands");
   await execute("epub_reading_preferences");
-  state("epub_set_font_family", true, /current/i);
-  state("epub_size_publisher", true, /current/i);
-  state("epub_text_larger", false, /publisher/i);
+  const fields = ["Text size", "Font", "Line spacing", "Alignment", "Margins", "Reading column"];
+  check(rows().length === fields.length + 2, "preferences did not consolidate into six fields, Back and Reset");
+  for (const field of fields) {
+    await value(filter(), field);
+    const target = rows().find((option) => option.querySelector(".command-label")?.textContent === `${field}…`)!;
+    check(target && /Publisher/.test(target.querySelector(".command-state")?.textContent ?? ""), `${field} omits its effective value`);
+    target.click(); await settle();
+    check(filter().value === "" && document.activeElement === filter() &&
+      rows()[0]?.textContent?.includes("Back to Reading preferences"), `${field} entry did not reset selection and focus`);
+    check(selectedVisible() === rows()[0], `${field} did not select its Back row`);
+    check(rows().slice(1).every((option) => option.querySelector(".command-label")?.textContent?.startsWith(`${field}:`)),
+      `${field} chooser contains unrelated options`);
+    if (field === "Text size") {
+      state("epub_size_publisher", true, /current/i);
+      state("epub_text_larger", false, /publisher/i);
+    }
+    if (field === "Font") state("epub_set_font_family", true, /current/i);
+    await value(filter(), "Back to Reading preferences");
+    await key("Enter");
+    check(filter().value === "" && selectedVisible() === rows()[0] &&
+      filter().placeholder === "Filter reading preferences", `${field} Back did not return to its parent`);
+  }
+  await value(filter(), "Text size");
+  await key("Enter");
+  await closePalette();
+  await execute("epub_reading_preferences");
   await value(filter(), "gruvbox");
   check(rows().length === 0, "preference chooser leaked document themes");
   await value(filter(), "");
@@ -687,6 +713,12 @@ async function epubCase(width: number, height: number) {
   check(!document.querySelector(".command-state") && rows().every((option) => !option.hasAttribute("aria-describedby")),
     "EPUB layout descriptions leaked into chapter destinations");
   check(document.activeElement === filter(), "chapter destination mode lost inherited filter focus");
+  check(rows()[0]?.textContent?.includes("Back to commands") && selectedVisible() === rows()[0],
+    "chapter chooser omits its selected Back row");
+  rows()[0]!.click(); await settle();
+  check(filter().placeholder === "Filter commands" && filter().value === "" && selectedVisible() === rows()[0],
+    "chapter Back did not restore the unfiltered command root");
+  await execute("go_to_chapter");
   await key("Tab"); await key("Tab", { shiftKey: true });
   check(document.activeElement === filter(), "chapter palette lost inherited Tab containment");
   await closePalette();
