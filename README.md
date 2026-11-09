@@ -15,7 +15,7 @@ Clio is a keyboard-first PDF and EPUB reader built with Tauri, React, PDF.js and
 
 ## Command palette
 
-The PDF/EPUB palette keeps focus in its filter. Arrow keys select an option and reveal it inside the list; `Enter` executes it. Pointer movement selects a row and clicking executes that row. `Tab` and `Shift+Tab` stay in the palette; `Esc` closes it and returns focus to the reader.
+The PDF/EPUB palette keeps focus in its filter. Arrow keys select an option and reveal it inside the list; `Enter` executes it. Pointer movement selects a row and clicking executes that row. `Tab` and `Shift+Tab` stay in the palette; `Esc` closes it and returns focus to the reader. The list reserves logical end spacing for overlay scrollbars so shortcut hints stay readable in left-to-right and right-to-left layouts.
 
 The trailing **Commands :** status-bar button opens the same palette in either reader, including the closed reader. It is hidden while another overlay/input is active. This is an explicit command entry point, not automatic recovery of sandboxed EPUB keyboard input.
 
@@ -25,7 +25,7 @@ State-bearing commands show a checkmark and a short setting description, separat
 
 PDF descriptions reflect the effective view, fit versus custom zoom, application appearance and recoloring preferences. A narrow-window spread fallback identifies the displayed single page and the still-requested spread separately. Disabled recoloring distinguishes saved options from applied effects; custom colors never mark a stock preset current. EPUB describes layout and applied versus requested reading preferences.
 
-`bun test` includes a real WebKitGTK palette integration test at three viewport sizes and both appearances. It uses an offscreen GTK view and the installed Python GObject/WebKitGTK 4.1 bindings on Linux with an X display; environments without that tooling report this test as skipped. Native Tauri verification remains separate from this shared-runtime regression test.
+`bun test` includes a real WebKitGTK palette integration test at three viewport sizes and both appearances, including shortcut hit-testing in LTR/RTL at 100% and 150% zoom. It uses an offscreen GTK view and the installed Python GObject/WebKitGTK 4.1 bindings on Linux with an X display; environments without that tooling report this test as skipped. Native Tauri verification remains separate from this shared-runtime regression test.
 
 ## Reader feedback
 

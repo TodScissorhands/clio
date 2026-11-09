@@ -32,7 +32,9 @@ export function ReaderCommandPalette({
   const dialogRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const pointerSelectionRef = useRef(false);
+  const chooserRef = useRef(placeholder);
   const listId = useId();
+  const hintId = `${listId}-hint`;
   const activeIndex = clampCommandIndex(commandIndex, commands.length);
   const activeId = commands.length ? `${listId}-option-${activeIndex}` : undefined;
 
@@ -69,6 +71,10 @@ export function ReaderCommandPalette({
   useLayoutEffect(() => {
     const list = listRef.current;
     if (!list) return;
+    if (chooserRef.current !== placeholder) {
+      chooserRef.current = placeholder;
+      pointerSelectionRef.current = false;
+    }
     const revealActiveOption = () => {
       const option = list.querySelector<HTMLElement>('[aria-selected="true"]');
       if (!option) return;
@@ -116,6 +122,7 @@ export function ReaderCommandPalette({
         className="command-filter"
         role="combobox"
         aria-label={placeholder}
+        aria-describedby={hintId}
         aria-autocomplete="list"
         aria-expanded="true"
         aria-controls={listId}
@@ -128,6 +135,7 @@ export function ReaderCommandPalette({
           onCommandIndexChange(0);
         }}
       />
+      <p id={hintId} className="command-hint">↑↓ Select · Enter Run · Escape Back to reader</p>
       <div ref={listRef} id={listId} className="command-list" role="listbox" aria-label={ariaLabel}>
         {commands.map((command, index) => {
           const state = command.state ?? commandStates?.[command.id];

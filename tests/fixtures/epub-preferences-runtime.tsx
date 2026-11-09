@@ -153,6 +153,32 @@ async function run() {
   createRoot(document.getElementById("root")!).render(<StrictMode><App /></StrictMode>);
   await until(() => app && document.querySelector('.document-viewport'), "App did not mount");
   await open();
+  await command("epub_reading_preferences");
+  for (const [field, choice, savedField, expected] of [
+    ["Text size", "Text size: Larger", "fontScale", 110],
+    ["Font", "Font: Sans", "fontFamily", "sans"],
+    ["Line spacing", "Line spacing: Comfortable", "lineHeight", 1.6],
+    ["Alignment", "Alignment: Start", "alignment", "start"],
+    ["Margins", "Margins: Comfortable", "margins", "comfortable"],
+    ["Reading column", "Reading column: Comfortable", "columnWidth", "comfortable"],
+  ] as const) {
+    await choose(`${field}…`);
+    const input = document.querySelector<HTMLInputElement>(".command-filter")!;
+    check(input.value === "" && document.activeElement === input, `${field} did not start with a focused empty filter`);
+    await choose(choice);
+    check(document.activeElement === input && input.value === choice && stored()[savedField] === expected,
+      `${field} did not apply immediately while preserving its filter`);
+    await choose("Back to Reading preferences");
+    check(input.value === "" && document.querySelector('[aria-selected="true"]')?.textContent?.includes("Back to commands"),
+      `${field} Back failed to clear its local query and select the first parent row`);
+  }
+  await until(() => bodyFont() === "22px" && first().window.getComputedStyle(first().document.body).fontFamily === "sans-serif" &&
+    document.querySelector<HTMLElement>(".epub-reader__viewport")!.style.maxWidth, "field chooser preferences did not reach the real rendition");
+  await choose("Reset typography and layout to Publisher");
+  await until(() => bodyFont() === "20px" && !document.querySelector<HTMLElement>(".epub-reader__viewport")!.style.maxWidth,
+    "hierarchical preference reset did not reach the real rendition");
+  await dismiss();
+  coverage.push("six-field-immediate-application-back-and-reset");
   for (const continuous of [false, true]) {
     if (continuous) { await command("continuous_layout"); await until(() => !document.querySelector('.epub-status__detail'), "continuous layout did not settle"); }
     await ready();

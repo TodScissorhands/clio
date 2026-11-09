@@ -32,6 +32,8 @@ export type ReaderCommandId =
   | "document_appearance"
   | "epub_reading_preferences"
   | "back_to_commands"
+  | "back_to_preferences"
+  | "epub_preference_field"
   | "theme_original"
   | "theme_light"
   | "theme_dark"
@@ -95,17 +97,17 @@ export const READER_COMMANDS: ReaderCommand[] = [
 
 export const EPUB_READER_COMMANDS: ReaderCommand[] = [
   { id: "open_document", shortcut: "o · Ctrl+O", scope: "epub", label: "Open document" },
+  { id: "close_document", shortcut: "Ctrl+W", scope: "epub", label: "Close document" },
+  { id: "go_to_chapter", shortcut: "", scope: "epub", label: "Go to chapter…" },
   { id: "previous_chapter", shortcut: "Shift+N", scope: "epub", label: "Previous chapter" },
   { id: "next_chapter", shortcut: "n", scope: "epub", label: "Next chapter" },
-  { id: "go_to_chapter", shortcut: "", scope: "epub", label: "Go to chapter" },
   { id: "next_page", shortcut: "PageDown", scope: "epub", label: "Next page" },
   { id: "previous_page", shortcut: "PageUp", scope: "epub", label: "Previous page" },
+  { id: "paged_layout", shortcut: "", scope: "epub", label: "Paged" },
+  { id: "continuous_layout", shortcut: "", scope: "epub", label: "Continuous" },
+  { id: "toggle_night_mode", shortcut: "i", scope: "epub", label: "Toggle application appearance" },
   { id: "document_appearance", shortcut: "", scope: "epub", label: "Document theme…" },
   { id: "epub_reading_preferences", shortcut: "", scope: "epub", label: "Reading preferences…" },
-  { id: "paged_layout", shortcut: "", scope: "epub", label: "Paged layout" },
-  { id: "continuous_layout", shortcut: "", scope: "epub", label: "Continuous layout" },
-  { id: "toggle_night_mode", shortcut: "i", scope: "epub", label: "Toggle application appearance" },
-  { id: "close_document", shortcut: "Ctrl+W", scope: "epub", label: "Close document" },
 ];
 
 export function filterReaderCommands(
@@ -117,7 +119,10 @@ export function filterReaderCommands(
   const normalize = (text: string) => text.trim().toLocaleLowerCase().replace(/\s+/g, " ");
   const normalizedQuery = normalize(query);
   const commands = commandSet ?? (readerKind === "epub" ? EPUB_READER_COMMANDS : READER_COMMANDS);
-  return commands.filter((command) => {
+  const mac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
+  const localizedCommands = mac ? commands.map((command) => /Ctrl\+[OWF]/.test(command.shortcut)
+    ? { ...command, shortcut: command.shortcut.replace(/Ctrl\+([OWF])/g, "Cmd+$1") } : command) : commands;
+  return localizedCommands.filter((command) => {
     if ((command.scope ?? "pdf") !== readerKind) return false;
     if (!hasDocument && command.id !== "open_document" && command.id !== "toggle_night_mode" &&
       !command.id.startsWith("recolor_") && !command.id.startsWith("theme_") && command.id !== "toggle_recolor" &&
