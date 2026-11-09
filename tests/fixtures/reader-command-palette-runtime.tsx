@@ -141,6 +141,20 @@ function checkVisible() {
   check(row.top >= bounds.top - 1 && row.bottom <= bounds.top + list.clientHeight + 1,
     `selected option is outside its list: ${row.top}..${row.bottom}, list ${bounds.top}..${bounds.bottom}`);
 }
+function checkShortcutClearance() {
+  const list = document.querySelector<HTMLElement>(".command-list")!;
+  const bounds = list.getBoundingClientRect();
+  check(list.scrollWidth <= list.clientWidth, "palette shortcuts create horizontal overflow");
+  for (const shortcut of list.querySelectorAll<HTMLElement>(".command-shortcut")) {
+    const rect = shortcut.getBoundingClientRect();
+    const y = (rect.top + rect.bottom) / 2;
+    if (!rect.width || y <= bounds.top || y >= bounds.bottom) continue;
+    for (const x of [rect.left + .5, rect.right - .5]) {
+      check(document.elementFromPoint(x, y) === shortcut,
+        `shortcut obscured or clipped in ${document.documentElement.dir}: ${shortcut.textContent}`);
+    }
+  }
+}
 function ratio(foreground: string, background: string) {
   const luminance = (color: string) => {
     const values = color.match(/[\d.]+/g)!.slice(0, 3).map(Number).map((v) => {
@@ -188,6 +202,17 @@ async function run() {
     check(document.activeElement?.id === "reading-area", "execution must restore reader focus");
 
     await open();
+    for (const zoom of [1, 1.5]) {
+      document.documentElement.style.zoom = String(zoom);
+      for (const direction of ["ltr", "rtl"]) {
+        document.documentElement.dir = direction;
+        await settle();
+        checkShortcutClearance();
+      }
+    }
+    document.documentElement.style.zoom = "";
+    document.documentElement.dir = "ltr";
+    await settle();
     const count = document.querySelectorAll(".command-row").length;
     for (let n = 0; n < count; n++) await key("ArrowDown");
     check(selected().id.endsWith(`option-${count - 1}`), "last PDF command is unreachable");

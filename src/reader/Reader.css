@@ -232,6 +232,8 @@
   min-height: 0;
   overflow: auto;
   overscroll-behavior: contain;
+  /* WebKitGTK overlay scrollbars do not reserve a scrollbar-gutter. */
+  padding-inline-end: 16px;
 }
 
 .command-row {
