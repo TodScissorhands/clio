@@ -7,6 +7,7 @@ import {
   searchPageIndexes,
 } from "../src/pdf/searchIndex";
 import type { PdfPageSearchIndex, PdfSearchTextItem } from "../src/pdf/searchIndex";
+import { getSearchRevealScroll } from "../src/pdf/searchReveal";
 
 function item(
   str: string,
@@ -32,6 +33,34 @@ describe("PDF search index", () => {
     expect(index.text).toBe("fish");
     expect(findPageMatchesInIndex(index, "fi")[0]?.segments).toEqual([
       { itemIndex: 0, start: 0, end: 1 },
+    ]);
+  });
+
+  test("maps only the matched suffix and prefix across a line break", () => {
+    const index = buildPageSearchIndex(2, [
+      item("Before split", { hasEOL: true }),
+      item("phrase after", { y: 80 }),
+    ]);
+    expect(findPageMatchesInIndex(index, "split phrase")[0]?.segments).toEqual([
+      { itemIndex: 0, start: 7, end: 12 },
+      { itemIndex: 1, start: 0, end: 6 },
+    ]);
+  });
+
+  test("empty PDF.js EOL records do not shift rendered match spans", () => {
+    const index = buildPageSearchIndex(1, [
+      item("Before split"),
+      item("", { hasEOL: true }),
+      item("phrase after", { y: 80 }),
+      item("", { y: 80, hasEOL: true }),
+      item("needle", { y: 60 }),
+    ]);
+    expect(findPageMatchesInIndex(index, "split phrase")[0]?.segments).toEqual([
+      { itemIndex: 0, start: 7, end: 12 },
+      { itemIndex: 1, start: 0, end: 6 },
+    ]);
+    expect(findPageMatchesInIndex(index, "needle")[0]?.segments).toEqual([
+      { itemIndex: 2, start: 0, end: 6 },
     ]);
   });
 
@@ -106,5 +135,30 @@ describe("PDF search index", () => {
     expect(getWrappedMatchIndex(2, 1, 3)).toBe(0);
     expect(getWrappedMatchIndex(0, -1, 3)).toBe(2);
     expect(getWrappedMatchIndex(0, 1, 0)).toBe(-1);
+  });
+});
+
+describe("PDF search reveal", () => {
+  const viewport = { left: 8, top: 8, right: 808, bottom: 608 };
+  const area = { scrollTop: 100, scrollLeft: 200, scrollHeight: 3000, scrollWidth: 2000, clientHeight: 616, clientWidth: 816 };
+
+  test("reveals a zoomed match in both axes with reading context", () => {
+    expect(getSearchRevealScroll({ left: 1200, top: 900, right: 1300, bottom: 940 }, viewport, area))
+      .toEqual({ top: 752, left: 696 });
+    expect(getSearchRevealScroll({ left: -80, top: 900, right: 0, bottom: 940 }, viewport, area).left).toBe(108);
+  });
+
+  test("keeps a tall multiline result fully visible instead of clipping its bottom", () => {
+    const result = getSearchRevealScroll({ left: 48, top: 900, right: 200, bottom: 1400 }, viewport, area);
+    expect(result).toEqual({ top: 896, left: 200 });
+    expect(1400 - (result.top - area.scrollTop)).toBe(604);
+  });
+
+  test("reveals oversized results at their leading edge and clamps document edges", () => {
+    expect(getSearchRevealScroll({ left: 48, top: 900, right: 200, bottom: 1700 }, viewport, area).top).toBe(988);
+    expect(getSearchRevealScroll({ left: 8, top: 8, right: 100, bottom: 20 }, viewport, { ...area, scrollTop: 0, scrollLeft: 0 }))
+      .toEqual({ top: 0, left: 0 });
+    expect(getSearchRevealScroll({ left: 2500, top: 4000, right: 2550, bottom: 4050 }, viewport, area))
+      .toEqual({ top: 2384, left: 1184 });
   });
 });

@@ -5,6 +5,7 @@ import { PdfViewerSurface } from "../pdf/PdfViewerSurface";
 import type { PdfViewerHandle } from "../pdf/PdfViewerSurface";
 import { normalizeSearchQuery, usePdfSearch } from "../pdf/search";
 import type { SearchMatch } from "../pdf/search";
+import { getSearchRevealScroll } from "../pdf/searchReveal";
 import { loadReadingPosition } from "../platform/readingPosition";
 import type { ReadingPosition } from "../platform/readingPosition";
 import {
@@ -57,6 +58,7 @@ type ZoomAnchor = {
   point: ZoomPoint;
   pointer: boolean;
 };
+type SearchTarget = { pdf: PdfDocument; match: SearchMatch };
 
 function getPageElementBounds(elements: (HTMLElement | null)[]): RectBounds | null {
   if (!elements.length || elements.some((element) => element === null)) return null;
@@ -112,7 +114,12 @@ export function PdfReader({
   const [colorInput, setColorInput] = useState("");
   const colorInputRef = useRef<HTMLInputElement>(null);
 
-  const activeMatchElementRef = useRef<HTMLDivElement | null>(null);
+  const activeMatchElementRef = useRef<(SearchTarget & { element: HTMLDivElement }) | null>(null);
+  const pendingSearchRevealRef = useRef<(SearchTarget & { context: boolean; ready: boolean }) | null>(null);
+  const searchRevealFrameRef = useRef<number | null>(null);
+  const scheduleSearchRevealRef = useRef<() => void>(() => {});
+  const documentRef = useRef(document);
+  documentRef.current = document;
   const jumpInputRef = useRef<HTMLInputElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const recolorMatrix = useMemo(() => {
@@ -141,6 +148,9 @@ export function PdfReader({
   pageNumberRef.current = pageNumber;
 
   const selectSearchMatch = useCallback((match: SearchMatch) => {
+    const pdf = documentRef.current;
+    if (!pdf) return;
+    pendingSearchRevealRef.current = { pdf, match, context: true, ready: true };
     if (pageNumberRef.current !== match.page) {
       pageNumberRef.current = match.page;
       setPageNumber(match.page);
@@ -149,12 +159,7 @@ export function PdfReader({
     if (pdfViewer && pdfViewer.currentPageNumber !== match.page) {
       pdfViewer.currentPageNumber = match.page;
     }
-    const viewer = viewerRef.current;
-    const element = pageElementsRef.current[match.page - 1];
-    if (viewer && element) {
-      const offset = element.getBoundingClientRect().top - viewer.getBoundingClientRect().top;
-      viewer.scrollTo({ top: viewer.scrollTop + offset - 20, behavior: "auto" });
-    }
+    scheduleSearchRevealRef.current();
   }, []);
   const reportSearchError = useCallback((message: string) => setError(message), []);
   const search = usePdfSearch(document, selectSearchMatch, reportSearchError);
@@ -214,7 +219,32 @@ export function PdfReader({
     requestAnimationFrame(() => viewerRef.current?.focus());
   }, []);
 
+  const cancelSearchReveal = useCallback(() => {
+    pendingSearchRevealRef.current = null;
+    if (searchRevealFrameRef.current !== null) cancelAnimationFrame(searchRevealFrameRef.current);
+    searchRevealFrameRef.current = null;
+  }, []);
+  useLayoutEffect(() => () => {
+    cancelSearchReveal();
+    activeMatchElementRef.current = null;
+  }, [document, cancelSearchReveal]);
+
+  const retainVisibleSearchMatch = useCallback(() => {
+    if (pendingSearchRevealRef.current?.context) return;
+    const active = activeMatchElementRef.current;
+    const viewer = viewerRef.current;
+    if (!active?.element.isConnected || active.pdf !== documentRef.current || !viewer) return;
+    const rect = active.element.getBoundingClientRect();
+    const viewport = viewer.getBoundingClientRect();
+    // Do not return to a result the reader has deliberately scrolled away from.
+    if (rect.bottom > viewport.top && rect.top < viewport.bottom &&
+      rect.right > viewport.left && rect.left < viewport.right) {
+      pendingSearchRevealRef.current = { pdf: active.pdf, match: active.match, context: false, ready: false };
+    }
+  }, []);
+
   const captureScrollAnchor = useCallback(() => {
+    retainVisibleSearchMatch();
     if (zoomAnchorFrameRef.current !== null) cancelAnimationFrame(zoomAnchorFrameRef.current);
     zoomAnchorFrameRef.current = null;
     zoomAnchorRef.current = null;
@@ -226,12 +256,15 @@ export function PdfReader({
         top: page.getBoundingClientRect().top - viewer.getBoundingClientRect().top,
       };
     }
-  }, []);
+  }, [retainVisibleSearchMatch]);
 
 
 
   const handlePageRenderError = useCallback((message: string) => setError(message), []);
   const handlePageChange = useCallback((nextPage: number) => {
+    // PDF.js emits intermediate visible-page changes while regrouping/scaling.
+    // Do not let those change the fit basis before the pending result is revealed.
+    if (pendingSearchRevealRef.current && nextPage !== pendingSearchRevealRef.current.match.page) return;
     if (!Number.isInteger(nextPage) || pageNumberRef.current === nextPage) return;
     pageNumberRef.current = nextPage;
     setPageNumber(nextPage);
@@ -247,6 +280,8 @@ export function PdfReader({
     if (!viewer) return;
     let rafId: number | null = null;
     const updateSize = () => {
+      // Capture before deferred overlay/fit-layout work replaces the old bounds.
+      retainVisibleSearchMatch();
       if (rafId !== null) cancelAnimationFrame(rafId);
       rafId = requestAnimationFrame(() => {
         rafId = null;
@@ -266,7 +301,7 @@ export function PdfReader({
       observer.disconnect();
       if (rafId !== null) cancelAnimationFrame(rafId);
     };
-  }, [captureScrollAnchor, pageSizes]);
+  }, [captureScrollAnchor, retainVisibleSearchMatch, pageSizes]);
 
 
   const applyZoomAnchor = useCallback((anchor: ZoomAnchor) => {
@@ -311,6 +346,14 @@ export function PdfReader({
     viewer.scrollTop += top - anchor.top;
     scrollAnchorRef.current = null;
   }, [zoomState, viewerSize, pageSizes, viewMode, continuousScrolling, pageElementsVersion, pageScale, pageNumber, applyZoomAnchor]);
+  useLayoutEffect(() => {
+    const pending = pendingSearchRevealRef.current;
+    if (!pending) return;
+    // A resize overlay sync may precede React's fit/layout commit. Only consume
+    // its reveal after that commit and the existing reading anchors have run.
+    pending.ready = true;
+    scheduleSearchRevealRef.current();
+  }, [zoomState, viewerSize, effectiveViewMode, continuousScrolling, pageScale]);
 
 
   useEffect(() => {
@@ -489,6 +532,7 @@ export function PdfReader({
   }, [loading, onDocumentChange, queueRestoration, releaseTask, search.cancelSearch, search.clear]);
 
   const goToPage = useCallback((page: number) => {
+    cancelSearchReveal();
     if (!totalPages || !Number.isInteger(page)) return;
     const nextPage = Math.max(1, Math.min(totalPages, page));
     if (pageNumberRef.current === nextPage && pdfViewerRef.current?.currentPageNumber === nextPage) return;
@@ -500,7 +544,7 @@ export function PdfReader({
     if (viewer && viewer.currentPageNumber !== nextPage) {
       viewer.currentPageNumber = nextPage;
     }
-  }, [totalPages]);
+  }, [totalPages, cancelSearchReveal]);
 
   const getPdfReadingViewport = useCallback(() => {
     const container = viewerRef.current;
@@ -515,7 +559,28 @@ export function PdfReader({
     const top = rect.top + container.clientTop + paddingTop;
     return { left, top, right: left + size.width, bottom: top + size.height, ...size };
   }, []);
+  const scheduleSearchReveal = useCallback(() => {
+    if (searchRevealFrameRef.current !== null) cancelAnimationFrame(searchRevealFrameRef.current);
+    searchRevealFrameRef.current = requestAnimationFrame(() => {
+      searchRevealFrameRef.current = null;
+      const pending = pendingSearchRevealRef.current;
+      const active = activeMatchElementRef.current;
+      const viewer = viewerRef.current;
+      const viewport = getPdfReadingViewport();
+      if (!pending?.ready || !active || !viewer || !viewport || pending.pdf !== documentRef.current ||
+        active.pdf !== pending.pdf || active.match !== pending.match || !active.element.isConnected ||
+        pdfViewerRef.current?.pdfDocument !== pending.pdf) return;
+      pendingSearchRevealRef.current = null;
+      const bounds = active.element.getBoundingClientRect();
+      if (pending.context || bounds.top < viewport.top + 4 || bounds.bottom > viewport.bottom - 4 ||
+        bounds.left < viewport.left + 4 || bounds.right > viewport.right - 4) {
+        viewer.scrollTo({ ...getSearchRevealScroll(bounds, viewport, viewer), behavior: "auto" });
+      }
+    });
+  }, [getPdfReadingViewport]);
+  scheduleSearchRevealRef.current = scheduleSearchReveal;
   const captureZoomAnchor = useCallback((pointer?: ZoomPoint) => {
+    retainVisibleSearchMatch();
     if (zoomAnchorFrameRef.current !== null) cancelAnimationFrame(zoomAnchorFrameRef.current);
     zoomAnchorFrameRef.current = null;
     zoomAnchorRef.current = null;
@@ -542,7 +607,7 @@ export function PdfReader({
     if (!bounds || bounds.right <= bounds.left || bounds.bottom <= bounds.top) return;
     zoomAnchorRef.current = { pageIndices, bounds, point, pointer: pointer !== undefined };
     scrollAnchorRef.current = null;
-  }, [effectiveViewMode, getPdfReadingViewport]);
+  }, [effectiveViewMode, getPdfReadingViewport, retainVisibleSearchMatch]);
 
 
   const getCurrentPageGroupBounds = useCallback((): RectBounds | null => {
@@ -573,6 +638,7 @@ export function PdfReader({
   }, [getPdfZoomOverflow]);
 
   const panPdf = useCallback((direction: PdfPanDirection): boolean => {
+    cancelSearchReveal();
     const container = viewerRef.current;
     const viewport = getPdfReadingViewport();
     const bounds = getCurrentPageGroupBounds();
@@ -592,17 +658,19 @@ export function PdfReader({
     });
     const moved = Math.abs((isVertical ? container.scrollTop : container.scrollLeft) - previousScroll);
     return moved > 0.5;
-  }, [getCurrentPageGroupBounds, getPdfReadingViewport]);
+  }, [getCurrentPageGroupBounds, getPdfReadingViewport, cancelSearchReveal]);
   const scrollPdfContinuous = useCallback((direction: PdfPanDirection) => {
+    cancelSearchReveal();
     const distance = 48;
     viewerRef.current?.scrollBy({
       left: direction === "left" ? -distance : direction === "right" ? distance : 0,
       top: direction === "up" ? -distance : direction === "down" ? distance : 0,
       behavior: "auto",
     });
-  }, []);
+  }, [cancelSearchReveal]);
 
   const panPdfPage = useCallback((direction: -1 | 1): boolean => {
+    cancelSearchReveal();
     const container = viewerRef.current;
     const viewport = getPdfReadingViewport();
     const bounds = getCurrentPageGroupBounds();
@@ -619,16 +687,17 @@ export function PdfReader({
     const previousTop = container.scrollTop;
     container.scrollBy({ top: delta, behavior: "auto" });
     return Math.abs(container.scrollTop - previousTop) > 0.5;
-  }, [getCurrentPageGroupBounds, getPdfReadingViewport]);
+  }, [getCurrentPageGroupBounds, getPdfReadingViewport, cancelSearchReveal]);
 
   const scrollPdfToPageEdge = useCallback((edge: "top" | "bottom") => {
+    cancelSearchReveal();
     const container = viewerRef.current;
     const viewport = getPdfReadingViewport();
     const bounds = getCurrentPageGroupBounds();
     if (!container || !viewport || !bounds) return;
     const delta = edge === "top" ? bounds.top - viewport.top : bounds.bottom - viewport.bottom;
     container.scrollBy({ top: delta, behavior: "auto" });
-  }, [getCurrentPageGroupBounds, getPdfReadingViewport]);
+  }, [getCurrentPageGroupBounds, getPdfReadingViewport, cancelSearchReveal]);
   const pendingPageEdgeRef = useRef<"top" | "bottom" | null>(null);
 
   const confirmAndAlignPageEdge = useCallback((): boolean => {
@@ -795,17 +864,12 @@ export function PdfReader({
   }, [confirmAndAlignPageEdge, retryRestoration]);
 
   const registerActiveMatchElement = useCallback((index: number, element: HTMLDivElement | null) => {
-    if (index !== activeMatchRef.current) return;
-    activeMatchElementRef.current = element;
-    if (!element) return;
-    requestAnimationFrame(() => {
-      const viewer = viewerRef.current;
-      const current = activeMatchElementRef.current;
-      if (!viewer || current !== element) return;
-      const offset = element.getBoundingClientRect().top - viewer.getBoundingClientRect().top;
-      viewer.scrollTo({ top: viewer.scrollTop + offset - viewer.clientHeight * 0.4, behavior: "auto" });
-    });
-  }, []);
+    const match = matches[index];
+    if (index !== activeMatchRef.current || !element?.isConnected || !document || !match ||
+      pdfViewerRef.current?.pdfDocument !== document) return;
+    activeMatchElementRef.current = { element, match, pdf: document };
+    if (pendingSearchRevealRef.current) scheduleSearchReveal();
+  }, [matches, activeMatchRef, document, scheduleSearchReveal]);
 
 
 
@@ -1032,13 +1096,15 @@ export function PdfReader({
         style={{
           "--recolor-light-color": recolorSettings.recolor ? recolorSettings.recolorLightcolor : undefined,
           "--pdf-search-boundary": searchAppearance.boundary,
-          "--pdf-search-fill": searchAppearance.fill,
         } as React.CSSProperties}
       >
         <div
           className="document-viewport"
           ref={viewerRef}
           onScroll={handleViewportScroll}
+          onWheelCapture={cancelSearchReveal}
+          onPointerDownCapture={cancelSearchReveal}
+          onTouchStartCapture={cancelSearchReveal}
           tabIndex={-1}
           aria-label="PDF reading area"
           style={recolorSettings.recolor ? { background: recolorSettings.recolorLightcolor } : undefined}
@@ -1081,11 +1147,12 @@ export function PdfReader({
                 disabled={!document}
                 onChange={(event) => {
                   activeMatchElementRef.current = null;
+                  cancelSearchReveal();
                   search.setQuery(event.currentTarget.value);
                 }}
               />
-              <span className="search-status" title={searchStatusText}>{searchStatusText}</span>
             </>}
+            {searchStatusText && <span className="search-status" role="status" title={searchStatusText}>{searchStatusText}</span>}
             {overlay === "jump" && <>
               <span className="status-prefix">Go to</span>
               <input

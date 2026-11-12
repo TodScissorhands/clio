@@ -120,15 +120,19 @@
   pointer-events: none;
 }
 
+.pdfjs-search-match {
+  position: absolute;
+}
+
 .pdfjs-search-highlight {
   position: absolute;
   border-radius: 1px;
-  background: rgb(var(--pdf-search-fill, 255 255 255) / 1.5%);
+  background: rgb(255 193 7 / 32%);
   outline: 1px dashed var(--pdf-search-boundary, #000);
 }
 
 .pdfjs-search-highlight.is-active {
-  background: rgb(var(--pdf-search-fill, 255 255 255) / 3%);
+  background: rgb(255 179 0 / 48%);
   outline: 2px solid var(--pdf-search-boundary, #000);
 }
 
