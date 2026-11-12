@@ -1096,6 +1096,7 @@ export function PdfReader({
         style={{
           "--recolor-light-color": recolorSettings.recolor ? recolorSettings.recolorLightcolor : undefined,
           "--pdf-search-boundary": searchAppearance.boundary,
+          "--pdf-search-blend": searchAppearance.blend,
         } as React.CSSProperties}
       >
         <div
@@ -1152,7 +1153,7 @@ export function PdfReader({
                 }}
               />
             </>}
-            {searchStatusText && <span className="search-status" role="status" title={searchStatusText}>{searchStatusText}</span>}
+            {searchStatusText && (overlay === null || overlay === "search") && <span className="search-status" role="status" title={searchStatusText}>{searchStatusText}</span>}
             {overlay === "jump" && <>
               <span className="status-prefix">Go to</span>
               <input

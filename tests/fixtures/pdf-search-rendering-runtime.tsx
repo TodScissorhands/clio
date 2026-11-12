@@ -113,9 +113,10 @@ async function pixels(element: HTMLElement) {
 async function appearance() {
   const selected = document.querySelector<HTMLElement>(".pdfjs-search-highlight.is-active")!;
   const inactive = marks().find((mark) => !mark.classList.contains("is-active"))!;
-  const strong = getComputedStyle(selected), soft = getComputedStyle(inactive);
+  const strong = getComputedStyle(selected, "::before"), soft = getComputedStyle(inactive, "::before");
+  const activeBoundary = getComputedStyle(selected, "::after"), inactiveBoundary = getComputedStyle(inactive, "::after");
   check(strong.backgroundColor === "rgba(255, 179, 0, 0.48)" && soft.backgroundColor === "rgba(255, 193, 7, 0.32)", `Not amber translucent markers: ${strong.backgroundColor}/${soft.backgroundColor}`);
-  check(strong.outlineStyle === "solid" && strong.outlineWidth === "2px" && soft.outlineStyle === "dashed", "Active/inactive boundary lost");
+  check(activeBoundary.outlineStyle === "solid" && activeBoundary.outlineWidth === "2px" && inactiveBoundary.outlineStyle === "dashed", "Active/inactive boundary lost");
   check(getComputedStyle(selected.parentElement!.parentElement!).pointerEvents === "none", "Highlights intercept text input");
   const samples = await pixels(selected);
   check(samples.some(([r, g, b]) => Math.abs(r! - 255) < 4 && Math.abs(g! - 219) < 4 && Math.abs(b! - 133) < 4), "Compositor does not paint the marker over white paper");
@@ -197,9 +198,9 @@ async function run() {
   for (const theme of ["theme_dark", "theme_light", "theme_original"] as const) {
     await key("Escape"); await command(theme); visible(theme);
     const selected = group.isConnected ? group.firstElementChild! : document.querySelector(".pdfjs-search-highlight.is-active")!;
-    check(getComputedStyle(selected).backgroundColor === "rgba(255, 179, 0, 0.48)", "Recolor changed overlay pixels");
-    check(getComputedStyle(selected).outlineColor === (theme === "theme_dark" ? "rgb(255, 255, 255)" : "rgb(0, 0, 0)"), "Page-theme boundary contrast lost");
-    const background = theme === "theme_dark" ? [138, 102, 16] : [255, 219, 133];
+    check(getComputedStyle(selected, "::before").backgroundColor === "rgba(255, 179, 0, 0.48)", "Recolor changed overlay pixels");
+    check(getComputedStyle(selected, "::after").outlineColor === (theme === "theme_dark" ? "rgb(255, 255, 255)" : "rgb(0, 0, 0)"), "Page-theme boundary contrast lost");
+    const background = theme === "theme_dark" ? [56, 41, 17] : [255, 219, 133];
     check((await pixels(selected as HTMLElement)).some((sample) => background.every((channel, index) => Math.abs(sample[index]! - channel) < 4)), "Page recoloring also recolored the search marker");
     await key("i"); visible("application theme");
   }
