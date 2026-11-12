@@ -34,7 +34,7 @@ The approved unchanged/refine/consolidate/09E/deferred split lives in [DESIGN.md
 
 ## Search baseline
 
-- PDF 09E-B: marker overlays, persistent result status and contextual two-axis reveal are implemented within the existing index/reader ownership; interface decisions remain in [DESIGN.md](DESIGN.md#pdf-search). The real WebKitGTK search regression covers detail rendering, recoloring, multiline/tagged geometry and replacement cancellation. Native Tauri smoke with real PDFs includes X11-injected navigation and clipboard copy; human physical-input acceptance remains open.
+- PDF 09E-B: marker overlays, persistent result status and contextual two-axis reveal are implemented within the existing index/reader ownership; interface decisions remain in [DESIGN.md](DESIGN.md#pdf-search). The real WebKitGTK search regression covers detail rendering, recoloring, multiline/tagged geometry and replacement cancellation. Spread transitions give retained search results priority over old page-top offsets while preserving zoom anchors; both directions are checked immediately and across subsequent render frames. Native Tauri smoke with real PDFs includes X11-injected navigation and clipboard copy; human physical-input acceptance remains open.
 - EPUB: search publication text, not just chapter names. Report result count and excerpt, jump via stable CFI/range, and show a clear transient active highlight. Index incrementally or on demand; cancel work for closed/replaced documents.
 - Both: share palette controls and next/previous semantics. Search highlights are temporary; saved annotations are separate data. Image-only PDFs remain unsearchable until an explicitly scoped OCR feature.
 

@@ -78,6 +78,20 @@ function visible(label: string) {
   check(rect.top >= area.top - 1 && rect.bottom <= area.bottom + 1 && rect.left >= area.left - 1 && rect.right <= area.right + 1,
     `${label}: match ${JSON.stringify(rect.toJSON())} outside ${JSON.stringify(area.toJSON())}`);
 }
+const transitions: object[] = [];
+async function transition(id: ReaderCommandId, label: string) {
+  await command(id);
+  visible(label); alignment("needle");
+  // Assert through subsequent render frames as well: a late anchor must not
+  // displace an already revealed result. This is not a wait-for-visibility loop.
+  for (let frame = 0; frame < 4; frame++) {
+    await settle();
+    visible(label); alignment("needle");
+  }
+  transitions.push({ label, match: active()!.getBoundingClientRect().toJSON(),
+    viewport: viewport().getBoundingClientRect().toJSON(), top: viewport().scrollTop,
+    left: viewport().scrollLeft, scale: viewer().currentScale, spread: viewer().spreadMode, scrollMode: viewer().scrollMode });
+}
 function alignment(query: string) {
   const page = active()!.closest(".page")!;
   const expected: DOMRect[] = [];
@@ -167,12 +181,24 @@ async function run() {
   await settle(); await settle();
   check(Math.abs(viewport().scrollTop - manualTop) < 1, "Manual scrolling snapped to search result");
   await key("n"); await position("3 / 9 matches"); visible("next after manual scroll");
-  await command("toggle_continuous_scrolling"); visible("continuous transition"); alignment("needle");
-  await command("two_page_spread"); visible("spread transition"); alignment("needle");
+  await transition("two_page_spread", "Single → Spread (paged/manual)");
+  await transition("single_page_view", "Spread → Single (paged/manual)");
+  await transition("toggle_continuous_scrolling", "Single → Continuous");
+  await transition("two_page_spread", "Continuous → Spread");
+  await transition("single_page_view", "Spread → Continuous single");
+  await transition("two_page_spread", "Continuous single → Spread");
+  await transition("toggle_continuous_scrolling", "Continuous spread → Paged spread");
+  await transition("toggle_continuous_scrolling", "Spread → Continuous");
   const layout = document.querySelector<HTMLElement>(".reader-layout")!;
   layout.style.width = "620px"; await settle(); await settle(); visible("narrow resize"); alignment("needle");
   layout.style.width = "900px"; await settle(); await settle(); visible("wide resize"); alignment("needle");
-  await command("single_page_view"); await command("fit_to_page"); visible("fit page"); alignment("needle");
+  await transition("single_page_view", "Spread → Single (continuous/manual)");
+  await transition("fit_to_page", "Fit page");
+  await transition("two_page_spread", "Single → Spread (fit page)");
+  await transition("single_page_view", "Spread → Single (fit spread)");
+  await transition("fit_to_page_width", "Fit width");
+  await transition("two_page_spread", "Single → Spread (fit width)");
+  await transition("single_page_view", "Spread → Single (fit width)");
   cases.push("fit/manual zoom, full-match two-axis 40% reveal, real detail render, no manual snap, continuous/spread/single/resize alignment");
 
   await search("split phrase", 3);
@@ -226,8 +252,8 @@ async function run() {
   root.unmount(); await settle();
   check(errors.length === 0, errors.join("; "));
   cases.push("query invalidation/empty/no matches, invalid replacement retention, committed replacement/cancellation and close");
-  return { passed: true, cases, errors };
+  return { passed: true, cases, transitions, errors };
 }
 run().then((result) => host.webkit.messageHandlers.test.postMessage(JSON.stringify(result))).catch((error: unknown) => {
-  host.webkit.messageHandlers.test.postMessage(JSON.stringify({ passed: false, error: String(error), stack: error instanceof Error ? error.stack : undefined, cases, errors }));
+  host.webkit.messageHandlers.test.postMessage(JSON.stringify({ passed: false, error: String(error), stack: error instanceof Error ? error.stack : undefined, cases, transitions, errors }));
 });

@@ -339,6 +339,12 @@ export function PdfReader({
       return;
     }
 
+    if (pendingSearchRevealRef.current) {
+      // Retaining the visible match takes priority over the old page-top offset.
+      scrollAnchorRef.current = null;
+      return;
+    }
+
     const anchor = scrollAnchorRef.current;
     const page = anchor && pageElementsRef.current[anchor.page - 1];
     if (!anchor || !viewer || !page) return;
