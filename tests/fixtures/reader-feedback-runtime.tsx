@@ -114,22 +114,36 @@ function searchPresentation(foreground?: string) {
   const active = document.querySelector<HTMLElement>(".pdfjs-search-highlight.is-active")!;
   const inactive = document.querySelector<HTMLElement>(".pdfjs-search-highlight:not(.is-active)")!;
   check(active && inactive, "real search did not render active/inactive match rectangles");
-  const selected = getComputedStyle(active), ordinary = getComputedStyle(inactive);
+  const selected = getComputedStyle(active, "::after"), ordinary = getComputedStyle(inactive, "::after");
   const background = getComputedStyle(document.querySelector(".pdfViewer .page")!).backgroundColor;
   check(selected.outlineStyle === "solid" && ordinary.outlineStyle === "dashed" &&
     parseFloat(selected.outlineWidth) > parseFloat(ordinary.outlineWidth) && parseFloat(ordinary.outlineWidth) > 0,
     `active search match lacks structural distinction: ${selected.outline} / ${ordinary.outline}`);
   const ratio = contrast(selected.outlineColor, background);
   check(ratio >= 3 && contrast(ordinary.outlineColor, background) >= 3, "search match boundaries disappear against the page theme");
-  const fill = selected.backgroundColor.match(/[\d.]+/g)!.map(Number);
+  const marker = getComputedStyle(active, "::before");
+  const fill = marker.backgroundColor.match(/[\d.]+/g)!.map(Number);
   check(fill.length === 4 && fill[3]! > 0 && fill[3]! < 1, "search fill is not translucent");
   if (foreground) {
-    const composite = (channels: number[]) => `rgb(${channels.map((channel, index) => Math.round(channel * (1 - fill[3]!) + fill[index]! * fill[3]!)).join(", ")})`;
+    // CSS Compositing and Blending: assess the rendered ink and paper, including
+    // the marker's blend operation, rather than assuming normal alpha painting.
+    const composite = (channels: number[]) => `rgb(${channels.map((channel, index) => {
+      const backdrop = channel / 255, source = fill[index]! / 255;
+      let blended = source;
+      if (marker.mixBlendMode === "multiply") blended = backdrop * source;
+      else if (marker.mixBlendMode === "soft-light") {
+        const curve = backdrop <= .25 ? ((16 * backdrop - 12) * backdrop + 4) * backdrop : Math.sqrt(backdrop);
+        blended = source <= .5
+          ? backdrop - (1 - 2 * source) * backdrop * (1 - backdrop)
+          : backdrop + (2 * source - 1) * (curve - backdrop);
+      }
+      return Math.round((backdrop * (1 - fill[3]!) + blended * fill[3]!) * 255);
+    }).join(", ")})`;
     const ink = parseHexColor(foreground).map((channel) => channel * 255);
     const paper = background.match(/[\d.]+/g)!.slice(0, 3).map(Number);
     check(contrast(composite(ink), composite(paper)) >= 4.5, "match fill degrades controlled stock text contrast");
   }
-  return { ratio, active: selected.outline, inactive: ordinary.outline, fill: selected.backgroundColor };
+  return { ratio, active: selected.outline, inactive: ordinary.outline, fill: marker.backgroundColor };
 }
 function errorPresentation() {
   const banner = document.querySelector<HTMLElement>(".error-banner")!;

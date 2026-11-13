@@ -58,6 +58,7 @@
 .pdfViewer.removePageBorders .page {
   margin: 0 auto 8px;
   background-color: var(--page-bg-color, #FAFBFC);
+  isolation: isolate;
 }
 
 .pdfViewer.paged-presentation .page,
@@ -115,20 +116,44 @@
 
 .pdfjs-search-highlights {
   position: absolute;
-  z-index: 2;
   inset: 0;
   pointer-events: none;
+}
+
+.pdfjs-search-match {
+  position: absolute;
 }
 
 .pdfjs-search-highlight {
   position: absolute;
   border-radius: 1px;
-  background: rgb(var(--pdf-search-fill, 255 255 255) / 1.5%);
+}
+
+.pdfjs-search-highlight::before,
+.pdfjs-search-highlight::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+}
+
+/* Blend marker ink with the page; keep its contrasting boundary opaque. */
+.pdfjs-search-highlight::before {
+  z-index: 2;
+  background: rgb(255 193 7 / 32%);
+  mix-blend-mode: var(--pdf-search-blend, multiply);
+}
+
+.pdfjs-search-highlight::after {
+  z-index: 3;
   outline: 1px dashed var(--pdf-search-boundary, #000);
 }
 
-.pdfjs-search-highlight.is-active {
-  background: rgb(var(--pdf-search-fill, 255 255 255) / 3%);
+.pdfjs-search-highlight.is-active::before {
+  background: rgb(255 179 0 / 48%);
+}
+
+.pdfjs-search-highlight.is-active::after {
   outline: 2px solid var(--pdf-search-boundary, #000);
 }
 

@@ -176,6 +176,8 @@ export function PdfViewerSurface({
     let eventBus: EventBus | null = null;
     let viewer: PDFViewerInstance | null = null;
     let listeners: [string, (event: { pageNumber?: number; error?: unknown }) => void][] = [];
+    let highlightObserver: ResizeObserver | undefined;
+    let highlightFrame: number | undefined;
     const requests = new Map<HTMLCanvasElement, PageRecolorRequest>();
     let completed = new WeakMap<HTMLCanvasElement, {
       pristine: HTMLCanvasElement; settings: PdfRecolorSettings | undefined; width: number; height: number;
@@ -412,9 +414,11 @@ export function PdfViewerSurface({
       cancelStaleRequests();
     };
     const syncHighlights = (number: number) => {
-      const page = viewerRef.current?.querySelector<HTMLDivElement>(`.page[data-page-number="${number}"]`);
-      const textDivs = page?.querySelectorAll<HTMLElement>(".textLayer span");
-      if (!page || !textDivs?.length) return;
+      if (disposed || !viewer || !pdfRef.current || viewer.pdfDocument !== pdfRef.current) return;
+      const page = viewer.getPageView(number - 1)?.div as HTMLDivElement | undefined;
+      if (!page?.isConnected || !viewerRef.current?.contains(page)) return;
+      const textLayer = page.querySelector<HTMLElement>(".textLayer");
+      const textDivs = textLayer?.querySelectorAll<HTMLElement>("span:not(.markedContent)");
       let layer = page.querySelector<HTMLDivElement>(".pdfjs-search-highlights");
       if (!layer) {
         layer = document.createElement("div");
@@ -423,9 +427,12 @@ export function PdfViewerSurface({
         page.append(layer);
       }
       layer.replaceChildren();
+      if (!textLayer?.isConnected || !textDivs?.length) return;
       let activeElement: HTMLDivElement | null = null;
       const pageRect = page.getBoundingClientRect();
       for (const { index, match } of matchesRef.current.get(number) ?? []) {
+        const rectangles: DOMRect[] = [];
+        let left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity;
         for (const segment of match.segments) {
           const textNode = textDivs[segment.itemIndex]?.firstChild;
           if (!textNode || textNode.nodeType !== Node.TEXT_NODE) continue;
@@ -434,21 +441,35 @@ export function PdfViewerSurface({
           range.setEnd(textNode, Math.min(segment.end, textNode.textContent?.length ?? 0));
           for (const rect of range.getClientRects()) {
             if (!rect.width || !rect.height) continue;
-            const mark = document.createElement("div");
-            mark.className = `pdfjs-search-highlight${index === activeIndexRef.current ? " is-active" : ""}`;
-            mark.dataset.match = String(index);
-            Object.assign(mark.style, {
-              left: `${rect.left - pageRect.left}px`,
-              top: `${rect.top - pageRect.top}px`,
-              width: `${rect.width}px`,
-              height: `${rect.height}px`,
-            });
-            layer.append(mark);
-            if (index === activeIndexRef.current) activeElement ??= mark;
+            rectangles.push(rect);
+            left = Math.min(left, rect.left);
+            top = Math.min(top, rect.top);
+            right = Math.max(right, rect.right);
+            bottom = Math.max(bottom, rect.bottom);
           }
         }
+        if (!rectangles.length) continue;
+        // One bounds element for reveal, separate glyph-run marks for painting.
+        const group = document.createElement("div");
+        group.className = "pdfjs-search-match";
+        Object.assign(group.style, {
+          left: `${left - pageRect.left}px`, top: `${top - pageRect.top}px`,
+          width: `${right - left}px`, height: `${bottom - top}px`,
+        });
+        for (const rect of rectangles) {
+          const mark = document.createElement("div");
+          mark.className = `pdfjs-search-highlight${index === activeIndexRef.current ? " is-active" : ""}`;
+          mark.dataset.match = String(index);
+          Object.assign(mark.style, {
+            left: `${rect.left - left}px`, top: `${rect.top - top}px`,
+            width: `${rect.width}px`, height: `${rect.height}px`,
+          });
+          group.append(mark);
+        }
+        layer.append(group);
+        if (index === activeIndexRef.current) activeElement = group;
       }
-      if (activeIndexRef.current >= 0) activeMatchRef.current(activeIndexRef.current, activeElement);
+      if (activeElement) activeMatchRef.current(activeIndexRef.current, activeElement);
     };
     syncHighlightsRef.current = syncHighlights;
 
@@ -472,6 +493,15 @@ export function PdfViewerSurface({
       scrollModeRef.current = ScrollMode;
       linkService.setViewer(viewer);
       viewerHandle.current = viewer;
+      highlightObserver = new ResizeObserver(() => {
+        if (highlightFrame !== undefined) cancelAnimationFrame(highlightFrame);
+        highlightFrame = requestAnimationFrame(() => {
+          highlightFrame = undefined;
+          for (const number of matchesRef.current.keys()) syncHighlights(number);
+        });
+      });
+      highlightObserver.observe(container);
+      highlightObserver.observe(viewerElement);
       const pageChanged = (event: { pageNumber?: number }) => {
         if (event.pageNumber && event.pageNumber !== pageNumberRef.current) {
           pageChangeRef.current(event.pageNumber);
@@ -553,8 +583,9 @@ export function PdfViewerSurface({
         }
         syncPageElements();
       };
-      const textRendered = (event: { pageNumber?: number }) => {
-        if (event.pageNumber) {
+      const textRendered = (event: { pageNumber?: number; source?: unknown }) => {
+        if (!disposed && viewer?.pdfDocument === pdfRef.current && event.pageNumber &&
+          viewer?.getPageView(event.pageNumber - 1) === event.source) {
           syncHighlights(event.pageNumber);
           pageRenderedRef.current?.(event.pageNumber);
         }
@@ -574,6 +605,8 @@ export function PdfViewerSurface({
 
     return () => {
       disposed = true;
+      highlightObserver?.disconnect();
+      if (highlightFrame !== undefined) cancelAnimationFrame(highlightFrame);
       cancelRecolor();
       cancelRecolorRef.current = () => {};
       refreshRecolorRef.current = () => {};
@@ -629,6 +662,7 @@ export function PdfViewerSurface({
       viewer.currentPageNumber = pageNumber;
     }
     refreshRecolorRef.current();
+    for (const number of matchesRef.current.keys()) syncHighlightsRef.current(number);
   }, [pdf, pageNumber, scale, spread, continuousScrolling, viewerHandle]);
 
   useEffect(() => {

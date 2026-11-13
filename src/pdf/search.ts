@@ -18,7 +18,7 @@ function getPageSearchIndex(pdf: PdfDocument, pageNumber: number): Promise<PdfPa
   let index = pages.get(pageNumber);
   if (!index) {
     index = (async () => {
-      const content = await (await pdf.getPage(pageNumber)).getTextContent();
+      const content = await (await pdf.getPage(pageNumber)).getTextContent({ disableNormalization: true });
       const items = content.items.filter(isPdfSearchTextItem);
       return buildPageSearchIndex(pageNumber, items);
     })();

@@ -61,7 +61,10 @@ export function buildPageSearchIndex(page: number, items: PdfSearchTextItem[]): 
   };
 
   let previous: PdfSearchTextItem | null = null;
-  items.forEach((item, itemIndex) => {
+  // PDF.js creates no DOM span for empty EOL items. Segment indices address
+  // the nonempty text spans, not those invisible extraction records.
+  let renderedItemIndex = 0;
+  items.forEach((item) => {
     if (previous) {
       const height = Math.max(1, Math.abs(previous.transform[3] ?? previous.height), Math.abs(item.transform[3] ?? item.height));
       const sameLine = Math.abs((previous.transform[5] ?? 0) - (item.transform[5] ?? 0)) <= height * 0.45;
@@ -70,7 +73,8 @@ export function buildPageSearchIndex(page: number, items: PdfSearchTextItem[]): 
         : (item.transform[4] ?? 0) - ((previous.transform[4] ?? 0) + previous.width);
       if (previous.hasEOL || !sameLine || gap > height * 0.18) append(" ", null, 0);
     }
-    append(item.str, itemIndex, 0);
+    append(item.str, renderedItemIndex, 0);
+    if (item.str.length) renderedItemIndex += 1;
     previous = item;
   });
   if (text.endsWith(" ")) {
