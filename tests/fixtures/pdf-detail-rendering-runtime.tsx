@@ -450,11 +450,11 @@ async function run() {
   check(sources.every((canvas) => !canvas.width && !canvas.height), "J App PDF replacement leaked independent sources");
   sources = retained(); observation = observed();
   await openFile("lifecycle.epub");
-  await until(() => document.querySelector('.epub-reader__viewport[aria-busy="false"] iframe') && observation.viewerHandle.current === null, "K actual App PDF to EPUB replacement did not finish real EPUB rendering/unmount PDF");
+  await until(() => document.querySelector('.foliate-publication[aria-busy="false"] foliate-view') && observation.viewerHandle.current === null, "K actual App PDF to EPUB replacement did not finish real EPUB rendering/unmount PDF");
   released(sources, observation, "K App PDF to EPUB");
   await openFile("short.pdf");
   await until(() => observed().pdf?.numPages === 1 && observed().viewerHandle.current?.pdfDocument === observed().pdf && observed().map.has(1) &&
-    !document.querySelector(".epub-reader"), "K actual App EPUB-to-PDF replacement did not commit");
+    !document.querySelector(".foliate-reader"), "K actual App EPUB-to-PDF replacement did not commit");
   await ready(observed().pdf!, 1); await idle("K App PDF return");
   viewer().currentScale = 2;
   await until(() => {

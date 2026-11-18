@@ -1,8 +1,6 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import type { Contents, Rendition } from "epubjs";
-import type { EpubBook } from "../../src/epub/engine";
-import { epubLocationCfi } from "../../src/epub/readingPosition";
+import type { View } from "foliate-js/view.js";
 import type { ReaderFileSource } from "../../src/platform/tauriReaderFiles";
 import { DOCUMENT_THEMES } from "../../src/reader/appearance";
 import App from "../../src/App";
@@ -12,7 +10,7 @@ type Access = { open: (source: ReaderFileSource) => Promise<void>; appearance: (
 declare global {
   interface Window {
     __preferencesApp?: (app: Access) => void;
-    __preferencesRendition?: (rendition: Rendition, book: EpubBook) => void;
+    __preferencesView?: (view: View) => void;
     __preferencesPositions?: Map<string, { cfi: string }>;
   }
 }
@@ -36,28 +34,23 @@ async function until(predicate: () => unknown, message: string) {
   }
 }
 let app: Access;
-let rendition: Rendition;
-let book: EpubBook;
+let view: View;
 let serial = 0;
-let openingFeedback: { busy: string | null; message: string } | null = null;
-window.__preferencesApp = (value) => { app = value; };
-window.__preferencesRendition = (value, owner) => {
-  rendition = value; book = owner; serial += 1;
-  openingFeedback = {
-    busy: document.querySelector('[aria-label="EPUB reading area"]')?.getAttribute("aria-busy") ?? null,
-    message: document.querySelector('.epub-status [role="status"]')?.textContent ?? "",
-  };
+window.__preferencesApp = value => { app = value; };
+window.__preferencesView = value => {
+  if (view !== value) serial++;
+  view = value;
 };
 window.__preferencesPositions = new Map();
 const coverage: string[] = [];
 const geometries: object[] = [];
-const contents = () => rendition.getContents() as unknown as Contents[];
-const first = () => contents().find((content) => content.sectionIndex === rendition.location.start.index)!;
+const contents = () => view.renderer.getContents();
+const first = () => contents().find(content => content.index === view.renderer.primaryIndex)!;
 const stored = () => JSON.parse(localStorage.getItem("clio:epub-reading-preferences")!);
 const bodyFont = () => {
   // Reflow can temporarily retire all views before the replacement is live.
   const content = first();
-  return content ? content.window.getComputedStyle(content.document.body).fontSize : null;
+  return content ? content.doc.defaultView!.getComputedStyle(content.doc.body).fontSize : null;
 };
 async function key(value: string, init: KeyboardEventInit = {}) {
   const target = document.activeElement ?? document.body;
@@ -91,48 +84,66 @@ async function dismiss() {
   check(document.activeElement?.getAttribute("aria-label") === "EPUB reading area", "Escape lost reader focus");
 }
 async function ready() {
-  await until(() => rendition?.location?.start?.cfi && contents().length && document.querySelector('[aria-label="EPUB reading area"][aria-busy="false"]'), "EPUB never became ready");
+  await until(() => view?.lastLocation?.cfi && contents().length && document.querySelector('[aria-label="EPUB reading area"][aria-busy="false"]'), "EPUB never became ready");
   check(!document.querySelector('[role="alert"]'), "unexpected reader error");
 }
 async function open(name = "preferences.epub", path: string | null = "/canonical/preferences.epub") {
   const previous = serial;
   const bytes = new Uint8Array(await (await fetch(`/__fixtures/${name}`)).arrayBuffer());
-  await app.open({ kind: "epub", bytes, name, path });
-  await until(() => serial > previous, "replacement did not create rendition");
-  check(openingFeedback?.busy === "true" && /Opening EPUB/i.test(openingFeedback.message), "initial EPUB display lacks busy state and loading feedback");
+  const previousView = document.querySelector('.foliate-publication[aria-busy="false"] > foliate-view');
+  const opening = app.open({ kind: "epub", bytes, name, path });
+  if (previousView) check(previousView.isConnected, "replacement discarded the committed reader before preparation");
+  await opening;
+  await until(() => serial > previous, "replacement did not create a Foliate View");
   await ready();
 }
 async function close() {
   await command("close_document");
-  await until(() => !document.querySelector(".epub-reader") && document.title === "Clio", "close did not retire EPUB");
+  await until(() => !document.querySelector(".foliate-reader") && document.title === "Clio", "close did not retire EPUB");
 }
 function metrics() {
   const content = first();
   return Object.fromEntries(["inherited", "em", "rem", "px", "inline", "heading", "code", "verse", "manual", "whitespace", "inline-code", "table", "image"].map((id) => {
-    const element = content.document.getElementById(id)!;
-    const style = content.window.getComputedStyle(element);
+    const element = content.doc.getElementById(id)!;
+    const style = content.doc.defaultView!.getComputedStyle(element);
     const rect = element.getBoundingClientRect();
     return [id, { font: style.fontSize, family: style.fontFamily, line: style.lineHeight, whitespace: style.whiteSpace, width: rect.width, height: rect.height }];
   }));
 }
+function cfiFor(node: Node) {
+  const doc = node.ownerDocument!;
+  const range = doc.createRange();
+  range.selectNodeContents(doc.createTreeWalker(node, NodeFilter.SHOW_TEXT).nextNode() ?? node);
+  range.collapse(true);
+  return view.getCFI(view.renderer.primaryIndex, range);
+}
+function rangeFor(cfi: string) {
+  const { index, anchor } = view.resolveCFI(cfi);
+  const target = contents().find(content => content.index === index);
+  check(target, "CFI resolved outside the live publication");
+  return anchor(target.doc);
+}
 function anchorVisible(cfi: string) {
-  const range = rendition.getRange(cfi).cloneRange();
-  // A CFI is a text boundary, which epub.js may place before collapsed
-  // whitespace. Measure its next non-whitespace character in the same node,
-  // never a paragraph bounding box that can span offscreen columns.
+  const range = rangeFor(cfi).cloneRange();
+  if (range.startContainer.nodeType === Node.ELEMENT_NODE) {
+    const target = range.startContainer.childNodes[range.startOffset];
+    if (!target) return false;
+    range.selectNodeContents(target);
+  }
+  // Text CFIs measure their next painted character; element boundaries measure
+  // their target block, never the entire publication body.
   if (range.startContainer.nodeType === Node.TEXT_NODE) {
     const node = range.startContainer;
     const text = node.textContent ?? "";
     const offset = range.startOffset;
-    if (offset < text.length) {
-      const next = text.slice(offset).search(/\S/u);
-      if (next < 0) return false;
-      range.setStart(node, offset + next);
-      range.setEnd(node, offset + next + 1);
-    } else if (offset > 0) range.setStart(node, offset - 1);
+    const next = text.slice(offset).search(/\S/u);
+    if (next < 0) return false;
+    const start = offset + next;
+    range.setStart(node, start);
+    range.setEnd(node, start + String.fromCodePoint(text.codePointAt(start)!).length);
   } else range.selectNodeContents(range.startContainer);
   const frame = range.startContainer.ownerDocument!.defaultView!.frameElement!.getBoundingClientRect();
-  const viewport = document.querySelector('.epub-reader__viewport')!.getBoundingClientRect();
+  const viewport = view.renderer.shadowRoot!.querySelector<HTMLElement>("#container")!.getBoundingClientRect();
   return [...range.getClientRects()].some((rect) => {
     const x = frame.left + rect.left, y = frame.top + rect.top;
     return rect.width > 0 && rect.height > 0 && x < viewport.right && x + rect.width > viewport.left &&
@@ -172,29 +183,34 @@ async function run() {
     check(input.value === "" && document.querySelector('[aria-selected="true"]')?.textContent?.includes("Back to commands"),
       `${field} Back failed to clear its local query and select the first parent row`);
   }
-  await until(() => bodyFont() === "22px" && first().window.getComputedStyle(first().document.body).fontFamily === "sans-serif" &&
-    document.querySelector<HTMLElement>(".epub-reader__viewport")!.style.maxWidth, "field chooser preferences did not reach the real rendition");
+  await until(() => bodyFont() === "22px" && first().doc.defaultView!.getComputedStyle(first().doc.body).fontFamily === "sans-serif" &&
+    view.renderer.getAttribute("max-inline-size") === "720", "field chooser preferences did not reach the real renderer");
   await choose("Reset typography and layout to Publisher");
-  await until(() => bodyFont() === "20px" && !document.querySelector<HTMLElement>(".epub-reader__viewport")!.style.maxWidth,
-    "hierarchical preference reset did not reach the real rendition");
+  await until(() => bodyFont() === "20px" && !view.renderer.hasAttribute("max-inline-size"),
+    "hierarchical preference reset did not reach the real renderer");
   await dismiss();
   coverage.push("six-field-immediate-application-back-and-reset");
   for (const continuous of [false, true]) {
     if (continuous) { await command("continuous_layout"); await until(() => !document.querySelector('.epub-status__detail'), "continuous layout did not settle"); }
     await ready();
     const original = metrics();
-    const documentBefore = first().document;
+    const documentBefore = first().doc;
     const properties = ["font-size", "font-family"].map((name) => [name, documentBefore.body.style.getPropertyValue(name), documentBefore.body.style.getPropertyPriority(name)]);
     const publisherCss = documentBefore.getElementById("epubjs-inserted-css-clio-reading-preferences")!.textContent;
-    const anchor = first().cfiFromNode(documentBefore.getElementById("p20")!);
-    await rendition.display(anchor); await settle();
-    check(anchorVisible(anchor), "requested passage was not displayed before reflow");
+    const anchor = cfiFor(documentBefore.getElementById("p20")!);
+    await view.goTo(anchor);
+    await until(() => anchorVisible(anchor), "requested passage was not displayed before reflow");
     // display(target) exposes its whole page. Reflow preserves that page's
     // actual reading start, which need not be the requested paragraph.
-    const captured = epubLocationCfi(book, rendition.currentLocation());
+    const captured = view.lastLocation?.cfi;
     check(captured && anchorVisible(captured), "pre-reflow reading start is not visible");
-    check(!anchorVisible(first().cfiFromNode(documentBefore.getElementById("p63")!)), "offscreen passage passed the visibility probe");
-    const boundary = rendition.getRange(captured);
+    check(!anchorVisible(cfiFor(documentBefore.getElementById("p63")!)), "offscreen passage passed the visibility probe");
+    // Foliate can report an element-boundary reading start. Independently prove
+    // the character visibility controls with a real text CFI on this spread.
+    const controlParagraph = [...documentBefore.querySelectorAll("p")].find(element => anchorVisible(cfiFor(element)));
+    check(controlParagraph, "visible spread has no text-boundary visibility control");
+    const controlCfi = cfiFor(controlParagraph);
+    const boundary = rangeFor(controlCfi);
     const node = boundary.startContainer;
     check(node.nodeType === Node.TEXT_NODE, "reading-start control needs a real text boundary");
     const text = node.textContent ?? "";
@@ -206,18 +222,18 @@ async function run() {
       // Force the collapsed-whitespace boundary even when local font metrics
       // happen to map the spread start directly to a painted character.
       node.textContent = text.slice(0, offset) + "  " + text.slice(offset);
-      check(anchorVisible(captured), "collapsed whitespace obscured the visible reading-start text");
+      check(anchorVisible(controlCfi), "collapsed whitespace obscured the visible reading-start text");
       node.textContent = text.slice(0, offset) + "   ";
-      check(!anchorVisible(captured), "missing reading-start text passed the visibility probe");
+      check(!anchorVisible(controlCfi), "missing reading-start text passed the visibility probe");
       node.textContent = text;
       parent.style.setProperty("display", "none", "important");
-      check(!anchorVisible(captured), "hidden reading-start text passed the visibility probe");
+      check(!anchorVisible(controlCfi), "hidden reading-start text passed the visibility probe");
     } finally {
       node.textContent = text;
       if (display) parent.style.setProperty("display", display, priority);
       else parent.style.removeProperty("display");
     }
-    check(anchorVisible(captured), "visibility controls did not restore the reading-start text");
+    check(anchorVisible(controlCfi), "visibility controls did not restore the reading-start text");
     await command("Font: Sans");
     check(document.activeElement?.classList.contains("command-filter"), "preference selection lost chooser focus");
     await choose("epub_text_larger"); await choose("epub_text_larger");
@@ -229,38 +245,47 @@ async function run() {
     check(parseFloat(changed.heading!.font) > parseFloat(changed.inherited!.font), "heading hierarchy lost");
     check(changed.code!.font === original.code!.font && changed.code!.family === original.code!.family, "code typography changed");
     for (const id of ["verse", "manual", "whitespace", "inline-code"]) check(changed[id]!.font === original[id]!.font, `${id}: protected prose changed`);
-    check(changed.image!.width === 120 && changed.image!.height === 60 && changed.table!.width === 240, "media/table geometry changed");
+    // A table can fragment across columns; its union box includes column gaps.
+    // Assert its actual CSS width, not the bounding union of those fragments.
+    const tableWidth = first().doc.defaultView!.getComputedStyle(first().doc.getElementById("table")!).width;
+    check(changed.image!.width === 120 && changed.image!.height === 60 && tableWidth === "240px",
+      `media/table geometry changed: ${JSON.stringify({ image: changed.image, tableWidth })}`);
     await until(() => anchorVisible(captured), "captured reading start lost after font reflow");
-    check(first().document.getElementById("epubjs-inserted-css-clio-reading-preferences")!.textContent === publisherCss, "reader overwrote publisher CSS collision");
+    check(first().doc.getElementById("epubjs-inserted-css-clio-reading-preferences")!.textContent === publisherCss, "reader overwrote publisher CSS collision");
     await choose("Line spacing: Comfortable"); await choose("Alignment: Start");
-    await until(() => first().window.getComputedStyle(first().document.getElementById("px")!).lineHeight === "38.400002px" || Math.abs(parseFloat(first().window.getComputedStyle(first().document.getElementById("px")!).lineHeight) - 38.4) < .1, "line spacing did not apply");
-    check(first().window.getComputedStyle(first().document.getElementById("px")!).textAlign === "start", "logical alignment did not apply");
+    await until(() => first().doc.defaultView!.getComputedStyle(first().doc.getElementById("px")!).lineHeight === "38.400002px" || Math.abs(parseFloat(first().doc.defaultView!.getComputedStyle(first().doc.getElementById("px")!).lineHeight) - 38.4) < .1, "line spacing did not apply");
+    check(first().doc.defaultView!.getComputedStyle(first().doc.getElementById("px")!).textAlign === "start", "logical alignment did not apply");
     for (let index = 0; index < 3; index += 1) await choose("epub_text_larger");
     for (let index = 0; index < 3; index += 1) await choose("epub_text_smaller");
     await applied("24px");
     check(stored().fontScale === 120, "latest typography intent lost");
     await until(() => anchorVisible(captured), "rapid typography changes lost the captured reading start");
-    const fullWidth = document.querySelector(".epub-reader__viewport")!.getBoundingClientRect().width;
+    if (continuous) {
+      const fullWidth = first().doc.getElementById("p20")!.getClientRects()[0]!.width;
+      await choose("Reading column: Narrow");
+      await until(() => first().doc.getElementById("p20")!.getClientRects()[0]!.width < fullWidth,
+        "narrow reading column did not reduce actual prose width");
+    }
     await choose("Reading column: Comfortable"); await choose("Margins: Comfortable");
-    await until(() => document.querySelector(".epub-reader__viewport")!.getBoundingClientRect().width < fullWidth,
-      "comfortable column did not reduce the rendered reading width");
+    await until(() => first().doc.getElementById("p20")!.getClientRects()[0]!.width <= 720,
+      "comfortable reading column exceeded its prose-width constraint");
     for (const theme of DOCUMENT_THEMES) {
       await choose(`theme_${theme.id.replace(/-/g, "_")}`);
       await until(() => stored().theme === theme.id, "theme did not persist");
       if (theme.foreground && theme.background) {
         const rgb = (hex: string) => `rgb(${[1, 3, 5].map((offset) => parseInt(hex.slice(offset, offset + 2), 16)).join(", ")})`;
-        await until(() => first().window.getComputedStyle(first().document.body).backgroundColor === rgb(theme.background!), "theme did not apply");
-        const paragraph = first().document.getElementById("px")!;
-        check(first().window.getComputedStyle(paragraph).color === rgb(theme.foreground), "publisher prose obscured reader theme");
+        await until(() => first().doc.defaultView!.getComputedStyle(first().doc.body).backgroundColor === rgb(theme.background!), "theme did not apply");
+        const paragraph = first().doc.getElementById("px")!;
+        check(first().doc.defaultView!.getComputedStyle(paragraph).color === rgb(theme.foreground), "publisher prose obscured reader theme");
       }
     }
     await choose("epub_reset_typography");
-    await until(() => bodyFont() === "20px" && !document.querySelector<HTMLElement>('.epub-reader__viewport')!.style.maxWidth, "Publisher reset did not apply");
+    await until(() => bodyFont() === "20px" && !view.renderer.hasAttribute("max-inline-size"), "Publisher reset did not apply");
     check(stored().theme === "rose-pine-dawn", "typography reset discarded independent theme");
     await choose("theme_original");
-    await until(() => !first().document.getElementById("epubjs-inserted-css-clio-reading-preferences-1"), "Original failed to remove owned CSS");
+    await until(() => !first().doc.getElementById("epubjs-inserted-css-clio-reading-preferences-1"), "Original failed to remove owned CSS");
     for (const [name, value, priority] of properties) {
-      check(first().document.body.style.getPropertyValue(name!) === value && first().document.body.style.getPropertyPriority(name!) === priority, `Publisher inline ${name} not restored exactly`);
+      check(first().doc.body.style.getPropertyValue(name!) === value && first().doc.body.style.getPropertyPriority(name!) === priority, `Publisher inline ${name} not restored exactly`);
     }
     const reset = metrics();
     for (const id of Object.keys(original)) {
@@ -273,12 +298,14 @@ async function run() {
   await command("Font: Sans"); await choose("epub_text_larger"); await choose("epub_text_larger");
   await choose("Reading column: Comfortable"); await choose("Margins: Comfortable");
   await applied("24px"); await dismiss();
-  const savedAnchor = first().cfiFromNode(first().document.getElementById("p20")!);
-  await rendition.display(savedAnchor); await settle();
-  const savedWidth = document.querySelector(".epub-reader__viewport")!.getBoundingClientRect().width;
+  await command("next_page");
+  const savedAnchor = cfiFor(first().doc.getElementById("p20")!);
+  await view.goTo(savedAnchor);
+  await until(() => anchorVisible(savedAnchor), "saved passage was not displayed before close");
+  const savedWidth = view.renderer.getAttribute("max-inline-size");
   await close(); await open(); await applied("24px");
-  check(anchorVisible(savedAnchor), "CFI reopening lost the saved passage");
-  check(document.querySelector(".epub-reader__viewport")!.getBoundingClientRect().width === savedWidth,
+  await until(() => anchorVisible(savedAnchor), "CFI reopening lost the saved passage");
+  check(view.renderer.getAttribute("max-inline-size") === savedWidth,
     "reopening lost saved rendered reading width");
   coverage.push("cfi-reopen-and-preference-persistence");
   for (const name of ["fixed.epub", "mixed.epub", "vertical.epub"]) {
@@ -291,7 +318,7 @@ async function run() {
   }
   coverage.push("fixed-mixed-and-vertical-retain-publisher");
   await open();
-  const beforeFailure = rendition;
+  const beforeFailure = view;
   const invalid = new Uint8Array(await (await fetch('/__fixtures/invalid.epub')).arrayBuffer());
   const transfer = new DataTransfer();
   transfer.items.add(new File([invalid], "invalid.epub"));
@@ -299,7 +326,7 @@ async function run() {
   input.files = transfer.files;
   input.dispatchEvent(new Event("change", { bubbles: true }));
   await until(() => document.querySelector('.error-banner'), "invalid replacement did not report failure");
-  check(rendition === beforeFailure && document.title === "preferences.epub — Clio", "failed replacement lost document identity");
+  check(view === beforeFailure && document.title === "preferences.epub — Clio", "failed replacement lost document identity");
   document.querySelector<HTMLButtonElement>('.error-banner button')!.click();
   for (const dark of [false, true]) for (const [width, height] of [[420, 600], [1000, 700], [1440, 800]]) {
     app.appearance(dark); await resize(width!, height!);
@@ -312,30 +339,26 @@ async function run() {
     geometries.push({ width, height, dark, footer: 24 });
   }
   coverage.push("six-geometries-and-focus", "invalid-replacement-retains-identity");
-  const previousDocument = first().document;
-  const frame = previousDocument.defaultView!.frameElement as HTMLIFrameElement;
-  check(frame.getAttribute("sandbox") === "allow-same-origin", "publication script sandbox changed");
-  frame.srcdoc = '<!doctype html><html><head><title>Replacement</title></head><body style="font-size:18px!important;font-family:serif!important"><p id="replacement">Same frame, new live Document.</p></body></html>';
-  await until(() => frame.contentDocument !== previousDocument &&
-    contents().some((content) => content.document === frame.contentDocument) &&
-    Math.abs(parseFloat(frame.contentWindow!.getComputedStyle(frame.contentDocument!.body).fontSize) - 21.6) < .01,
-    "same-frame Document replacement did not receive current preferences");
-  check(!previousDocument.getElementById("epubjs-inserted-css-clio-reading-preferences-1") &&
-    previousDocument.body.style.getPropertyPriority("font-size") === "important", "same-frame replacement retained old ownership");
-  const replacementDocument = frame.contentDocument!;
+  const previousDocument = first().doc;
+  await view.goTo(1); await ready();
+  check(first().doc !== previousDocument && bodyFont() === "24px", "chapter replacement lost the requested typography");
+  const replacementDocument = first().doc;
   await open();
-  check(!replacementDocument.getElementById("epubjs-inserted-css-clio-reading-preferences"), "replacement Document leaked reader styles");
-  coverage.push("same-frame-document-style-replacement");
+  check(!replacementDocument.defaultView?.frameElement?.isConnected &&
+    replacementDocument.body.style.getPropertyValue("font-size") === "20px" &&
+    replacementDocument.body.style.getPropertyPriority("font-size") === "important",
+    "retired chapter retained typography ownership or lost publisher inline priority");
+  coverage.push("chapter-document-style-replacement");
   const retired: Document[] = [];
   for (let cycle = 0; cycle < 20; cycle += 1) {
-    retired.push(...contents().map((content) => content.document));
+    retired.push(...contents().map((content) => content.doc));
     await command(cycle % 2 ? "continuous_layout" : "paged_layout");
     await close(); await open(cycle % 2 ? "replacement.epub" : "preferences.epub", "/canonical/preferences.epub");
     await applied(cycle % 2 ? "21.6px" : "24px");
   }
   await close();
   for (const document of retired) {
-    check(!document.getElementById("epubjs-inserted-css-clio-reading-preferences-1"), "retired Document retained reader styles");
+    check(["18px", "20px"].includes(document.body.style.getPropertyValue("font-size")), "retired Document retained reader font size");
     check(document.body.style.getPropertyPriority("font-size") === "important", "retired Document lost publisher inline priority");
   }
   coverage.push("twenty-close-reflow-replacement-cycles");

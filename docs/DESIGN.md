@@ -29,7 +29,7 @@ Publication typography defaults to Publisher. Preserve hierarchy, emphasis, inde
 
 Original means no reader color override, not forced white/black recoloring. Transparent Original EPUB pages use a white backdrop independent of chrome; explicit publisher backgrounds remain. PDF Custom is a truthful extra state, not a stock theme. Selecting Original disables recoloring but retains the saved appearance. Show effective versus saved/off state distinctly; never mark an unapplied saved theme active.
 
-EPUB Reset typography/layout leaves its independent theme unchanged. Publisher choices remove only reader-owned overrides. Prefer supported epub.js APIs and a minimal opt-in CSS layer; do not normalize the publication wholesale.
+EPUB Reset typography/layout leaves its independent theme unchanged. Publisher choices remove only reader-owned overrides. Prefer supported Foliate APIs and a minimal opt-in CSS layer; do not normalize the publication wholesale.
 
 ## Commands and focus
 

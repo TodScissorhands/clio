@@ -43,8 +43,13 @@ jobs:
       - name: Build frontend
         run: bun run build
 
+      - name: Provision checksummed real EPUB compatibility publications
+        run: bash scripts/provision-foliate-real-books.sh "$RUNNER_TEMP/clio-foliate-real-books"
+
       - name: Run all Bun tests with real WebKitGTK required
         # Ubuntu's python3-gi package belongs to /usr/bin/python3.
+        env:
+          CLIO_FOLIATE_REAL_BOOKS: ${{ runner.temp }}/clio-foliate-real-books
         run: PATH="/usr/bin:$PATH" xvfb-run -a bash scripts/test-webkit-required.sh
 
       - name: Test native Rust commands

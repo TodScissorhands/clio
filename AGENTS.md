@@ -1,14 +1,14 @@
 # Clio engineering rules
 
-Clio is a document-first Tauri reader with separate PDF.js and epub.js engines. Interface rules live in [docs/DESIGN.md](docs/DESIGN.md); do not duplicate them here. Delivery priorities and quality gates are tracked in [docs/ROADMAP.md](docs/ROADMAP.md).
+Clio is a document-first Tauri reader with separate PDF.js and Foliate engines. Interface rules live in [docs/DESIGN.md](docs/DESIGN.md); do not duplicate them here. Delivery priorities and quality gates are tracked in [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Ownership and security
 
 - `App.tsx` owns document acquisition generations and committed identity. Invalid replacement retains the current document. Prepared PDF ownership transfers exactly once; stale candidates are retired.
-- Each reader owns its renderer lifecycle. Preserve PDF task/pristine-canvas cleanup and cooperative recoloring. EPUB uses one Book-scoped rendition and live-Document registrar, including same-frame replacement and effect replay.
+- Each reader owns its renderer lifecycle. Preserve PDF task/pristine-canvas cleanup and cooperative recoloring. EPUB uses one Book-scoped Foliate session and live-Document registrar, including same-frame replacement and effect replay.
 - `reader/interactions.ts` is the single keyboard-command router and repeat owner. Preserve Task 08 PDF navigation, zoom, spread and wheel semantics.
 - Canonical-path CFI persistence stores position only. Reader preferences must not create a second position store or remount documents.
-- EPUB publications are untrusted. Keep `allowScriptedContent: false`, the existing sandbox and Tauri permission boundaries. Never inject publication scripts, add unrestricted messaging or hide input defects with focus theft.
+- EPUB publications are untrusted. Keep publication scripting disabled, the sanitized-document CSP, existing sandbox and Tauri permission boundaries. Never inject publication scripts, add unrestricted messaging or hide input defects with focus theft.
 - Content-focused EPUB keyboard delivery and internal hyperlinks have documented WebKitGTK limitations; do not claim them fixed without native evidence.
 
 ## Delegation

@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import App from "../../src/App";
 import { DOCUMENT_THEMES } from "../../src/reader/appearance";
 import { parseHexColor } from "../../src/pdf/recolor";
+import { epubText } from "./foliate-test-reader";
 import "../../src/index.css";
 
 declare global {
@@ -162,10 +163,6 @@ function errorPresentation() {
 async function dismissError() {
   document.querySelector<HTMLButtonElement>(".error-banner button")!.click();
   await until(() => !document.querySelector(".error-banner"), "Dismiss did not remove the application error");
-}
-function epubText() {
-  return [...document.querySelectorAll<HTMLIFrameElement>(".epub-reader iframe")]
-    .map((frame) => frame.contentDocument?.body?.textContent ?? "").join(" ");
 }
 
 window.addEventListener("error", (event) => bridge({ passed: false, error: event.message }));

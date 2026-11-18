@@ -1,0 +1,13 @@
+.foliate-reader { position: fixed; inset: 0; display: flex; flex-direction: column; color: var(--text); background: var(--app-bg); }
+.foliate-publication { flex: 1; min-height: 0; position: relative; margin-bottom: 24px; overflow: hidden; }
+.foliate-publication > foliate-view { position: absolute; inset: 0; }
+.foliate-search { display: flex; align-items: center; gap: 8px; flex: 1 1 auto; min-width: 0; }
+.epub-status__chapter { overflow: hidden; text-overflow: ellipsis; }
+.epub-status__detail { flex: 0 0 auto; }
+@media (max-width: 600px) {
+  .epub-status__detail { display: none; }
+  .foliate-search { gap: 4px; }
+  .foliate-search button[aria-label] { width: 24px; overflow: hidden; font-size: 0; }
+  .foliate-search button[aria-label="Previous search match"]::after { content: "‹"; font-size: 13px; }
+  .foliate-search button[aria-label="Next search match"]::after { content: "›"; font-size: 13px; }
+}

@@ -1,3 +1,4 @@
+mod epub_session;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -12,8 +13,22 @@ struct ReadingPosition {
 }
 
 #[derive(Deserialize, Serialize)]
+enum EpubCfiModel {
+    #[serde(rename = "foliate-html-v1")]
+    FoliateHtmlV1,
+}
+
+// An absent tag is legacy; an explicit null/unknown tag is not.
+fn deserialize_epub_cfi_model<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<EpubCfiModel>, D::Error> {
+    EpubCfiModel::deserialize(deserializer).map(Some)
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct EpubReadingPosition {
     cfi: String,
+    #[serde(default, rename = "cfiModel", deserialize_with = "deserialize_epub_cfi_model", skip_serializing_if = "Option::is_none")]
+    cfi_model: Option<EpubCfiModel>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -213,6 +228,7 @@ async fn save_epub_reading_position(
     lock: State<'_, Arc<Mutex<()>>>,
     path: String,
     cfi: String,
+    cfi_model: Option<EpubCfiModel>,
 ) -> Result<(), String> {
     let lock = Arc::clone(lock.inner());
     blocking_io(move || {
@@ -224,7 +240,7 @@ async fn save_epub_reading_position(
             write_position(
                 &positions_file(&app)?,
                 canonical,
-                StoredPosition::Epub(EpubReadingPosition { cfi }),
+                StoredPosition::Epub(EpubReadingPosition { cfi, cfi_model }),
             )
         })
     })
@@ -237,7 +253,23 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(Arc::new(Mutex::new(())))
+        .manage(epub_session::Sessions::default())
+        .on_window_event(|window, event| {
+            if window.label() == "main" && matches!(event, tauri::WindowEvent::Destroyed) {
+                epub_session::shutdown_sessions(window.app_handle());
+            }
+        })
         .invoke_handler(tauri::generate_handler![
+            epub_session::create_epub_session,
+            epub_session::read_epub_session,
+            epub_session::load_epub_session_position,
+            epub_session::save_epub_session_position,
+            epub_session::close_epub_session,
+            epub_session::ready_epub_session,
+            epub_session::commit_epub_session,
+            epub_session::retire_epub_session,
+            epub_session::request_epub_open,
+            epub_session::begin_epub_acquisition,
             canonicalize_pdf_path,
             read_pdf_file,
             canonicalize_epub_path,
@@ -276,6 +308,29 @@ mod tests {
     impl Drop for TestDirectory {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn epub_cfi_models_preserve_legacy_and_unknown_records() {
+        let directory = TestDirectory::new();
+        let destination = directory.0.join("reading-positions.json");
+        let fixture = serde_json::json!({
+            "legacy.epub": { "cfi": "epubcfi(/6/2!/4/2/1:0)" },
+            "current.epub": { "cfi": "epubcfi(/6/2!/4/2/1:4)", "cfiModel": "foliate-html-v1" },
+            "future.epub": { "cfi": "epubcfi(/6/2!/4/2/1:8)", "cfiModel": "future", "extra": true },
+            "null-model.epub": { "cfi": "epubcfi(/6/2!/4/2/1:8)", "cfiModel": null }
+        });
+        fs::write(&destination, serde_json::to_vec(&fixture).unwrap()).unwrap();
+        let mut records = read_positions(&destination).unwrap();
+        assert!(records.remove("legacy.epub").unwrap().into_epub().unwrap().cfi_model.is_none());
+        assert!(records.remove("current.epub").unwrap().into_epub().unwrap().cfi_model.is_some());
+        assert!(records.remove("future.epub").unwrap().into_epub().is_none());
+        assert!(records.remove("null-model.epub").unwrap().into_epub().is_none());
+        write_position(&destination, "other.pdf".into(), StoredPosition::Pdf(ReadingPosition { page: 1, offset: 0.0 })).unwrap();
+        let saved: serde_json::Value = serde_json::from_slice(&fs::read(&destination).unwrap()).unwrap();
+        for key in ["legacy.epub", "current.epub", "future.epub", "null-model.epub"] {
+            assert_eq!(saved[key], fixture[key]);
         }
     }
 
@@ -329,7 +384,7 @@ mod tests {
             write_position(
                 &destination,
                 path.clone(),
-                StoredPosition::Epub(EpubReadingPosition { cfi: cfi.into() }),
+                StoredPosition::Epub(EpubReadingPosition { cfi: cfi.into(), cfi_model: None }),
             ).unwrap();
         }
         let alias = canonicalize_epub_path_sync(
@@ -390,6 +445,7 @@ mod tests {
             "/library/book.epub".into(),
             StoredPosition::Epub(EpubReadingPosition {
                 cfi: "epubcfi(/6/2!/4/2/1:42)".into(),
+                cfi_model: None,
             }),
         ).unwrap();
         let saved: serde_json::Value = serde_json::from_slice(&fs::read(&destination).unwrap()).unwrap();
@@ -482,6 +538,7 @@ mod tests {
             (pdf.clone(), StoredPosition::Pdf(ReadingPosition { page: 3, offset: 0.25 })),
             (epub.clone(), StoredPosition::Epub(EpubReadingPosition {
                 cfi: "epubcfi(/6/2!/4/2/1:8)".into(),
+                cfi_model: None,
             })),
             (pdf.clone(), StoredPosition::Pdf(ReadingPosition { page: 7, offset: 0.5 })),
         ] {
@@ -532,6 +589,7 @@ mod tests {
                         } else {
                             StoredPosition::Epub(EpubReadingPosition {
                                 cfi: format!("epubcfi(/6/2!/4/2/1:{index})"),
+                                cfi_model: None,
                             })
                         };
                         write_position(&destination, key.into(), position)?;

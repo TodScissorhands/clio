@@ -372,6 +372,7 @@ export function useReaderKeyboard(state: ReaderKeyboardState, actions: ReaderKey
     };
 
     function onKeyDown(event: KeyboardEvent) {
+      if (event.isComposing || event.keyCode === 229) return;
       const current = latestRef.current;
       const { readerKind, overlay, commands, searchReady, matchCount, jumpInput, pageCount, commandIndex } = current.state;
       const { closeOverlay, moveMatch, runSearch, goToPage, executePaletteCommand, runCommand, scrollContinuous, setCommandQuery, setCommandIndex, setOverlay } = current.actions;
@@ -439,6 +440,11 @@ export function useReaderKeyboard(state: ReaderKeyboardState, actions: ReaderKey
         return;
       }
       if (readerKind === "epub") {
+        if ((modifier && !event.altKey && sharedKey === "f") || (unmodified && event.key === "/")) {
+          event.preventDefault();
+          runCommand("search");
+          return;
+        }
         if (!typing && unmodified && (event.key === ":" || (event.code === "Semicolon" && event.shiftKey))) {
           event.preventDefault();
           setCommandQuery("");

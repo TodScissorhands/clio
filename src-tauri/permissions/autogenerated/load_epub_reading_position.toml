@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-load-epub-reading-position"
+description = "Enables the load_epub_reading_position command without any pre-configured scope."
+commands.allow = ["load_epub_reading_position"]
+
+[[permission]]
+identifier = "deny-load-epub-reading-position"
+description = "Denies the load_epub_reading_position command without any pre-configured scope."
+commands.deny = ["load_epub_reading_position"]

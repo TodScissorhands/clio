@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-create-epub-session"
+description = "Enables the create_epub_session command without any pre-configured scope."
+commands.allow = ["create_epub_session"]
+
+[[permission]]
+identifier = "deny-create-epub-session"
+description = "Denies the create_epub_session command without any pre-configured scope."
+commands.deny = ["create_epub_session"]

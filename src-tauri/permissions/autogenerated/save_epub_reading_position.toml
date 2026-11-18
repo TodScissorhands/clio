@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-save-epub-reading-position"
+description = "Enables the save_epub_reading_position command without any pre-configured scope."
+commands.allow = ["save_epub_reading_position"]
+
+[[permission]]
+identifier = "deny-save-epub-reading-position"
+description = "Denies the save_epub_reading_position command without any pre-configured scope."
+commands.deny = ["save_epub_reading_position"]

@@ -19,20 +19,20 @@ function observationPlugin() {
   return {
     name: "epub-preferences-observation", enforce: "pre" as const,
     transform(source: string, id: string) {
-      if (id.endsWith("/src/epub/EpubReader.tsx")) {
-        const anchor = "rendition = book.renderTo(viewport, renditionOptions);";
-        return replace(source, anchor, `${anchor}\n        window.__preferencesRendition?.(rendition, book);`);
+      if (id.endsWith("/src/epub/FoliateReader.tsx")) {
+        const anchor = "      viewRef.current = view;";
+        return replace(source, anchor, `${anchor}\n      window.__preferencesView?.(view);`);
       }
       if (id.endsWith("/src/App.tsx")) {
         return replace(source, "  return (\n    <main", "  window.__preferencesApp?.({ open: openReaderSource, appearance: setNightMode });\n  return (\n    <main");
       }
       if (id.endsWith("/src/platform/readingPosition.ts")) {
         source = replace(source,
-          "export async function loadEpubReadingPosition(path: string): Promise<{ cfi: string } | null> {",
-          "export async function loadEpubReadingPosition(path: string): Promise<{ cfi: string } | null> {\n  if (window.__preferencesPositions) return window.__preferencesPositions.get(path) ?? null;");
+          "export async function loadEpubReadingPosition(path: string): Promise<EpubReadingPosition | null> {",
+          "export async function loadEpubReadingPosition(path: string): Promise<EpubReadingPosition | null> {\n  if (window.__preferencesPositions) return window.__preferencesPositions.get(path) ?? null;");
         return replace(source,
-          "export async function saveEpubReadingPosition(path: string, position: { cfi: string }): Promise<void> {",
-          "export async function saveEpubReadingPosition(path: string, position: { cfi: string }): Promise<void> {\n  if (window.__preferencesPositions) { window.__preferencesPositions.set(path, position); return; }");
+          "export async function saveEpubReadingPosition(path: string, position: EpubReadingPosition): Promise<void> {",
+          "export async function saveEpubReadingPosition(path: string, position: EpubReadingPosition): Promise<void> {\n  if (window.__preferencesPositions) { window.__preferencesPositions.set(path, position); return; }");
       }
     },
   };

@@ -7,6 +7,7 @@ import { DEFAULT_RECOLOR_SETTINGS, RECOLOR_PRESETS } from "../../src/pdf/recolor
 import type { PdfRecolorSettings } from "../../src/pdf/recolor";
 import { epubPreferenceCommands, pdfAdvancedAppearanceCommands, themeCommands } from "../../src/reader/appearanceCommands";
 import { DEFAULT_EPUB_PREFERENCES } from "../../src/epub/preferences";
+import { epubDocument, epubText, foliateView } from "./foliate-test-reader";
 import "../../src/index.css";
 
 declare global {
@@ -72,7 +73,7 @@ const optionCommands = [
 ] as const;
 const fits = ["fit_to_page", "fit_to_page_width", "fit_to_spread"] as const;
 function row(id: ReaderCommandId) {
-  const epub = !!document.querySelector(".epub-reader");
+  const epub = !!foliateView();
   const definitions = epub ? [
     ...EPUB_READER_COMMANDS,
     ...themeCommands("epub", "original"),
@@ -80,7 +81,7 @@ function row(id: ReaderCommandId) {
   ] : [...READER_COMMANDS, ...themeCommands("pdf", "original"), ...pdfAdvancedAppearanceCommands()];
   const definition = definitions.find((command) => command.id === id)!;
   const label = epub && (id === "next_page" || id === "previous_page") &&
-    getComputedStyle(document.querySelector(".epub-container")!).overflowY === "scroll"
+    foliateView()!.renderer.getAttribute("flow") === "scrolled"
     ? id === "next_page" ? "Next screen" : "Previous screen" : definition.label;
   const result = rows().find((candidate) => {
     const text = candidate.querySelector(".command-label")?.textContent;
@@ -119,7 +120,7 @@ async function openPalette(query = "") {
 async function closePalette() {
   await key("Escape");
   await until(() => !document.querySelector(".command-palette"), "palette did not dismiss");
-  const label = document.querySelector(".epub-reader") ? "EPUB reading area" : "PDF reading area";
+  const label = foliateView() ? "EPUB reading area" : "PDF reading area";
   check(document.activeElement?.getAttribute("aria-label") === label, `palette did not restore ${label} focus`);
 }
 async function execute(id: ReaderCommandId, pointer = false) {
@@ -169,7 +170,7 @@ async function execute(id: ReaderCommandId, pointer = false) {
   }
   await until(() => !document.querySelector(".command-palette"), `${id} did not execute and close the palette`);
   if (id !== "recolor_set_lightcolor" && id !== "recolor_set_darkcolor" && id !== "close_document") {
-    const label = document.querySelector(".epub-reader") ? "EPUB reading area" : "PDF reading area";
+    const label = document.querySelector(".foliate-reader") ? "EPUB reading area" : "PDF reading area";
     check(document.activeElement?.getAttribute("aria-label") === label, `${id} failed to restore reader focus after execution`);
   }
 }
@@ -607,24 +608,11 @@ async function appearancePersistence() {
     await until(() => rendererSnapshot() === rendered, `${id}: Original/reopen/r did not restore actual canvas pixels/filter`);
   }
 }
-function epubText() {
-  return [...document.querySelectorAll<HTMLIFrameElement>(".epub-reader iframe")]
-    .map((frame) => frame.contentDocument?.body?.textContent ?? "").join(" ");
-}
 async function settledEpub() {
-  const viewport = document.querySelector<HTMLElement>(".epub-reader__viewport")!;
-  await until(() => [...viewport.querySelectorAll("iframe")].every((frame) => frame.contentDocument?.readyState === "complete") &&
-    epubText().includes("Feedback EPUB"), "EPUB frames did not finish rendering");
-  // The existing reader ignores commands during its debounced resize/CFI reflow.
-  // Wait for the real engine's DOM to settle; do not add retries or alter execution.
-  let lastChange = performance.now();
-  const observer = new MutationObserver(() => { lastChange = performance.now(); });
-  observer.observe(viewport, { attributes: true, childList: true, subtree: true });
-  try {
-    await until(() => performance.now() - lastChange >= 250, "EPUB layout did not settle");
-  } finally {
-    observer.disconnect();
-  }
+  await until(() => epubDocument()?.readyState === "complete" && epubText().includes("Feedback EPUB"),
+    "EPUB frames did not finish rendering");
+  await epubDocument()!.fonts.ready;
+  await settle();
 }
 async function epubCase(width: number, height: number) {
   await resize(width, height);
@@ -688,7 +676,7 @@ async function epubCase(width: number, height: number) {
   await execute("continuous_layout", true);
   await openPalette();
   await until(() => isCurrent("continuous_layout"), "continuous EPUB layout did not update after the real engine reflow");
-  await until(() => getComputedStyle(document.querySelector(".epub-container")!).overflowY === "scroll",
+  await until(() => getComputedStyle(foliateView()!.renderer.shadowRoot!.querySelector('[part="container"]')!).overflowY === "auto",
     "continuous command did not change the actual EPUB engine's scroll presentation");
   state("continuous_layout", true, /current/i);
   state("paged_layout", false, /not\s+current/i);
@@ -703,7 +691,7 @@ async function epubCase(width: number, height: number) {
   await execute("paged_layout");
   await openPalette();
   await until(() => isCurrent("paged_layout"), "paged EPUB layout did not update after the real engine reflow");
-  await until(() => getComputedStyle(document.querySelector(".epub-container")!).overflowY === "hidden",
+  await until(() => getComputedStyle(foliateView()!.renderer.shadowRoot!.querySelector('[part="container"]')!).overflowY === "hidden",
     "paged command did not restore the actual EPUB engine's paginated presentation");
   state("paged_layout", true, /current/i);
   state("continuous_layout", false, /not\s+current/i);

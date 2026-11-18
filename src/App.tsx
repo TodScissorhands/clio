@@ -1,14 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import PdfReader from "./reader/PdfReader";
-import { EpubReader } from "./epub/EpubReader";
-import { openEpubBook } from "./epub/engine";
-import type { EpubBook } from "./epub/engine";
+import { FoliateReader } from "./epub/FoliateReader";
+import { prepareFoliateSession } from "./epub/foliateSession";
+import type { FoliateSession } from "./epub/foliateSession";
 import type { ReaderFileSource } from "./platform/tauriReaderFiles";
 import { isTauriRuntime, pickNativeReaderFile } from "./platform/tauriReaderFiles";
 import { preparePdfDocument } from "./pdf/engine";
 import type { PdfLoadingTask, PdfReaderOpenRequest } from "./pdf/engine";
 import { useDocumentTitle } from "./reader/useDocumentTitle";
 import "./App.css";
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 
 type EpubSource = Extract<ReaderFileSource, { kind: "epub" }>;
 type PendingPdfOwnership = {
@@ -19,7 +21,7 @@ type PendingPdfOwnership = {
 
 function App() {
   const [nightMode, setNightMode] = useState(() => window.matchMedia("(prefers-color-scheme: dark)").matches);
-  const [activeEpub, setActiveEpub] = useState<{ book: EpubBook; path: string | null } | null>(null);
+  const [activeEpub, setActiveEpub] = useState<{ session: FoliateSession | null; nativeId: string | null; path: string | null; generation: number } | null>(null);
   const [pendingPdfSource, setPendingPdfSource] = useState<PdfReaderOpenRequest | null>(null);
   const [documentName, setDocumentName] = useState<string | null>(null);
   const [openError, setOpenError] = useState("");
@@ -29,6 +31,7 @@ function App() {
   const [openGeneration, setOpenGeneration] = useState(0);
   const pendingPdfOwnershipRef = useRef<PendingPdfOwnership | null>(null);
   const pendingEpubAbortRef = useRef<AbortController | null>(null);
+  const nativeAcquisitionRef = useRef<Promise<number> | null>(null);
   const activeEpubRef = useRef(activeEpub);
   useDocumentTitle(documentName);
   const toggleNightMode = useCallback(() => setNightMode((current) => !current), []);
@@ -49,27 +52,57 @@ function App() {
     cancelPendingEpub();
     setPendingPdfSource(null);
     setOpenError("");
+    if (isTauriRuntime()) {
+      const acquisition = invoke<number>("begin_epub_acquisition");
+      nativeAcquisitionRef.current = acquisition;
+      void acquisition.catch(cause => {
+        if (generation === openGenerationRef.current) setOpenError(String(cause));
+      });
+    }
     return generation;
   }, [cancelPendingPdf, cancelPendingEpub]);
   useEffect(() => () => {
     openGenerationRef.current += 1;
     cancelPendingPdf();
     cancelPendingEpub();
+    activeEpubRef.current?.session?.dispose();
+    const nativeId = activeEpubRef.current?.nativeId;
+    if (nativeId) void invoke("retire_epub_session", { sessionId: nativeId });
   }, [cancelPendingPdf, cancelPendingEpub]);
   const openEpub = useCallback(async (source: EpubSource, generation: number) => {
+    const retire = (epub: typeof activeEpub) => {
+      epub?.session?.dispose();
+      if (epub?.nativeId) void invoke("retire_epub_session", { sessionId: epub.nativeId });
+    };
     const controller = new AbortController();
     pendingEpubAbortRef.current = controller;
+    let candidate: typeof activeEpub = null;
     try {
-      const book = await openEpubBook(source.bytes, controller.signal);
-      if (generation !== openGenerationRef.current) {
-        book.destroy();
-        return;
+      let epub: NonNullable<typeof activeEpub>;
+      if (isTauriRuntime()) {
+        if (!source.path) throw new Error("Open EPUB files with Clio's native file picker; pathless content cannot enter the privileged shell.");
+        const nativeGeneration = await nativeAcquisitionRef.current;
+        if (generation !== openGenerationRef.current) return;
+        const id = await invoke<string>("create_epub_session", { canonicalPath: source.path, generation: nativeGeneration });
+        epub = { session: null, nativeId: id, path: source.path, generation };
+      } else {
+        if (!source.bytes) throw new Error("Missing EPUB bytes");
+        const session = await prepareFoliateSession(new File([source.bytes.slice().buffer], source.name), controller.signal);
+        epub = { session, nativeId: null, path: source.path, generation };
       }
+      candidate = epub;
+      if (generation !== openGenerationRef.current) { retire(epub); return; }
+      if (epub.nativeId) await invoke("commit_epub_session", { sessionId: epub.nativeId });
+      if (generation !== openGenerationRef.current) { retire(epub); return; }
       setPendingPdfSource(null);
-      const epub = { book, path: source.path };
+      const previous = activeEpubRef.current;
       activeEpubRef.current = epub;
       setActiveEpub(epub);
       setDocumentName(source.name);
+      retire(previous);
+    } catch (error) {
+      if (candidate && activeEpubRef.current !== candidate) retire(candidate);
+      throw error;
     } finally {
       if (pendingEpubAbortRef.current === controller) pendingEpubAbortRef.current = null;
     }
@@ -122,6 +155,9 @@ function App() {
       if (pending?.generation !== generation || pending.task !== prepared.task) return;
       pending.request = request;
       setPendingPdfSource(request);
+      activeEpubRef.current?.session?.dispose();
+      const nativeId = activeEpubRef.current?.nativeId;
+      if (nativeId) void invoke("retire_epub_session", { sessionId: nativeId });
       activeEpubRef.current = null;
       setActiveEpub(null);
     } catch (cause) {
@@ -153,10 +189,31 @@ function App() {
           setOpenError(cause instanceof Error ? cause.message : String(cause));
         }
       } finally {
-        restoreFocus(generation);
+        const id = activeEpubRef.current?.nativeId;
+        if (id && generation === openGenerationRef.current) {
+          try { await invoke("commit_epub_session", { sessionId: id }); }
+          catch (cause) {
+            if (activeEpubRef.current?.nativeId === id && generation === openGenerationRef.current) setOpenError(String(cause));
+          }
+        } else restoreFocus(generation);
       }
     })();
   }, [beginOpenRequest, openReaderSource, restoreFocus]);
+
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    const subscriptions = [
+      listen<string>("epub-session-closed", ({ payload }) => {
+        if (activeEpubRef.current?.nativeId !== payload) return;
+        beginOpenRequest();
+        activeEpubRef.current = null;
+        setActiveEpub(null);
+        setDocumentName(null);
+      }),
+      listen("epub-request-open", () => openDocument()),
+    ];
+    return () => { void Promise.all(subscriptions).then(unlisten => unlisten.forEach(stop => stop())); };
+  }, [openDocument]);
 
   return (
     <main className="clio-app" data-night-mode={nightMode ? "true" : "false"}>
@@ -198,14 +255,16 @@ function App() {
         <span>{openError}</span>
         <button className="text-button" onClick={() => setOpenError("")}>Dismiss</button>
       </div>}
-      {activeEpub
-        ? <EpubReader book={activeEpub.book} path={activeEpub.path} onClose={() => {
+      {activeEpub?.session
+        ? <FoliateReader key={activeEpub.generation} prepared={activeEpub.session} canonicalPath={activeEpub.path} onClose={() => {
             beginOpenRequest();
+            activeEpubRef.current?.session?.dispose();
             activeEpubRef.current = null;
             setActiveEpub(null);
             setDocumentName(null);
           }} onOpenDocument={openDocument} nightMode={nightMode} onToggleNightMode={toggleNightMode} />
         : <PdfReader
+            key={activeEpub?.nativeId ?? "pdf"}
             nightMode={nightMode}
             onToggleNightMode={toggleNightMode}
             onOpenDocument={openDocument}

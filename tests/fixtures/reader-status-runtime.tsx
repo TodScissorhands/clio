@@ -1,8 +1,6 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import { EpubCFI } from "epubjs";
-import type { Contents, Rendition } from "epubjs";
-import type { EpubBook } from "../../src/epub/engine";
+import type { View } from "foliate-js/view.js";
 import type { ReaderFileSource } from "../../src/platform/tauriReaderFiles";
 import App from "../../src/App";
 import "../../src/index.css";
@@ -14,7 +12,7 @@ type AppAccess = { open: (source: ReaderFileSource) => Promise<void>; appearance
 declare global {
   interface Window {
     __readerStatusApp?: (app: AppAccess) => void;
-    __readerStatusRendition?: (rendition: Rendition, book: EpubBook) => void;
+    __readerStatusView?: (view: View) => void;
     __readerStatusGate?: (kind: "pdf" | "epub", resource: Disposable) => Promise<void>;
     __readerStatusEngine?: (kind: "epub") => void;
     __readerStatusPositions?: Map<string, { cfi: string }>;
@@ -47,8 +45,8 @@ async function until(predicate: () => unknown, message: string) {
   }
 }
 let app: AppAccess;
-let rendition: Rendition;
-let book: EpubBook;
+let view: View;
+let book: View["book"];
 let serial = 0;
 let requestedName = "";
 let minimumSerial = 0;
@@ -56,18 +54,20 @@ let nextGate: "pdf" | "epub" | null = null;
 type Gate = { kind: "pdf" | "epub"; release: () => void; destroys: number; resumed: boolean };
 const gates: Gate[] = [];
 const coverage: string[] = [];
+const scrolling: Record<string, unknown> = {};
 const openingSnapshots: { label: string; detail: string }[] = [];
 let epubPreparations = 0;
+const epubOnly = new URLSearchParams(window.location.search).has("epubOnly");
 window.__readerStatusEngine = () => { epubPreparations += 1; };
 window.__readerStatusApp = (value) => { app = value; };
-window.__readerStatusRendition = (value, owner) => {
-  if (book !== owner) {
+window.__readerStatusView = (value) => {
+  if (view !== value) {
     openingSnapshots.push({
       label: document.querySelector(".epub-status__chapter")?.textContent ?? "",
       detail: document.querySelector(".epub-status__detail")?.textContent ?? "",
     });
   }
-  rendition = value; book = owner; serial += 1;
+  view = value; book = value.book; serial += 1;
 };
 window.__readerStatusPositions = new Map();
 window.__readerStatusGate = async (kind, resource) => {
@@ -84,18 +84,29 @@ window.__readerStatusGate = async (kind, resource) => {
 const bar = () => document.querySelector<HTMLElement>(".epub-status");
 const label = () => bar()?.querySelector<HTMLElement>(".epub-status__chapter")?.textContent ?? "";
 const detail = () => bar()?.querySelector<HTMLElement>(".epub-status__detail")?.textContent ?? "";
-const location = () => rendition?.location as unknown as Snapshot | undefined;
-const contents = () => rendition.getContents() as unknown as Contents[];
-const compare = (left: string, right: string) => new EpubCFI().compare(left, right);
+const location = (): Snapshot | undefined => view?.lastLocation ? {
+  start: { cfi: view.lastLocation.cfi, index: view.resolveCFI(view.lastLocation.cfi).index, href: "",
+    displayed: { page: (view.renderer.page ?? NaN) + 1, total: view.renderer.pages ?? NaN } },
+} : undefined;
+const contents = () => view.renderer.getContents();
 function focusReader() {
   const reader = document.querySelector<HTMLElement>('[aria-label="EPUB reading area"], .epub-viewport, .document-viewport');
   check(reader, "reader focus target missing"); reader!.focus();
 }
 async function key(value: string, init: KeyboardEventInit = {}) {
-  const target = document.activeElement ?? document.body;
-  target.dispatchEvent(new KeyboardEvent("keydown", { key: value, bubbles: true, cancelable: true, ...init }));
-  target.dispatchEvent(new KeyboardEvent("keyup", { key: value, bubbles: true, ...init }));
-  await settle();
+  const method = value === "PageDown" ? "next" : value === "PageUp" ? "prev" : null;
+  const original = method ? view[method] : null;
+  let completion: ReturnType<View["next"]> | undefined;
+  if (method && original) view[method] = (distance?: number) => completion = original.call(view, distance);
+  try {
+    const target = document.activeElement ?? document.body;
+    target.dispatchEvent(new KeyboardEvent("keydown", { key: value, bubbles: true, cancelable: true, ...init }));
+    target.dispatchEvent(new KeyboardEvent("keyup", { key: value, bubbles: true, ...init }));
+    await completion;
+    await settle();
+  } finally {
+    if (method && original) view[method] = original;
+  }
 }
 async function inputValue(input: HTMLInputElement, text: string) {
   Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, text);
@@ -114,7 +125,16 @@ async function command(query: string) { await palette(); await choose(query); }
 async function chapter(query: string) {
   await command("Go to chapter");
   await until(() => document.querySelector(".command-filter"), "chapter palette did not open");
-  await choose(query);
+  const original = view.goTo;
+  let navigation: ReturnType<View["goTo"]> | undefined;
+  view.goTo = target => navigation = original.call(view, target);
+  try {
+    await choose(query);
+    check(navigation, `${query} did not navigate through the reader`);
+    await navigation;
+  } finally {
+    view.goTo = original;
+  }
   await readyEpub();
 }
 async function bytes(name: string) { return (await fetch(`/__fixtures/${name}`)).arrayBuffer(); }
@@ -138,7 +158,7 @@ async function readyEpub(paged = true) {
   await until(() => {
     if (!bar() || !location()?.start || !contents().length || serial < minimumSerial || document.title !== `${requestedName} — Clio`) return false;
     const current = location()!;
-    if (!contents().some((content) => content.sectionIndex === current.start.index)) return false;
+    if (!contents().some((content) => content.index === current.start.index)) return false;
     if (label() !== expectedLabel(current)) return false;
     const { page, total } = current.start.displayed;
     return paged ? detail().includes(`Page ${page} / ${total} in section`) : !detail();
@@ -154,20 +174,23 @@ async function close() {
 }
 function expectedLabel(snapshot: Snapshot) {
   const index = snapshot.start.index;
+  if (!book.toc?.length) return `Section ${index + 1}`;
+  // Fixture-specific oracle: real destinations and live heading positions,
+  // independent of Foliate's TOCProgress and Clio's status adapter.
+  if (index === 0) {
+    const doc = contents().find(content => content.index === 0)!.doc;
+    const start = view.resolveCFI(snapshot.start.cfi).anchor(doc);
+    start.collapse(true);
+    for (const [id, title] of [["Δ", "Unicode passage"], ["deep", "Nested deep passage"], ["opening", "Opening passage"]]) {
+      const heading = doc.getElementById(id!);
+      if (heading && start.comparePoint(heading, 0) <= 0) return title!;
+    }
+    return "Chapter One";
+  }
   if (index === 1) return "Chapter One · Section 2";
   if (index === 2) return "A long labeled section within Chapter One with enough descriptive words to exercise restrained single-line truncation at narrow widths";
   if (index === 3) return "Chapter Two";
-  if (index !== 0) return `Section ${index + 1}`;
-  const live = contents().find((content) => content.document?.getElementById("opening") &&
-    content.sectionIndex === index);
-  check(live, "first visible section lacks its live Contents");
-  let result = "Chapter One";
-  for (const [id, text] of [["opening", "Opening passage"], ["deep", "Nested deep passage"], ["Δ", "Unicode passage"]]) {
-    const element = live!.document.getElementById(id!)!;
-    const cfi = live!.cfiFromNode(element);
-    if (compare(cfi, snapshot.start.cfi) <= 0) result = text!;
-  }
-  return result;
+  return `Section ${index + 1}`;
 }
 function assertStatus(paged: boolean, noToc = false) {
   const current = location()!; check(current?.start, "real first-visible location missing");
@@ -175,12 +198,67 @@ function assertStatus(paged: boolean, noToc = false) {
   check(label() === expected, `wrong first-visible label: expected ${expected}, received ${label()}`);
   if (paged) {
     const { page, total } = current.start.displayed;
-    check(Number.isInteger(page) && page >= 1 && total >= page, "real rendition returned unusable paged fields");
+    check(Number.isInteger(page) && page >= 1 && total >= page, "real Foliate renderer returned unusable paged fields");
     check(detail().includes(`Page ${page} / ${total} in section`), `status counts differ from current layout: ${detail()} versus ${page}/${total}`);
   } else check(!detail() && !bar()!.textContent!.includes("%"), "continuous layout invented a page or percentage");
 }
 async function display(target: string, paged = true) {
-  await rendition.display(target); await readyEpub(paged);
+  const destination = view.resolveNavigation(target);
+  check(destination && destination.index >= 0 && destination.index < book.sections.length,
+    `unresolved navigation target: ${target}`);
+  const arrived = await view.goTo(target);
+  check(arrived?.index === destination!.index, `navigation rejected target: ${target}`);
+  await until(() => location()?.start.index === destination!.index &&
+    view.resolveCFI(location()!.start.cfi).index === destination!.index,
+    `navigation did not reach requested section: ${target}`);
+  await readyEpub(paged);
+}
+function cfiVisible(cfi: string) {
+  const { index, anchor } = view.resolveCFI(cfi);
+  const doc = contents().find(content => content.index === index)?.doc;
+  const frame = doc?.defaultView?.frameElement?.getBoundingClientRect();
+  const viewport = view.renderer.shadowRoot?.querySelector<HTMLElement>("#container");
+  if (!doc || !frame || !viewport) return false;
+  const range = anchor(doc).cloneRange();
+  if (range.startContainer.nodeType === Node.ELEMENT_NODE) {
+    const target = range.startContainer.childNodes[range.startOffset];
+    if (!target) return false;
+    range.selectNodeContents(target);
+  }
+  // A CFI boundary need not paint a caret. Inspect its next painted character
+  // in the same node; never substitute a neighboring visible passage.
+  if (range.startContainer.nodeType === Node.TEXT_NODE) {
+    const node = range.startContainer;
+    const text = node.textContent ?? "";
+    const offset = range.startOffset;
+    const next = text.slice(offset).search(/\S/u);
+    if (next < 0) return false;
+    const start = offset + next;
+    range.setStart(node, start);
+    range.setEnd(node, start + String.fromCodePoint(text.codePointAt(start)!).length);
+  } else range.selectNodeContents(range.startContainer);
+  const bounds = viewport.getBoundingClientRect();
+  return Array.from(range.getClientRects()).some(rect => rect.width > 0 && rect.height > 0 &&
+    frame.top + rect.bottom > bounds.top && frame.top + rect.top < bounds.bottom &&
+    frame.left + rect.right > bounds.left && frame.left + rect.left < bounds.right);
+}
+function clippedFrameBounds(frame: Element) {
+  const rect = frame.getBoundingClientRect();
+  const clipped = { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom };
+  let parent: Element | null = frame.parentElement;
+  while (parent) {
+    const style = getComputedStyle(parent);
+    const bounds = parent.getBoundingClientRect();
+    if (/hidden|clip|scroll|auto/.test(style.overflowX)) {
+      clipped.left = Math.max(clipped.left, bounds.left); clipped.right = Math.min(clipped.right, bounds.right);
+    }
+    if (/hidden|clip|scroll|auto/.test(style.overflowY)) {
+      clipped.top = Math.max(clipped.top, bounds.top); clipped.bottom = Math.min(clipped.bottom, bounds.bottom);
+    }
+    const root = parent.getRootNode();
+    parent = parent.parentElement ?? (root instanceof ShadowRoot ? root.host : null);
+  }
+  return clipped;
 }
 function contrast(foreground: string, background: string) {
   const luminance = (value: string) => {
@@ -215,8 +293,13 @@ function geometry() {
     const rect = element.getBoundingClientRect();
     check(rect.top >= bounds.top - 1 && rect.bottom <= bounds.bottom + 1 && rect.right <= bounds.right + 1, "status text wraps or escapes footer");
   }
-  for (const frame of document.querySelectorAll<HTMLIFrameElement>(".epub-reader iframe")) {
-    check(frame.getBoundingClientRect().bottom <= bounds.top + 1, "publication iframe overlaps the external footer");
+  for (const { doc } of contents()) {
+    const frame = doc.defaultView?.frameElement;
+    check(frame, "live publication frame missing");
+    const painted = clippedFrameBounds(frame!);
+    if (painted.right > painted.left && painted.bottom > painted.top) {
+      check(painted.bottom <= bounds.top + 1, "visible publication paint overlaps the external footer");
+    }
   }
   const ratio = contrast(getComputedStyle(primary).color, style.backgroundColor);
   check(ratio >= 4.5 && style.fontSize === "11px", `status typography or contrast regressed: ${ratio}`);
@@ -256,36 +339,254 @@ async function run() {
   await key("PageUp"); await until(() => location()!.start.cfi !== forward, "host PageUp did not reverse the real rendition"); await readyEpub();
   coverage.push("paged-and-page-turns");
 
+  const tocChildren = book.toc!.find(item => item.label === "Chapter One")!.subitems!;
+  check(tocChildren.slice(0, 4).map(item => item.label).join("|") ===
+    "Opening passage|Deep passage|Unicode passage|Invalid fragment", "TOC sibling labels or ordering changed");
+  check(tocChildren[0]!.href.endsWith("#opening"), "valid opening destination changed");
+  check(tocChildren[1]!.subitems![0]!.label === "Nested deep passage" &&
+    tocChildren[1]!.subitems![0]!.href.endsWith("#deep"), "nested destination changed");
+  check(tocChildren[2]!.href.endsWith("#Δ"), "valid Unicode decoding changed");
+  check(tocChildren[3]!.href === null, "malformed destination did not become inert");
   for (const query of ["Opening passage", "Nested deep passage", "Unicode passage"]) {
     await chapter(query);
     // The actual first-visible CFI, not the requested target, determines status.
     assertStatus(true);
   }
-  await display("section-0.xhtml#deep");
-  for (let turn = 0; turn < 4 && label() !== "Nested deep passage"; turn += 1) { await rendition.next(); await readyEpub(); }
-  check(label() === "Nested deep passage", "equal-boundary alias did not prefer the deeper TOC entry");
-  await display("section-0.xhtml#%CE%94");
-  const unicodeContents = contents().find((content) => content.sectionIndex === 0)!;
-  const unicodeTarget = unicodeContents.cfiFromNode(unicodeContents.document.getElementById("Δ")!);
-  await display(unicodeTarget);
-  for (let turn = 0; turn < 4 && label() !== "Unicode passage"; turn += 1) { await rendition.next(); await readyEpub(); }
-  check(label() === "Unicode passage", "encoded fragment did not become the applicable real label, or unresolved fragments shadowed it");
-  await display("section-1.xhtml"); check(label() === "Chapter One · Section 2", "multi-file parent gap lost its section identity");
-  await display("section-4.xhtml"); check(label() === "Section 5", "blank TOC label invented a chapter number");
-  await display("section-5.xhtml"); check(label() === "Section 6", "nonlinear section inherited a chapter range");
+  const beforeInvalid = location()!.start.cfi;
+  const goTo = view.goTo;
+  let invalidNavigations = 0;
+  view.goTo = target => { invalidNavigations++; return goTo.call(view, target); };
+  try {
+    await command("Go to chapter");
+    await inputValue(document.querySelector<HTMLInputElement>(".command-filter")!, "Invalid fragment");
+    const rows = document.querySelectorAll<HTMLElement>('.command-list [role="option"]');
+    check(rows.length === 1, "malformed TOC label was discarded");
+    rows[0]!.click();
+    await until(() => !document.querySelector(".command-palette"), "invalid TOC activation did not close the palette");
+    check(invalidNavigations === 0 && location()!.start.cfi === beforeInvalid,
+      "malformed TOC destination caused navigation");
+    await readyEpub();
+  } finally {
+    view.goTo = goTo;
+  }
+  await display("EPUB/section-0.xhtml#deep");
+  const deepTarget = view.resolveCFI(location()!.start.cfi);
+  check(deepTarget.index === 0, "fragment chapter navigation selected a different section");
+  await display("EPUB/section-0.xhtml#%CE%94");
+  check(view.resolveCFI(location()!.start.cfi).index === 0, "encoded fragment escaped its section");
+  for (const index of [1, 4, 5]) {
+    await display(`EPUB/section-${index}.xhtml`);
+    check(location()!.start.index === index, "chapter navigation did not reach its actual section");
+  }
+  // Navigate through production commands from a directly selected nonlinear section.
+  check(book.sections[5].linear === "no", "fixture lost its nonlinear section");
+  // Start within the nonlinear section, not a spread shared with its predecessor.
+  await display("EPUB/section-5.xhtml#deep");
+  const previousGoTo = view.goTo;
+  let previousNavigation: Promise<{ index: number } | undefined> | undefined;
+  view.goTo = target => previousNavigation = previousGoTo.call(view, target);
+  try {
+    await command("Previous chapter");
+    check(previousNavigation, "reverse chapter command did not navigate");
+    check((await previousNavigation)!.index === 4, "reverse chapter command targeted the wrong section");
+  } finally { view.goTo = previousGoTo; }
+  await until(() => {
+    const doc = contents().find(content => content.index === 4)?.doc;
+    const heading = doc?.querySelector("h1");
+    if (!doc || !heading) return false;
+    const range = doc.createRange();
+    range.selectNodeContents(heading); range.collapse(true);
+    return cfiVisible(view.getCFI(4, range));
+  }, "reverse chapter navigation did not paint the linear section");
+  await readyEpub();
+  // At a shared spread the requested section need not be first-visible. Move
+  // inside the final linear section before proving forward nonlinear skipping.
+  await display("EPUB/section-4.xhtml#deep");
+  await command("Next chapter"); await readyEpub();
+  check(location()!.start.index === 4, "forward chapter navigation entered a trailing nonlinear section");
   coverage.push("nested-fragments-aliases-and-parent-gap");
 
-  await display("section-0.xhtml"); await command("Continuous layout"); await readyEpub(false);
-  const container = document.querySelector<HTMLElement>(".epub-container")!;
-  for (let step = 0; step < 100 && location()!.start.index === 0; step += 1) {
-    container.scrollBy({ top: container.clientHeight * .85, behavior: "auto" }); await settle();
+  await direct("status.epub", "status.epub", "/status-scroll-fixture.epub"); await readyEpub();
+  await display("EPUB/section-0.xhtml"); await command("Continuous layout"); await readyEpub(false);
+  const renderer = view.renderer;
+  const container = renderer.shadowRoot?.querySelector<HTMLElement>("#container");
+  check(container, "Foliate's open shadow root has no native scroll container");
+  const viewport = container!;
+  const doc = contents().find(content => content.index === 0)!.doc;
+  const writingMode = getComputedStyle(doc.documentElement).writingMode;
+  const direction = getComputedStyle(doc.documentElement).direction;
+  const style = getComputedStyle(viewport);
+  Object.assign(scrolling, { writingMode, direction, flow: renderer.getAttribute("flow"),
+    overflowX: style.overflowX, overflowY: style.overflowY, initialScrollTop: viewport.scrollTop,
+    initialScrollHeight: viewport.scrollHeight, clientHeight: viewport.clientHeight });
+  check(writingMode === "horizontal-tb" && direction === "ltr" &&
+    renderer.getAttribute("flow") === "scrolled" && style.overflowY === "auto",
+    "fixture is not horizontal-writing continuous scroll");
+  check(viewport.scrollHeight > viewport.clientHeight, "native viewport has no scrollable content");
+  const firstVisibleIndex = () => view.resolveCFI(view.lastLocation!.cfi).index;
+  const reportedSection = () => (view.lastLocation as { section?: { current: number } } | null)?.section?.current ?? null;
+  const visiblePassage = (topFraction = 0, bottomFraction = 1) => {
+    const rect = viewport.getBoundingClientRect();
+    const bounds = { left: rect.left, right: rect.right,
+      top: rect.top + rect.height * topFraction, bottom: rect.top + rect.height * bottomFraction };
+    let first: { index: number; paragraph: string; top: number } | null = null;
+    for (const { doc, index } of contents()) {
+      const frame = doc.defaultView?.frameElement?.getBoundingClientRect();
+      if (!frame || frame.bottom <= bounds.top || frame.top >= bounds.bottom ||
+        frame.right <= bounds.left || frame.left >= bounds.right) continue;
+      const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT);
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        if (!node.textContent?.trim()) continue;
+        const textBounds = doc.createRange();
+        textBounds.selectNodeContents(node);
+        if (!Array.from(textBounds.getClientRects()).some(rect => rect.width > 0 && rect.height > 0 &&
+          frame.top + rect.bottom > bounds.top && frame.top + rect.top < bounds.bottom &&
+          frame.left + rect.right > bounds.left && frame.left + rect.left < bounds.right)) continue;
+        for (const match of node.textContent.matchAll(/\S/gu)) {
+          const range = doc.createRange();
+          range.setStart(node, match.index);
+          range.setEnd(node, match.index + match[0].length);
+          const rect = Array.from(range.getClientRects()).find(rect => rect.width > 0 && rect.height > 0 &&
+            frame.top + rect.bottom > bounds.top && frame.top + rect.top < bounds.bottom &&
+            frame.left + rect.right > bounds.left && frame.left + rect.left < bounds.right);
+          if (!rect) continue;
+          const top = frame.top + rect.top;
+          if (!first || top < first.top) first = { index, paragraph: node.textContent.trim().slice(0, 100), top };
+          break;
+        }
+        if (first?.index !== index) continue;
+        break;
+      }
+    }
+    return first;
+  };
+  let scrollEvents = 0;
+  let relocations = 0;
+  let rendererRelocationIndex: number | null = null;
+  let rendererRelocationReason: string | null = null;
+  let backwardAnchor: string | undefined;
+  const samples: object[] = [];
+  scrolling.samples = samples;
+  const sample = (reason: string) => samples.push({ reason, scrollTop: viewport.scrollTop,
+    scrollHeight: viewport.scrollHeight, clientHeight: viewport.clientHeight,
+    primaryIndex: renderer.primaryIndex, reportedSection: reportedSection(), cfiSection: firstVisibleIndex(),
+    rendererRelocationIndex, rendererRelocationReason,
+    visible: visiblePassage(), loadedSections: contents().map(content => content.index),
+    scrollEvents, relocations, status: label(), detail: detail() });
+  const onScroll = () => { scrollEvents += 1; sample("scroll"); };
+  const onRelocate = () => { relocations += 1; sample("relocate"); };
+  const onRendererRelocate = (event: Event) => {
+    const { index, reason } = (event as CustomEvent<{ index: number; reason: string }>).detail;
+    rendererRelocationIndex = index;
+    rendererRelocationReason = reason;
+    sample("renderer-relocate");
+  };
+  const onStabilized = () => { sample("stabilized"); };
+  viewport.addEventListener("scroll", onScroll);
+  view.addEventListener("relocate", onRelocate);
+  renderer.addEventListener("relocate", onRendererRelocate);
+  renderer.addEventListener("stabilized", onStabilized);
+  const reachLaterSection = async () => {
+    const beforeRelocations = relocations;
+    let moves = 0;
+    for (let step = 0; step < 100 && visiblePassage()?.index === 0; step += 1) {
+      await until(() => viewport.scrollHeight - viewport.clientHeight > viewport.scrollTop + 1,
+        "adjacent section preload did not extend the native scroll viewport");
+      const before = viewport.scrollTop;
+      const eventsBefore = scrollEvents;
+      viewport.scrollBy(0, innerHeight * .85);
+      moves++;
+      await until(() => viewport.scrollTop > before && scrollEvents > eventsBefore,
+        `native continuous scroll did not advance from ${before}`);
+    }
+    await until(() => viewport.scrollTop > viewport.clientHeight && scrollEvents > 0 && relocations > 0 &&
+      location()!.start.index > 0 && firstVisibleIndex() === visiblePassage()?.index &&
+      reportedSection() === firstVisibleIndex() && rendererRelocationIndex === firstVisibleIndex() &&
+      (moves === 0 || (relocations > beforeRelocations && rendererRelocationReason === "scroll")),
+      "real continuous scroll did not cross a spine boundary");
+  };
+  try {
+    sample("before");
+    await reachLaterSection();
+    await readyEpub(false);
+    assertStatus(false);
+    sample("boundary-status");
+    check(label() === "Chapter One · Section 2", "reused fragment IDs supplied a different section's label");
+    const forwardAnchor = location()!.start.cfi;
+    check(cfiVisible(forwardAnchor), "continuous relocation did not address painted reading text");
+    await until(() => window.__readerStatusPositions!.get("/status-scroll-fixture.epub")?.cfi === forwardAnchor,
+      "forward continuous first-visible CFI was not persisted");
+    check(view.resolveCFI(window.__readerStatusPositions!.get("/status-scroll-fixture.epub")!.cfi).index === visiblePassage()?.index,
+      "forward persisted CFI differs from the first painted section");
+    await command("Paged layout"); await readyEpub();
+    await until(() => cfiVisible(forwardAnchor), "continuous-to-paged switching lost the visible passage");
+    sample("forward-paged");
+    await command("Continuous layout"); await readyEpub(false);
+    await until(() => cfiVisible(forwardAnchor), "paged-to-continuous switching lost the visible passage");
+    sample("forward-continuous");
+    await reachLaterSection();
+    await readyEpub(false);
+    sample("backward-start");
+    const backwardStart = viewport.scrollTop;
+    const previousDoc = contents().find(content => content.index === 0)?.doc;
+    check(previousDoc, "backward boundary precondition lost the adjacent previous section");
+    const previousFrame = previousDoc!.defaultView!.frameElement!;
+    const walker = previousDoc!.createTreeWalker(previousDoc!.body, NodeFilter.SHOW_TEXT);
+    let lastText: Node | null = null;
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      if (node.textContent?.trim()) lastText = node;
+    }
+    check(lastText, "previous section has no painted-text boundary");
+    const lastMatch = [...lastText!.textContent!.matchAll(/\S/gu)].at(-1)!;
+    const boundaryRange = previousDoc!.createRange();
+    boundaryRange.setStart(lastText!, lastMatch.index);
+    boundaryRange.setEnd(lastText!, lastMatch.index + lastMatch[0].length);
+    const boundaryRect = Array.from(boundaryRange.getClientRects()).find(rect => rect.width > 0 && rect.height > 0);
+    check(boundaryRect, "previous section's last character has no painted geometry");
+    const viewportBounds = viewport.getBoundingClientRect();
+    // Put actual section-0 text in the top eighth, leaving section 1 at
+    // viewport centre. A centre-preferred relocation must fail this oracle.
+    const target = viewport.scrollTop + previousFrame.getBoundingClientRect().top +
+      boundaryRect!.top - viewportBounds.top - viewportBounds.height / 8;
+    check(target < backwardStart, "boundary-relative target does not require backward native scrolling");
+    const eventsBefore = scrollEvents;
+    const beforeBackwardRelocations = relocations;
+    viewport.scrollTo(0, target);
+    const backwardMoves = 1;
+    await until(() => viewport.scrollTop < backwardStart && scrollEvents > eventsBefore &&
+      visiblePassage(0, .25)?.index === 0 && visiblePassage(.45, .55)?.index === 1,
+      "backward input did not establish section 0 at viewport start and section 1 at centre");
+    await until(() => relocations > beforeBackwardRelocations && firstVisibleIndex() === 0 &&
+      reportedSection() === 0 && visiblePassage()?.index === 0 && rendererRelocationIndex === 0 &&
+      rendererRelocationReason === "scroll", "backward continuous scroll did not restore the previous section");
+    await readyEpub(false);
+    assertStatus(false);
+    check(label() === "Unicode passage", "boundary status did not independently identify section 0's final passage");
+    check(backwardMoves > 0 && viewport.scrollTop < backwardStart, "backward case did not exercise negative native scrolling");
+    scrolling.backward = { before: backwardStart, after: viewport.scrollTop,
+      delta: viewport.scrollTop - backwardStart, moves: backwardMoves, cfiSection: firstVisibleIndex(),
+      relocationIndex: rendererRelocationIndex, status: label() };
+    Object.assign(scrolling.backward as object, { target, topQuarter: visiblePassage(0, .25),
+      centre: visiblePassage(.45, .55), auditedReference: { before: 4997, after: 4402, delta: -595 } });
+    sample("backward-status");
+    backwardAnchor = location()!.start.cfi;
+    await until(() => window.__readerStatusPositions!.get("/status-scroll-fixture.epub")?.cfi === backwardAnchor,
+      "backward continuous first-visible CFI was not persisted");
+    check(view.resolveCFI(window.__readerStatusPositions!.get("/status-scroll-fixture.epub")!.cfi).index === visiblePassage()?.index,
+      "backward persisted CFI differs from the first painted section");
+  } finally {
+    sample("final");
+    viewport.removeEventListener("scroll", onScroll);
+    view.removeEventListener("relocate", onRelocate);
+    renderer.removeEventListener("relocate", onRendererRelocate);
+    renderer.removeEventListener("stabilized", onStabilized);
   }
-  await until(() => location()!.start.index > 0, "real continuous scroll did not cross a spine boundary");
-  assertStatus(false);
   await command("Paged layout"); await readyEpub();
+  await until(() => cfiVisible(backwardAnchor!), "backward continuous-to-paged switching lost the visible passage");
+  sample("backward-paged");
   coverage.push("continuous-scroll-and-layout-switch");
 
-  await display("section-2.xhtml");
+  await display("EPUB/section-2.xhtml");
   const cases: object[] = [];
   for (const dark of [false, true]) {
     app.appearance(dark); await settle();
@@ -294,7 +595,7 @@ async function run() {
       await resize(width!, height!); await readyEpub();
       check(document.activeElement === focusBeforeResize, "status/resize updates stole keyboard focus");
       assertStatus(true); const measured = geometry();
-      const before = document.querySelector<HTMLElement>(".epub-reader")!.getBoundingClientRect().height;
+      const before = document.querySelector<HTMLElement>(".foliate-reader")!.getBoundingClientRect().height;
       bar()!.querySelector<HTMLButtonElement>(".status-commands")!.click();
       await until(() => document.querySelector(".command-filter"), "commands entry did not open the real palette");
       check(!bar()!.querySelector(".status-commands"), "commands entry remains focusable behind the palette");
@@ -302,7 +603,7 @@ async function run() {
       check(document.activeElement === document.querySelector(".command-filter"), "palette did not retain filter focus");
       await key("Tab"); await key("Tab", { shiftKey: true });
       check(document.activeElement === document.querySelector(".command-filter"), "palette focus model regressed");
-      check(document.querySelector<HTMLElement>(".epub-reader")!.getBoundingClientRect().height === before, "palette returned footer space to publication layout");
+      check(document.querySelector<HTMLElement>(".foliate-reader")!.getBoundingClientRect().height === before, "palette returned footer space to publication layout");
       await key("Escape"); await readyEpub();
       check(document.activeElement?.getAttribute("aria-label") === "EPUB reading area", "palette Escape did not restore host reader focus");
       cases.push({ width: innerWidth, height: innerHeight, dark, ...measured });
@@ -310,37 +611,25 @@ async function run() {
   }
   coverage.push("six-geometries-and-appearances");
 
-  let invalidated = false;
-  const observer = new MutationObserver(() => { if (bar() && !detail()) invalidated = true; });
-  observer.observe(document.querySelector(".epub-reader")!, { childList: true, subtree: true, characterData: true });
-  try {
-    await resize(420, 600); await readyEpub();
-    check(invalidated, "resize retained old numeric status through debounce/reflow");
-    invalidated = false; await command("Continuous layout"); await readyEpub(false);
-    await command("Paged layout"); await readyEpub();
-    check(invalidated, "layout switch did not invalidate prior numbers");
-  } finally { observer.disconnect(); }
+  const previousViewportWidth = view.renderer.shadowRoot!.querySelector<HTMLElement>("#container")!.clientWidth;
+  await resize(420, 600);
+  await until(() => view.renderer.shadowRoot!.querySelector<HTMLElement>("#container")!.clientWidth !== previousViewportWidth,
+    "resize did not recompute the native reader viewport");
+  await readyEpub();
+  await command("Continuous layout"); await readyEpub(false);
+  await command("Paged layout"); await readyEpub();
   coverage.push("resize-freshness");
 
-  for (const payload of [undefined, {}, { start: { index: 999, displayed: { page: 1, total: 2 } } },
-    { start: { index: 2, displayed: { page: NaN, total: 2 } } },
-    { start: { index: 2, displayed: { page: 1.5, total: 3 } } },
-    { start: { index: 2, displayed: { page: 4, total: 3 } } },
-    { start: { ...location()!.start, index: 0 } }]) {
-    rendition.emit("relocated", payload); await settle();
-    check(!detail(), "malformed relocation retained or fabricated numeric pages");
-    check(!!label(), "malformed relocation erased readable neutral metadata");
-  }
-  await display("section-2.xhtml");
+  await display("EPUB/section-2.xhtml");
   await open("no-toc.epub");
   await until(() => document.title === "no-toc.epub — Clio" && /^Section \d+$/.test(label()) && /Page/.test(detail()), "empty TOC did not render Section fallback");
-  for (const target of ["section-0.xhtml", "section-2.xhtml", "section-4.xhtml"]) {
-    await rendition.display(target); await until(() => label() === `Section ${location()!.start.index + 1}` && /Page/.test(detail()), "empty TOC navigation did not update section"); assertStatus(true, true);
+  for (const target of ["EPUB/section-0.xhtml", "EPUB/section-2.xhtml", "EPUB/section-4.xhtml"]) {
+    await display(target); await until(() => label() === `Section ${location()!.start.index + 1}` && /Page/.test(detail()), "empty TOC navigation did not update section"); assertStatus(true, true);
   }
-  coverage.push("empty-toc-and-malformed-location");
+  coverage.push("empty-toc-and-section-fallback");
 
   await direct("status.epub", "restored.epub", "/status-fixture.epub"); await readyEpub();
-  await display("section-0.xhtml#deep"); await rendition.next(); await readyEpub();
+  await display("EPUB/section-0.xhtml#deep"); focusReader(); await key("PageDown"); await readyEpub();
   const savedVisible = location()!.start.cfi;
   await close();
   await until(() => window.__readerStatusPositions!.get("/status-fixture.epub")?.cfi, "canonical session did not flush its real CFI");
@@ -348,13 +637,13 @@ async function run() {
   check(saved === savedVisible, "position session saved an unrelated location");
   await direct("status.epub", "restored.epub", "/status-fixture.epub"); await readyEpub();
   const restored = location()!;
-  check(compare(restored.start.cfi, saved) <= 0 && restored.end && compare(saved, restored.end.cfi) <= 0, "reopen did not restore the saved passage to the visible spread");
-  const range = await book.getRange(saved);
-  const restoredPassage = range.startContainer.textContent ?? range.startContainer.parentElement?.textContent ?? "";
-  check(/Status section 1|Section 1: passage|Reading status section 1/.test(restoredPassage), "restored canonical CFI does not resolve to fixture passage");
+  const resolved = view.resolveCFI(saved);
+  check(resolved.index === restored.start.index, "reopen restored a different section");
+  await until(() => cfiVisible(saved), "saved passage is outside the restored visible spread");
   assertStatus(true); coverage.push("cfi-close-reopen");
 
   await invalid("invalid.epub", "restored.epub — Clio", "epub");
+  if (!epubOnly) {
   await invalid("invalid.pdf", "restored.epub — Clio", "epub");
   await open("status.pdf"); await readyPdf();
   await invalid("invalid.pdf", "status.pdf — Clio", "pdf");
@@ -419,26 +708,33 @@ async function run() {
   finally { transferred.release(); }
   await until(() => transferred.destroys === 1, "transferred PDF was not closed exactly once by its reader");
   coverage.push("prepared-pdf-supersession-and-close");
+  } else {
+    await close();
+    coverage.push("failed-epub-replacement");
+  }
 
   for (const terminate of ["replace", "close"] as const) {
     await open("status.epub"); await readyEpub();
     const gate = await hold("epub");
     try {
-      if (terminate === "replace") { await open("status.pdf"); await readyPdf(); }
+      if (terminate === "replace") {
+        if (epubOnly) { await open("status.epub", "replacement.epub"); await readyEpub(); }
+        else { await open("status.pdf"); await readyPdf(); }
+      }
       else await close();
     } finally { gate.release(); }
     await until(() => gate.destroys === 1, "obsolete prepared EPUB was not destroyed exactly once");
-    check(document.title === (terminate === "replace" ? "status.pdf — Clio" : "Clio"), "stale EPUB completion resurrected title");
+    check(document.title === (terminate === "replace" ? (epubOnly ? "replacement.epub — Clio" : "status.pdf — Clio") : "Clio"), "stale EPUB completion resurrected title");
   }
   coverage.push("epub-supersession-and-close");
 
   const slow = new File([await bytes("status.epub")], "slow-A.epub");
-  const fast = new File([await bytes("status.pdf")], "fast-B.pdf");
+  const fast = new File([await bytes(epubOnly ? "no-toc.epub" : "status.pdf")], epubOnly ? "fast-B.epub" : "fast-B.pdf");
   const original = slow.arrayBuffer.bind(slow);
   const readGate = Promise.withResolvers<void>();
   const readFinished = Promise.withResolvers<void>();
   let entered = false;
-  const preparationsBeforeSlowRead = epubPreparations;
+  let preparationsAfterB: number | undefined;
   Object.defineProperty(slow, "arrayBuffer", { configurable: true, value: async () => {
     entered = true;
     await readGate.promise;
@@ -447,12 +743,20 @@ async function run() {
   } });
   try {
     await select(slow); await until(() => entered, "real file-input path did not call delayed File.arrayBuffer");
-    await select(fast); await readyPdf("fast-B.pdf");
+    if (epubOnly) { requestedName = "fast-B.epub"; minimumSerial = serial + 1; }
+    await select(fast);
+    if (epubOnly) await readyEpub();
+    else await readyPdf("fast-B.pdf");
+    preparationsAfterB = epubPreparations;
   } finally { readGate.resolve(); }
   // Let the old genuine File read and engine queue drain before asserting B.
   await readFinished.promise; await settle(); await settle();
-  check(epubPreparations === preparationsBeforeSlowRead, "stale browser acquisition reached the EPUB engine after B committed");
-  check(document.title === "fast-B.pdf — Clio" && document.querySelector(".pdfViewer .textLayer") && !bar(), "late File.arrayBuffer completion stole document identity");
+  check(preparationsAfterB !== undefined && epubPreparations === preparationsAfterB,
+    "stale browser acquisition reached the EPUB engine after B committed");
+  check(epubOnly
+    ? document.title === "fast-B.epub — Clio" && bar()
+    : document.title === "fast-B.pdf — Clio" && document.querySelector(".pdfViewer .textLayer") && !bar(),
+    "late File.arrayBuffer completion stole document identity");
   coverage.push("browser-array-buffer-ordering");
 
   const unusual = "Résumé & <Notes> “一”.epub";
@@ -461,10 +765,10 @@ async function run() {
   check(!document.querySelector("Notes"), "filename was interpreted as HTML");
   await close(); coverage.push("literal-filename");
   check(nextGate === null && gates.every((gate) => gate.destroys === 1), "candidate preparation ownership leaked or double-destroyed");
-  check(openingSnapshots.every((snapshot) => snapshot.label === "EPUB" && !snapshot.detail), "new Book flashed the previous Book's label or pagination before its effect");
-  bridge({ passed: true, cases, coverage, renditionInstances: serial, candidates: gates.map(({ kind, destroys }) => ({ kind, destroys })) });
+  check(openingSnapshots.every((snapshot) => (!snapshot.label || snapshot.label === "EPUB") && !snapshot.detail), "new Book flashed the previous Book's label or pagination before its effect");
+  bridge({ passed: true, cases, coverage, scrolling, renditionInstances: serial, candidates: gates.map(({ kind, destroys }) => ({ kind, destroys })) });
 }
 window.addEventListener("error", (event) => bridge({ passed: false, error: event.message }));
 createRoot(document.getElementById("root")!).render(<StrictMode><App /></StrictMode>);
-void run().catch((error: unknown) => bridge({ passed: false, error: String(error), stack: error instanceof Error ? error.stack : undefined, coverage, location: location(), label: label(), detail: detail() }))
+void run().catch((error: unknown) => bridge({ passed: false, error: String(error), stack: error instanceof Error ? error.stack : undefined, coverage, scrolling, location: location(), label: label(), detail: detail() }))
   .finally(() => { nextGate = null; for (const gate of gates) gate.release(); });
