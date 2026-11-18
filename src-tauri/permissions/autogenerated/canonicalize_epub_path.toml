@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-canonicalize-epub-path"
+description = "Enables the canonicalize_epub_path command without any pre-configured scope."
+commands.allow = ["canonicalize_epub_path"]
+
+[[permission]]
+identifier = "deny-canonicalize-epub-path"
+description = "Denies the canonicalize_epub_path command without any pre-configured scope."
+commands.deny = ["canonicalize_epub_path"]

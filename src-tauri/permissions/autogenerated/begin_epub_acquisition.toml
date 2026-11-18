@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-begin-epub-acquisition"
+description = "Enables the begin_epub_acquisition command without any pre-configured scope."
+commands.allow = ["begin_epub_acquisition"]
+
+[[permission]]
+identifier = "deny-begin-epub-acquisition"
+description = "Denies the begin_epub_acquisition command without any pre-configured scope."
+commands.deny = ["begin_epub_acquisition"]

@@ -15,6 +15,7 @@ def write_book(name, label, missing_nav=False):
         "META-INF/container.xml": '<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="EPUB/book.opf" media-type="application/oebps-package+xml"/></rootfiles></container>',
         "EPUB/style.css": 'html { background: white; color: #222; } body { margin: 16px; font: 16px/1.5 serif; } h1 { font-size: 24px; } .asset { background-image: url("pixel.png"); } img { width: 8px; height: 8px; }',
         "EPUB/pixel.png": png,
+        "EPUB/late.png": png,
         "EPUB/broken.json": "{invalid archive JSON",
     }
     manifest = ['<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>', '<item id="style" href="style.css" media-type="text/css"/>', '<item id="pixel" href="pixel.png" media-type="image/png"/>']

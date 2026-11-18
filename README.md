@@ -1,6 +1,6 @@
 # Clio
 
-Clio is a keyboard-first PDF and EPUB reader built with Tauri, React, PDF.js and epub.js.
+Clio is a keyboard-first PDF and EPUB reader built with Tauri, React, PDF.js and Foliate.
 
 ## Reading
 
@@ -35,7 +35,7 @@ The PDF status bar stays 24px high. While a search, page-jump or recolor input i
 
 Page jump accepts whole page numbers within the document's inclusive range. Rejected input stays editable and focused with an accessible range explanation; editing or closing the overlay clears stale validation feedback. A valid entry navigates to that exact page.
 
-`bun test` also exercises the real App, PDF.js and epub.js in WebKitGTK using disposable generated documents. This feedback integration test uses the same optional native tooling as the palette test and delays the real PDF worker response to inspect loading layout. Visible focus paint is checked separately in native Tauri, since the offscreen runner has no active native window.
+`bun test` also exercises the real App, PDF.js and Foliate in WebKitGTK using disposable generated documents. This feedback integration test uses the same optional native tooling as the palette test and delays the real PDF worker response to inspect loading layout. Visible focus paint is checked separately in native Tauri, since the offscreen runner has no active native window.
 
 ## PDF wheel navigation
 
@@ -70,9 +70,9 @@ For PDF, **Original** disables recoloring without discarding the saved theme, cu
 
 Open `:` → **Reading preferences…** for Publisher/Serif/Sans, text size (80–200%), line spacing, logical Start/Justify alignment, outer margins and reading-column width. Publisher is the default for every typography/layout field. **Reset typography and layout to Publisher** leaves the independent **Document theme…** choice intact. Root command searches also find individual choices; a chooser stays focused after selection.
 
-Preferences are global to EPUBs, stored in `clio:epub-reading-preferences`, separately from canonical-path CFIs and PDF settings. Saved geometry waits for rendition stage attachment. Reflow preserves the captured CFI; rapid choices retain the latest intent. A storage failure leaves session preferences usable and reports a nonblocking warning. Fixed/mixed-fixed publications retain Publisher presentation; vertical writing retains Publisher typography/geometry. Saved choices remain available for other books.
+Preferences are global to EPUBs, stored in `clio:epub-reading-preferences`, separately from canonical-path CFIs and PDF settings. Foliate applies geometry to its attached session-owned renderer. Typography changes retain the first-visible reading anchor across successive choices until navigation replaces it. Unavailable preference storage does not prevent reading. Fixed/mixed-fixed publications retain Publisher presentation; vertical writing retains Publisher typography/geometry. Saved choices remain available for other books.
 
-Text-size percentages use each section's original body size. An explicit size sets ordinary paragraphs to that reading size, including pixel/em/rem declarations; Publisher restores their original differences. The implementation uses epub.js theme APIs and one opt-in stylesheet, not descendant snapshots or inline rewrites. Code, tables, media, declared verse and manual-break/preserved-whitespace blocks are excluded from that paragraph rule. Native probes found API-only absolute-size failures and column overflow with Readium-style zoom; the real WebKit preference regression exercises the selected API/CSS path and exact reset. Arbitrary publisher CSS is not universally normalized.
+Text-size percentages use each section's original body size. An explicit size sets ordinary paragraphs to that reading size, including pixel/em/rem declarations; Publisher restores their original differences. Foliate owns layout and styles; Clio keeps one bounded prose stylesheet and restores the body font properties it owns. Code, tables, media, declared verse and manual-break/preserved-whitespace blocks are excluded from the paragraph rule. The real WebKit preference regression exercises reflow, repeated choices and exact Publisher reset. Arbitrary publisher CSS is not universally normalized.
 
 EPUB Original removes reader color overrides; transparent Original pages use a white backdrop independent of application chrome. Themes do not invert images or enable publication scripts. See [the interface specification](docs/DESIGN.md) for appearance semantics.
 
@@ -82,23 +82,21 @@ Continuous mode retains native scrolling. A paged wheel prototype was rejected: 
 
 ## EPUB reading positions
 
-Native EPUBs save a debounced EPUB CFI in the same app-data `reading-positions.json` file used for PDFs, keyed by canonical file path. Different paths have independent positions; moving or renaming a file gives it a new identity.
+Native EPUBs save an EPUB CFI in the same app-data `reading-positions.json` file used for PDFs, keyed by canonical file path. Different paths have independent positions; moving or renaming a file gives it a new identity.
 
-Reopening restores the saved passage in paged mode. Paged/continuous switches and resizing retain the CFI anchor, although reflow can place it within a page or spread rather than at the top. Missing, malformed, or unresolvable saved CFIs fall back to normal document opening.
+New positions carry `cfiModel: "foliate-html-v1"`. Untagged legacy epub.js CFIs restore only when the publication's original and rendered body structures are compatible. Unresolved, malformed and unknown-model records remain intact through opening, reflow and closing; a valid explicit navigation may establish a new tagged position for that same canonical path. No speculative CFI conversion is performed.
 
-Position updates are debounced by 700 ms. Closing a document or replacing it flushes the latest stable location without waiting for that delay. Browser-selected files have no canonical path and do not persist positions, matching the PDF browser behavior. Abrupt application termination can lose updates that have not finished saving.
+Reopening restores the saved passage in paged mode. Typography/layout changes preserve the first-visible reading location rather than merely replaying a prior requested navigation target. Genuine navigation updates are serialized by the reader's save queue; restoration and reflow notifications alone do not migrate or overwrite records. Browser-selected files have no canonical path and do not persist positions. Abrupt application termination can lose unfinished writes.
 
 ## EPUB iframe keyboard lifecycle
 
-Embedded keyboard registrations belong to the current rendition's attached iframe Documents, including retained neighboring sections. Content hooks validate iframe and rendition ownership; a scoped child-list observer releases registrations at the removal microtask after trim, clear or reflow. Per-iframe load handlers also release a superseded Document and register its replacement only when the rendition owns it. No periodic polling or epub.js removal event is required.
+Embedded keyboard registrations belong to the current Foliate reader's live publication Documents, including retained neighboring sections. Foliate load/relocate notifications register current Documents and retire detached or same-frame-replaced Documents. Close, replacement and effect cleanup remove each registration; effect replay seeds still-live content without duplicate handlers.
 
-Close, replacement and effect cleanup synchronously dispose these registrations. Effect replay seeds still-live content without duplicating listeners. This does not change shortcuts, repeat policy, navigation guards, CFI persistence, sandbox permissions or the known native iframe-focus delivery limitation.
+The shared command router remains the sole keyboard/repeat owner. Publication scripts are removed and blocked by CSP; publication frames remain separate from the privileged shell's native capability set. The legacy epub.js keyboard/link limitations are documented in the [historical investigation](docs/epub-keyboard-focus.md); they are not current Foliate implementation instructions.
 
-Task 09C1 confirmed that WebKitGTK 2.52.6 suppresses embedded JavaScript event listeners under the existing script-disabled sandbox. A deferred host-focus workaround restores shortcuts but breaks copying after selection; it is not shipped. See [EPUB keyboard-focus investigation](docs/epub-keyboard-focus.md) for native evidence, acceptance failures and the bounded native-widget alternative. Content-focused keyboard reliability remains unresolved.
+Scoped native Foliate acceptance passed XTEST-driven content-focused shortcuts, pointer and keyboard internal links, copying, editable/search input, focus recovery and one-action navigation after reopening on WebKitGTK 2.54.2. Physical human keyboard/pointer, IME and native Wayland acceptance remain unverified; automated input is not physical-input evidence.
 
-Task 10B recorded widget-local native key signals and cross-chapter navigation policy requests in the actual Tauri WebView on niri/Wayland, not a safe command bridge or link-routing implementation. Its raw evidence archive is no longer available at the recorded path. See [the historical feasibility report and subsequent 09C findings](docs/epub-keyboard-focus.md#reconciliation-status).
-
-Run `bun test tests/epub-keyboard-lifecycle-runtime.test.ts` for the real patched-epub.js/WebKit lifecycle regression, including historical retention, view removal, reflow, late callbacks, replacement and repeated reopen cycles. As with the other WebKit integration suites, Linux Python GObject/WebKitGTK 4.1 bindings and an X display are required; unsupported environments skip it.
+Run `bun test tests/epub-keyboard-lifecycle-runtime.test.ts` for the Foliate/WebKit production registration regression, including replacement, reflow and repeated reopen cleanup. These runtime checks require Linux Python GObject/WebKitGTK 4.1 bindings and an X display. CFI compatibility/preservation has a focused mode: `CLIO_FOLIATE_REAL_BOOKS=/path/to/books bun test tests/foliate-runtime.test.ts -t 'Foliate positions'`, using the existing Gutenberg 11 and 1342 EPUB fixtures.
 
 ## Native filesystem execution
 
@@ -106,11 +104,11 @@ The PDF/EPUB path, byte-read and reading-position commands are asynchronous Taur
 
 Position workers own a clone of one managed `Arc<Mutex<()>>`. The lock covers each complete store read or read/modify/temporary-write/rename transaction; no mutex guard crosses an await. The existing `reading-positions.json` format, canonical-path keys, unknown-record preservation and malformed-CFI handling are unchanged. Filesystem/validation errors retain their string errors; worker join failures reject with `Native I/O worker failed: …`.
 
-Await a save before a dependent load or save when ordering matters. Overlapping workers serialize in mutex-acquisition order, not invocation order; the last serialized write for a path wins. Existing EPUB per-path save/load ordering remains in place. The mutex is process-local, not a cross-process file lock.
+Await a save before a dependent load or save when ordering matters. Overlapping workers serialize in mutex-acquisition order, not invocation order; the last serialized write for a path wins. EPUB save queues and live-session authorization prevent retired sessions from writing another reader's position. The mutex is process-local, not a cross-process file lock.
 
 `cargo test --manifest-path src-tauri/Cargo.toml` covers path validation, raw bytes, compatible mixed records, overlapping real filesystem transactions, document replacement and worker errors. Native H01 verification additionally exercised the GTK picker, both reader lifecycles, position restoration, invalid replacement recovery and palette/feedback. A bounded delayed-read comparison confirmed native resize/input and independent IPC can proceed while a filesystem worker waits.
 
-This removes one native-thread blocking source, not PDF.js/epub.js or JavaScript rendering stalls. The historical intermittent freeze has not been reproduced or established as fixed. Existing PDF saves remain debounced by 700 ms; closing before a pending save finishes can lose that unsaved position.
+This removes one native-thread blocking source, not PDF.js/Foliate or JavaScript rendering stalls. The historical intermittent freeze has not been reproduced or established as fixed. Existing PDF saves remain debounced by 700 ms; closing before a pending save finishes can lose that unsaved position.
 
 
 ## Search performance
@@ -119,11 +117,11 @@ Search caches normalized text and source-offset mappings per PDF page for the li
 
 PDF matches use a high-contrast black/white boundary chosen from the effective document background. The active match has a thicker solid outline; other matches use a thinner dashed outline, with restrained translucent fills. This does not change search geometry, navigation or recoloring pixels. Stock/uniform backgrounds are checked; scanned/image-heavy pages and arbitrary custom palettes remain content-dependent.
 
-## Dependency patch
+## Foliate dependency
 
-Bun applies `patches/epubjs@0.3.93.patch` through `patchedDependencies` in `package.json`. Keep the Stage orientation-listener cleanup correction in both the source and compiled library files when refreshing the patch.
+Foliate is pinned to `readest/foliate-js` revision `22a49acaa120877ede21f713679ab8ba4d1ef663`. Bun applies `patches/foliate-js-clio.patch` through `patchedDependencies`; a frozen isolated install must reproduce the accepted source without manual `node_modules` edits. The patch covers EPUB-only dispatch, resize teardown, first-visible reflow/continuous locations, navigation completion, malformed navigation URI recovery and retired archive-resource ownership. Attribution and bundled ZIP/polyfill licenses are in `public/licenses/foliate-js.txt`. The current integration contract and consolidated evidence are in [Foliate integration acceptance](docs/foliate-integration-acceptance.md).
 
-Run `bun test tests/epub-stage-lifecycle.test.ts` to verify that destroyed stages stop receiving orientation events without affecting live stages or unrelated listeners.
+`epubjs@0.3.93` is retained only as an unpatched development dependency to generate genuine historical CFI records in compatibility regressions. No Clio application source or production bundle uses the old engine. Its superseded Clio adapter and patch are removed.
 
 ## Verification
 

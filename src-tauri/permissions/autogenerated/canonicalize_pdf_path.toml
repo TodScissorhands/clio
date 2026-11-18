@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-canonicalize-pdf-path"
+description = "Enables the canonicalize_pdf_path command without any pre-configured scope."
+commands.allow = ["canonicalize_pdf_path"]
+
+[[permission]]
+identifier = "deny-canonicalize-pdf-path"
+description = "Denies the canonicalize_pdf_path command without any pre-configured scope."
+commands.deny = ["canonicalize_pdf_path"]

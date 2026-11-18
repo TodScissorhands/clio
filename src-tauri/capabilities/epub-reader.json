@@ -1,0 +1,14 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "epub-reader",
+  "description": "Only the live publication session; no path, dialog, opener or shell access",
+  "windows": ["epub-*"],
+  "permissions": [
+    "allow-read-epub-session",
+    "allow-ready-epub-session",
+    "allow-request-epub-open",
+    "allow-load-epub-session-position",
+    "allow-save-epub-session-position",
+    "allow-close-epub-session"
+  ]
+}

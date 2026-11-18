@@ -17,6 +17,7 @@ const probe = process.platform === "linux" && process.env.DISPLAY && python
 function observationPlugin() {
   return {
     name: "epub-keyboard-lifecycle-observation",
+    enforce: "pre" as const,
     transform(source: string, id: string) {
       if (id.endsWith("/src/reader/interactions.ts")) {
         for (const type of ["keydown", "keyup"]) {
@@ -29,10 +30,10 @@ function observationPlugin() {
         }
         return source;
       }
-      if (id.endsWith("/src/epub/EpubReader.tsx")) {
-        const anchor = "rendition = book.renderTo(viewport, renditionOptions);";
-        if (source.split(anchor).length !== 2) throw new Error("Rendition observation anchor changed");
-        return source.replace(anchor, `${anchor}\n        window.__epubKeyboardRendition?.(rendition);`);
+      if (id.endsWith("/src/epub/foliateSession.ts")) {
+        const anchor = "    const doc = (event as CustomEvent<{ doc: Document }>).detail.doc;";
+        if (source.split(anchor).length !== 2) throw new Error("Foliate load observation anchor changed");
+        return source.replace(anchor, `${anchor}\n    window.__epubKeyboardContentLoad?.(doc);`);
       }
     },
   };
@@ -86,17 +87,13 @@ test.skipIf(!probe || probe.exitCode !== 0)("real EPUB/WebKit keyboard registrat
     const result = JSON.parse(stdout);
     expect(result.passed).toBe(true);
     expect(result.spine).toBe(64);
-    expect(result.baseline.retiredRegistrations).toBeGreaterThan(0);
-    expect(result.trim.removed).toBeGreaterThanOrEqual(2);
-    expect(result.helper.activeDown).toBe(0);
-    expect(result.helper.activeUp).toBe(0);
+    expect(result.production.documents).toBeGreaterThan(3);
+    expect(result.production.addedDown).toBe(result.production.removedDown);
+    expect(result.production.addedUp).toBe(result.production.removedUp);
     expect(result.production.activeDown).toBe(0);
     expect(result.production.activeUp).toBe(0);
     expect(result.errors).toEqual([]);
     expect(result.cases).toEqual([
-      "initial-open-forward-back", "continuous-traversal-reversal", "actual-multiple-view-trim",
-      "repeated-reflow-both-modes", "chapter-jumps", "same-frame-document-replacement", "same-document-hooks-and-late-removed-hook",
-      "dispose-before-observer-and-same-book-replay", "removed-during-render-hook", "removed-during-content-hook",
       "app-open-host-keys-and-reflow", "app-invalid-and-valid-replacement", "app-repeated-close-reopen",
     ]);
     console.info("WebKit EPUB keyboard lifecycle results:", JSON.stringify(result));

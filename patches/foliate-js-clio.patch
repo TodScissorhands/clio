@@ -1,0 +1,323 @@
+--- a/view.js
++++ b/view.js
+@@ -13,23 +13,7 @@
+     return arr[0] === 0x50 && arr[1] === 0x4b && arr[2] === 0x03 && arr[3] === 0x04
+ }
+ 
+-const isPDF = async file => {
+-    const arr = new Uint8Array(await file.slice(0, 5).arrayBuffer())
+-    return arr[0] === 0x25
+-        && arr[1] === 0x50 && arr[2] === 0x44 && arr[3] === 0x46
+-        && arr[4] === 0x2d
+-}
+ 
+-const isCBZ = ({ name, type }) =>
+-    type === 'application/vnd.comicbook+zip' || name.endsWith('.cbz')
+-
+-const isFB2 = ({ name, type }) =>
+-    type === 'application/x-fictionbook+xml' || name.endsWith('.fb2')
+-
+-const isFBZ = ({ name, type }) =>
+-    type === 'application/x-zip-compressed-fb2'
+-    || name.endsWith('.fb2.zip') || name.endsWith('.fbz')
+-
+ const makeZipLoader = async file => {
+     const { configure, ZipReader, BlobReader, TextWriter, BlobWriter } =
+         await import('./vendor/zip.js')
+@@ -45,82 +29,20 @@
+     return { entries, loadText, loadBlob, getSize }
+ }
+ 
+-const getFileEntries = async entry => entry.isFile ? entry
+-    : (await Promise.all(Array.from(
+-        await new Promise((resolve, reject) => entry.createReader()
+-            .readEntries(entries => resolve(entries), error => reject(error))),
+-        getFileEntries))).flat()
+ 
+-const makeDirectoryLoader = async entry => {
+-    const entries = await getFileEntries(entry)
+-    const files = await Promise.all(
+-        entries.map(entry => new Promise((resolve, reject) =>
+-            entry.file(file => resolve([file, entry.fullPath]),
+-                error => reject(error)))))
+-    const map = new Map(files.map(([file, path]) =>
+-        [path.replace(entry.fullPath + '/', ''), file]))
+-    const decoder = new TextDecoder()
+-    const decode = x => x ? decoder.decode(x) : null
+-    const getBuffer = name => map.get(name)?.arrayBuffer() ?? null
+-    const loadText = async name => decode(await getBuffer(name))
+-    const loadBlob = name => map.get(name)
+-    const getSize = name => map.get(name)?.size ?? 0
+-    return { loadText, loadBlob, getSize }
+-}
+-
+ export class ResponseError extends Error {}
+ export class NotFoundError extends Error {}
+ export class UnsupportedTypeError extends Error {}
+ 
+-const fetchFile = async url => {
+-    const res = await fetch(url)
+-    if (!res.ok) throw new ResponseError(
+-        `${res.status} ${res.statusText}`, { cause: res })
+-    return new File([await res.blob()], new URL(res.url).pathname)
+-}
+ 
+ export const makeBook = async file => {
+-    if (typeof file === 'string') file = await fetchFile(file)
+-    let book
+-    if (file.isDirectory) {
+-        const loader = await makeDirectoryLoader(file)
+-        const { EPUB } = await import('./epub.js')
+-        book = await new EPUB(loader).init()
+-    }
+-    else if (!file.size) throw new NotFoundError('File not found')
+-    else if (await isZip(file)) {
+-        const loader = await makeZipLoader(file)
+-        if (isCBZ(file)) {
+-            const { makeComicBook } = await import('./comic-book.js')
+-            book = makeComicBook(loader, file)
+-        }
+-        else if (isFBZ(file)) {
+-            const { makeFB2 } = await import('./fb2.js')
+-            const { entries } = loader
+-            const entry = entries.find(entry => entry.filename.endsWith('.fb2'))
+-            const blob = await loader.loadBlob((entry ?? entries[0]).filename)
+-            book = await makeFB2(blob)
+-        }
+-        else {
+-            const { EPUB } = await import('./epub.js')
+-            book = await new EPUB(loader).init()
+-        }
+-    }
+-    else if (await isPDF(file)) {
+-        const { makePDF } = await import('./pdf.js')
+-        book = await makePDF(file)
+-    }
+-    else {
+-        const { isMOBI, MOBI } = await import('./mobi.js')
+-        if (await isMOBI(file)) {
+-            const fflate = await import('./vendor/fflate.js')
+-            book = await new MOBI({ unzlib: fflate.unzlibSync }).open(file)
+-        }
+-        else if (isFB2(file)) {
+-            const { makeFB2 } = await import('./fb2.js')
+-            book = await makeFB2(file)
+-        }
+-    }
++    // Clio accepts local EPUB archives only; PDF remains owned by its PDF.js adapter.
++    if (!(file instanceof File)) throw new UnsupportedTypeError('Expected a local EPUB File')
++    if (!file.size) throw new NotFoundError('File not found')
++    if (!(await isZip(file))) throw new UnsupportedTypeError('Expected an EPUB archive')
++    const loader = await makeZipLoader(file)
++    const { EPUB } = await import('./epub.js')
++    const book = await new EPUB(loader).init()
+     if (!book) throw new UnsupportedTypeError('File type not supported')
+     return book
+ }
+--- a/paginator.js
++++ b/paginator.js
+@@ -750,3 +750,10 @@
+ class View {
+-    #observer = new ResizeObserver(() => this.expand())
++    #resizeFrame = null
++    #observer = new ResizeObserver(() => {
++        if (this.#resizeFrame !== null) return
++        this.#resizeFrame = requestAnimationFrame(() => {
++            this.#resizeFrame = null
++            this.expand()
++        })
++    })
+     #element = document.createElement('div')
+@@ -1469,1 +1476,3 @@
+-        if (this.document?.body) this.#observer.unobserve(this.document.body)
++        if (this.#resizeFrame !== null) cancelAnimationFrame(this.#resizeFrame)
++        this.#resizeFrame = null
++        this.#observer.disconnect()
+@@ -1535,1 +1544,8 @@
+-    #observer = new ResizeObserver(() => this.render())
++    #resizeFrame = null
++    #observer = new ResizeObserver(() => {
++        if (this.#resizeFrame !== null) return
++        this.#resizeFrame = requestAnimationFrame(() => {
++            this.#resizeFrame = null
++            this.render()
++        })
++    })
+@@ -1555,1 +1571,1 @@
+-    #justAnchored = false
++    #anchoredPosition = null
+@@ -1764,7 +1780,9 @@
+         const scrolledScrollRelocate = () => {
+-            // Skip entirely while stabilizing — preserve #justAnchored
+-            // so the first post-stabilization fire still sees it.
++            // Preserve the anchor during layout and ignore only its own scroll.
+             if (this.#stabilizing) return
+-            if (this.#justAnchored) this.#justAnchored = false
+-            else this.#afterScroll('scroll')
++            const anchoredPosition = this.#anchoredPosition
++            this.#anchoredPosition = null
++            if (anchoredPosition != null
++                && Math.abs(this.containerPosition - anchoredPosition) < 1) return
++            this.#afterScroll('scroll')
+         }
+@@ -2430,1 +2448,2 @@
+-    render() {
++    #hasReflowAnchor = false
++    render(anchor) {
+@@ -2435,1 +2454,7 @@
+         if (!primaryView) return
++        // A preference transaction can replace the navigation target with the
++        // first visible passage, without navigation selection/focus effects.
++        if (anchor && !this.#hasReflowAnchor) {
++            this.#anchor = anchor
++            this.#hasReflowAnchor = true
++        }
+@@ -3748,1 +3773,2 @@
+     async #scrollToAnchor(anchor, reason = 'anchor', smooth = false) {
++        if (reason !== 'anchor') this.#hasReflowAnchor = false
+@@ -3829,12 +3855,3 @@
+-            // In scrolled mode several sections can share the viewport at a
+-            // section boundary, and the primary view may even be scrolled out
+-            // of view. Prefer the view that covers the viewport centre — that
+-            // is the section the reader is actually reading, so its title is
+-            // the one to show. Falling back to the first overlapping view (the
+-            // old behaviour) would report a thin sliver at the top edge, whose
+-            // chapter title no longer matches the dominant content
+-            // (readest#4436). Keep that first valid range as a fallback for
+-            // when no loaded view covers the centre (e.g. at the very top or
+-            // bottom of the book).
+-            const center = this.#renderedStart + this.size / 2
+-            let fallback
++            // Clio status and persistence describe the first visible passage,
++            // not the centre-preferred section used by Readest (readest#4436).
++            // Sorted views preserve reading order at section boundaries.
+@@ -3852,1 +3869,0 @@
+-                const coversCenter = center >= off && center < off + vSize
+@@ -3862,7 +3878,6 @@
+-                    if (!collapsed || coversCenter) collapsed = { range, index }
++                    collapsed ??= { range, index }
+                     continue
+                 }
+-                if (coversCenter) return { range, index }
+-                fallback ??= { range, index }
++                return { range, index }
+             }
+-            return fallback ?? collapsed
++            return collapsed
+@@ -3973,1 +3988,1 @@
+-            this.#justAnchored = true
++            this.#anchoredPosition = this.containerPosition
+@@ -3982,2 +3997,4 @@
+-        else if (reason !== 'container-scroll' || !this.#anchorIsVisible(range))
++        else if (reason !== 'container-scroll' || !this.#anchorIsVisible(range)) {
+             this.#anchor = range
++            this.#hasReflowAnchor = false
++        }
+@@ -3989,3 +4006,3 @@
+-            // The relocated index may differ from #primaryIndex (the centre of
+-            // the viewport can sit in a different view than its top edge), so
+-            // size the fraction against the relocated view to keep it in sync.
++            // A primary view without accepted content can differ from the
++            // first visible passage. Keep the fraction scoped to the same
++            // relocated section as the range and CFI.
+@@ -4395,6 +4412,11 @@
++    #turnCompletion = null
++    #destroyed = false
+     async goTo(target) {
+         if (this.#pagePreview) await this.#pagePreview
++        // Explicit navigation must not be silently lost during a screen turn.
++        if (this.#turnCompletion) await this.#turnCompletion
++        if (this.#destroyed) return
+         if (this.#locked) return
+         const resolved = await this.#toUnitTarget(await target)
+-        if (this.#canGoToIndex(resolved.index)) return this.#goTo(resolved)
++        if (!this.#destroyed && this.#canGoToIndex(resolved.index)) return this.#goTo(resolved)
+     }
+@@ -4459,1 +4481,11 @@
+     async #turnPage(dir, distance) {
++        if (this.#locked || this.#destroyed) return
++        const turn = this.#performTurn(dir, distance)
++        this.#turnCompletion = turn
++        try {
++            return await turn
++        } finally {
++            if (this.#turnCompletion === turn) this.#turnCompletion = null
++        }
++    }
++    async #performTurn(dir, distance) {
+@@ -4629,1 +4661,2 @@
+     destroy() {
++        this.#destroyed = true
+@@ -4641,5 +4674,7 @@
+             this.#isAnimating = false
+         }
+-        this.#observer.unobserve(this)
++        if (this.#resizeFrame !== null) cancelAnimationFrame(this.#resizeFrame)
++        this.#resizeFrame = null
++        this.#observer.disconnect()
+         this.#destroyAllViews()
+         this.#mediaQuery.removeEventListener('change', this.#mediaQueryListener)
+--- a/fixed-layout.js
++++ b/fixed-layout.js
+@@ -299,1 +299,8 @@
+-    #observer = new ResizeObserver(() => this.#render())
++    #resizeFrame = null
++    #observer = new ResizeObserver(() => {
++        if (this.#resizeFrame !== null) return
++        this.#resizeFrame = requestAnimationFrame(() => {
++            this.#resizeFrame = null
++            this.#render()
++        })
++    })
+@@ -2422,1 +2429,3 @@
+-        this.#observer.unobserve(this)
++        if (this.#resizeFrame !== null) cancelAnimationFrame(this.#resizeFrame)
++        this.#resizeFrame = null
++        this.#observer.disconnect()
+--- a/epub.js
++++ b/epub.js
+@@ -444,3 +444,14 @@
++const resolveNavHref = (href, resolve) => {
++    if (!href) return null
++    try {
++        return decodeURI(resolve(href))
++    } catch (error) {
++        // Keep malformed destinations inert without discarding their siblings.
++        if (error instanceof URIError) return null
++        throw error
++    }
++}
++
+ const parseNav = (doc, resolve = f => f) => {
+     const { $, $$, $$$ } = childGetter(doc, NS.XHTML)
+-    const resolveHref = href => href ? decodeURI(resolve(href)) : null
++    const resolveHref = href => resolveNavHref(href, resolve)
+@@ -475,3 +486,3 @@
+ const parseNCX = (doc, resolve = f => f) => {
+     const { $, $$ } = childGetter(doc, NS.NCX)
+-    const resolveHref = href => href ? decodeURI(resolve(href)) : null
++    const resolveHref = href => resolveNavHref(href, resolve)
+@@ -934,1 +945,2 @@
+ class Loader {
++    #destroyed = false
+@@ -953,1 +965,1 @@
+-        if (!data) return ''
++        if (this.#destroyed || !data) return ''
+@@ -959,1 +971,2 @@
+         const newType = await event.detail.type
++        if (this.#destroyed) return ''
+@@ -1026,1 +1039,1 @@
+-        if (!item) return null
++        if (this.#destroyed || !item) return null
+@@ -1034,1 +1047,1 @@
+-        if (!allow) return null
++        if (this.#destroyed || !allow) return null
+@@ -1235,2 +1248,8 @@
+     destroy() {
++        this.#destroyed = true
+         for (const url of this.#cache.values()) URL.revokeObjectURL(url)
++        this.#cache.clear()
++        this.#cacheXHTMLContent.clear()
++        this.#children.clear()
++        this.#refCount.clear()
++        this.#loopCopies.clear()

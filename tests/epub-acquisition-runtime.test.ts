@@ -6,16 +6,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const cases = [
-  "normal-open-section-cfi-render", "abort-before-open",
-  "cancel-archive-open", "cancel-container-text", "cancel-navigation-text",
-  "cancel-asset-blob", "cancel-css-text", "asset-read-error", "css-read-error",
-  "missing-navigation", "invalid-zip", "archive-request-and-url-errors",
-  "archive-url-retirement", "reentrant-archive-url-destroy", "reentrant-css-url-destroy",
-  "same-members-aborted-replacement", "app-stale-open-and-invalid-retention",
-];
-
-test.each(["lib", "src"] as const)("real EPUB/WebKit %s acquisition settles and retires every owned resource", async entrypoint => {
+test("real Foliate/WebKit acquisition settles and retires every owned resource", async () => {
   const python = Bun.which("python3");
   if (process.platform !== "linux" || !process.env.DISPLAY || !python) {
     throw new Error("EPUB acquisition runtime requires Linux, an X11 DISPLAY (use xvfb-run), and python3");
@@ -32,21 +23,18 @@ test.each(["lib", "src"] as const)("real EPUB/WebKit %s acquisition settles and 
       configFile: false,
       root: join(import.meta.dir, ".."),
       plugins: [{
-        name: "epub-compiled-entrypoints",
-        resolveId: id => id.startsWith("virtual:epub-compiled-") ? "\0" + id : undefined,
-        load(id) {
-          if (!id.startsWith("\0virtual:epub-compiled-")) return;
-          const member = id.endsWith("archive") ? "archive.js" : "index.js";
-          const path = JSON.stringify(join(import.meta.dir, "../node_modules/epubjs/lib", member));
-          // Vite uses default-only CJS namespaces differently from mixed exports.
-          // Unwrap only that packaging boundary; execute the real compiled classes.
-          return `import compiled from ${path}; export default typeof compiled === "function" ? compiled : compiled.default; ${member === "index.js" ? `export { EpubCFI } from ${path};` : ""}`;
+        name: "foliate-acquisition-observation",
+        enforce: "pre" as const,
+        transform(source, id) {
+          if (id.endsWith("/src/App.tsx")) return source.replace("  return (\n    <main",
+            "  window.__acquisitionOpen = openReaderSource;\n  return (\n    <main");
+          if (id.endsWith("/src/platform/readingPosition.ts")) return source
+            .replace("export async function loadEpubReadingPosition(path: string): Promise<EpubReadingPosition | null> {",
+              "export async function loadEpubReadingPosition(path: string): Promise<EpubReadingPosition | null> {\n  return window.__acquisitionLoad(path);")
+            .replace("export async function saveEpubReadingPosition(path: string, position: EpubReadingPosition): Promise<void> {",
+              "export async function saveEpubReadingPosition(path: string, position: EpubReadingPosition): Promise<void> {\n  window.__acquisitionPositions.set(path, position); return;");
         },
       }, react()],
-      resolve: { alias: [
-        { find: /^epubjs$/, replacement: entrypoint === "lib" ? "virtual:epub-compiled-factory" : join(import.meta.dir, "../node_modules/epubjs/src/index.js") },
-        { find: "epubjs/lib/archive", replacement: entrypoint === "lib" ? "virtual:epub-compiled-archive" : join(import.meta.dir, "../node_modules/epubjs/src/archive.js") },
-      ] },
       logLevel: "error",
       build: {
         write: false, outDir: directory, emptyOutDir: false,
@@ -61,7 +49,7 @@ test.each(["lib", "src"] as const)("real EPUB/WebKit %s acquisition settles and 
       assets.set("/" + output.fileName, content);
       if (output.fileName.endsWith(".html")) html = String(content);
     }
-    for (const name of ["acquisition-a.epub", "acquisition-b.epub", "missing-nav.epub", "invalid.epub"]) {
+    for (const name of ["acquisition-a.epub", "acquisition-b.epub", "invalid.epub"]) {
       assets.set("/__fixtures/" + name, new Uint8Array(await readFile(join(directory, name))));
     }
     server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request) {
@@ -81,7 +69,11 @@ test.each(["lib", "src"] as const)("real EPUB/WebKit %s acquisition settles and 
     const result = JSON.parse(stdout);
     expect(result.passed).toBe(true);
     expect(result.spine).toBe(3);
-    expect(result.cases).toEqual(cases);
+    expect(result.cases).toEqual([
+      "foliate-single-session", "foliate-invalid-retention", "foliate-stale-success-and-failure",
+      "foliate-close-during-acquisition", "foliate-replacement-retires-search-and-listeners",
+      "foliate-rapid-position-success-and-failure", "foliate-fresh-reopen",
+    ]);
     expect(result.errors).toEqual([]);
     expect(result.created).toBeGreaterThan(0);
     expect(result.revoked).toBe(result.created);

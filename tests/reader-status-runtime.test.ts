@@ -22,14 +22,17 @@ function observationPlugin() {
     name: "reader-status-observation",
     enforce: "pre" as const,
     transform(source: string, id: string) {
-      if (id.endsWith("/src/epub/EpubReader.tsx")) {
-        const anchor = "rendition = book.renderTo(viewport, renditionOptions);";
-        return replace(source, anchor, `${anchor}\n        window.__readerStatusRendition?.(rendition, book);`);
+      if (id.endsWith("/src/epub/FoliateReader.tsx")) {
+        const anchor = "      viewRef.current = view;";
+        return replace(source, anchor, `${anchor}\n      window.__readerStatusView?.(view);`);
       }
-      if (id.endsWith("/src/epub/engine.ts")) {
-        source = replace(source, "const book = ePub();",
-          'window.__readerStatusEngine?.("epub");\n  const book = ePub();');
-        return replace(source, "    signal?.throwIfAborted();", '    await window.__readerStatusGate?.("epub", book);\n    signal?.throwIfAborted();');
+      if (id.endsWith("/src/epub/foliateSession.ts")) {
+        source = replace(source,
+          "export async function prepareFoliateSession(file: File, signal?: AbortSignal): Promise<FoliateSession> {",
+          'export async function prepareFoliateSession(file: File, signal?: AbortSignal): Promise<FoliateSession> {\n  window.__readerStatusEngine?.("epub");');
+        return replace(source,
+          "    return { book, view, root: staging, surface, chrome, isLegacyCfiCompatible, dispose };",
+          '    await window.__readerStatusGate?.("epub", book);\n    return { book, view, root: staging, surface, chrome, isLegacyCfiCompatible, dispose };');
       }
       if (id.endsWith("/src/pdf/engine.ts")) {
         return replace(source, "const pdf = await task.promise;", 'const pdf = await task.promise;\n  await window.__readerStatusGate?.("pdf", task);');
@@ -39,17 +42,17 @@ function observationPlugin() {
       }
       if (id.endsWith("/src/platform/readingPosition.ts")) {
         source = replace(source,
-          "export async function loadEpubReadingPosition(path: string): Promise<{ cfi: string } | null> {",
-          "export async function loadEpubReadingPosition(path: string): Promise<{ cfi: string } | null> {\n  if (window.__readerStatusPositions) return window.__readerStatusPositions.get(path) ?? null;");
+          "export async function loadEpubReadingPosition(path: string): Promise<EpubReadingPosition | null> {",
+          "export async function loadEpubReadingPosition(path: string): Promise<EpubReadingPosition | null> {\n  if (window.__readerStatusPositions) return window.__readerStatusPositions.get(path) ?? null;");
         return replace(source,
-          "export async function saveEpubReadingPosition(path: string, position: { cfi: string }): Promise<void> {",
-          "export async function saveEpubReadingPosition(path: string, position: { cfi: string }): Promise<void> {\n  if (window.__readerStatusPositions) { window.__readerStatusPositions.set(path, position); return; }");
+          "export async function saveEpubReadingPosition(path: string, position: EpubReadingPosition): Promise<void> {",
+          "export async function saveEpubReadingPosition(path: string, position: EpubReadingPosition): Promise<void> {\n  if (window.__readerStatusPositions) { window.__readerStatusPositions.set(path, position); return; }");
       }
     },
   };
 }
 
-test.skipIf(!probe || probe.exitCode !== 0)("real App EPUB status, shared document identity and acquisition ownership in WebKitGTK", async () => {
+test.skipIf(!probe || probe.exitCode !== 0).each(["complete", "epub-only"] as const)("real App %s EPUB status, shared document identity and acquisition ownership in WebKitGTK", async mode => {
   const directory = await mkdtemp(join(tmpdir(), "clio-reader-status-"));
   let server: Server<undefined> | undefined;
   let child: Subprocess<"ignore", "pipe", "pipe"> | undefined;
@@ -85,7 +88,7 @@ test.skipIf(!probe || probe.exitCode !== 0)("real App EPUB status, shared docume
         return asset === undefined ? new Response(null, { status: 404 }) : new Response(asset, { headers: { "content-type": type } });
       },
     });
-    child = Bun.spawn([python!, join(import.meta.dir, "fixtures/run-palette-webkit.py"), `http://127.0.0.1:${server.port}/`], {
+    child = Bun.spawn([python!, join(import.meta.dir, "fixtures/run-palette-webkit.py"), `http://127.0.0.1:${server.port}/` + (mode === "epub-only" ? "?epubOnly=1" : "")], {
       env: { ...process.env, GDK_BACKEND: "x11", GDK_SCALE: "1", GDK_DPI_SCALE: "1" }, stdout: "pipe", stderr: "pipe",
     });
     const [stdout, stderr, exitCode] = await Promise.all([
@@ -98,9 +101,13 @@ test.skipIf(!probe || probe.exitCode !== 0)("real App EPUB status, shared docume
       [420, 600, false], [1000, 700, false], [1440, 800, false],
       [420, 600, true], [1000, 700, true], [1440, 800, true],
     ]);
-    expect(result.coverage).toEqual([
+    expect(result.coverage).toEqual(mode === "epub-only" ? [
       "paged-and-page-turns", "nested-fragments-aliases-and-parent-gap", "continuous-scroll-and-layout-switch",
-      "six-geometries-and-appearances", "resize-freshness", "empty-toc-and-malformed-location",
+      "six-geometries-and-appearances", "resize-freshness", "empty-toc-and-section-fallback",
+      "cfi-close-reopen", "failed-epub-replacement", "epub-supersession-and-close", "browser-array-buffer-ordering", "literal-filename",
+    ] : [
+      "paged-and-page-turns", "nested-fragments-aliases-and-parent-gap", "continuous-scroll-and-layout-switch",
+      "six-geometries-and-appearances", "resize-freshness", "empty-toc-and-section-fallback",
       "cfi-close-reopen", "failed-replacements-both-formats", "pdf-status-navigation-and-close",
       "prepared-pdf-supersession-and-close", "epub-supersession-and-close", "browser-array-buffer-ordering", "literal-filename",
     ]);
