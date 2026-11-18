@@ -26,6 +26,11 @@ test("real Foliate/WebKit acquisition settles and retires every owned resource",
         name: "foliate-acquisition-observation",
         enforce: "pre" as const,
         transform(source, id) {
+          if (id.endsWith("/node_modules/foliate-js/paginator.js")) {
+            const anchor = "            const view = this.#createView(index)\n            const compensatePrepend";
+            if (source.split(anchor).length !== 2) throw new Error("Acquisition preload observation anchor changed");
+            return source.replace(anchor, "            const view = this.#createView(index)\n            await window.__acquisitionPreload?.(this, index)\n            const compensatePrepend");
+          }
           if (id.endsWith("/src/App.tsx")) return source.replace("  return (\n    <main",
             "  window.__acquisitionOpen = openReaderSource;\n  return (\n    <main");
           if (id.endsWith("/src/platform/readingPosition.ts")) return source

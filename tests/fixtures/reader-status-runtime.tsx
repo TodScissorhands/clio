@@ -380,8 +380,28 @@ async function run() {
   }
   // Navigate through production commands from a directly selected nonlinear section.
   check(book.sections[5].linear === "no", "fixture lost its nonlinear section");
-  await command("Previous chapter"); await readyEpub();
-  check(location()!.start.index === 4, "reverse chapter navigation did not reach a linear section");
+  // Start within the nonlinear section, not a spread shared with its predecessor.
+  await display("EPUB/section-5.xhtml#deep");
+  const previousGoTo = view.goTo;
+  let previousNavigation: Promise<{ index: number } | undefined> | undefined;
+  view.goTo = target => previousNavigation = previousGoTo.call(view, target);
+  try {
+    await command("Previous chapter");
+    check(previousNavigation, "reverse chapter command did not navigate");
+    check((await previousNavigation)!.index === 4, "reverse chapter command targeted the wrong section");
+  } finally { view.goTo = previousGoTo; }
+  await until(() => {
+    const doc = contents().find(content => content.index === 4)?.doc;
+    const heading = doc?.querySelector("h1");
+    if (!doc || !heading) return false;
+    const range = doc.createRange();
+    range.selectNodeContents(heading); range.collapse(true);
+    return cfiVisible(view.getCFI(4, range));
+  }, "reverse chapter navigation did not paint the linear section");
+  await readyEpub();
+  // At a shared spread the requested section need not be first-visible. Move
+  // inside the final linear section before proving forward nonlinear skipping.
+  await display("EPUB/section-4.xhtml#deep");
   await command("Next chapter"); await readyEpub();
   check(location()!.start.index === 4, "forward chapter navigation entered a trailing nonlinear section");
   coverage.push("nested-fragments-aliases-and-parent-gap");
@@ -493,6 +513,7 @@ async function run() {
     sample("boundary-status");
     check(label() === "Chapter One · Section 2", "reused fragment IDs supplied a different section's label");
     const forwardAnchor = location()!.start.cfi;
+    check(cfiVisible(forwardAnchor), "continuous relocation did not address painted reading text");
     await until(() => window.__readerStatusPositions!.get("/status-scroll-fixture.epub")?.cfi === forwardAnchor,
       "forward continuous first-visible CFI was not persisted");
     check(view.resolveCFI(window.__readerStatusPositions!.get("/status-scroll-fixture.epub")!.cfi).index === visiblePassage()?.index,

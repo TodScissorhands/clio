@@ -127,7 +127,15 @@ Foliate is pinned to `readest/foliate-js` revision `22a49acaa120877ede21f713679a
 
 Use `bun install --frozen-lockfile` to install the committed frontend dependency versions. The full verification gates are `bunx tsc --noEmit`, `bun run build`, `bun test`, and `cargo test --manifest-path src-tauri/Cargo.toml`.
 
-Eight Bun suites (nine runtime cases) require real WebKitGTK 4.1, Python GObject bindings and an X11 display. Plain `bun test` skips those suites when prerequisites are unavailable. On a configured Linux desktop, run `bash scripts/test-webkit-required.sh` to require that environment and execute the complete Bun suite. For headless Linux use `xvfb-run -a bash scripts/test-webkit-required.sh`. A missing native prerequisite is then an error, not a passing-but-skipped run.
+The complete Bun suite requires real WebKitGTK 4.1, Python GObject bindings and an X11 display. Some runtime runners skip when prerequisites are unavailable; Foliate acceptance runners fail instead. On a configured Linux desktop, run `bash scripts/test-webkit-required.sh` to require that environment and execute the complete Bun suite. For headless Linux use `xvfb-run -a bash scripts/test-webkit-required.sh`. A missing native prerequisite is an error, not a passing-but-skipped run.
+
+Historical CFI compatibility also requires `CLIO_FOLIATE_REAL_BOOKS` containing `gutenberg-11.epub` and `gutenberg-1342.epub`. CI provisions checksum-pinned historical releases into runner-temporary storage; no publication archives enter the application bundle. See [fixture provenance and rights](tests/fixtures/foliate-real-books.md), including the Pride edition's noncommercial cover restriction. To use the same corpus locally:
+
+```sh
+export CLIO_FOLIATE_REAL_BOOKS="$(mktemp -d)"
+bash scripts/provision-foliate-real-books.sh "$CLIO_FOLIATE_REAL_BOOKS"
+xvfb-run -a bash scripts/test-webkit-required.sh
+```
 
 Native geometry checks follow renderer semantics: PDF resize coverage crosses the active fit constraint; EPUB typography coverage preserves the pre-reflow visible-start CFI, not every passage on the old page. EPUB checks await visible text fragments and tolerate temporarily absent views during reflow without extending deadlines.
 

@@ -18,14 +18,68 @@ declare global {
 import "../../src/index.css";
 
 const cases: string[] = [];
+let failureObservation: unknown;
+const runtimeErrors: string[] = [];
+window.addEventListener("error", event => runtimeErrors.push(event.message));
+window.addEventListener("unhandledrejection", event => runtimeErrors.push(String(event.reason)));
 function check(value: unknown, message: string): asserts value { if (!value) throw Error(message); }
 async function frame() { const next = Promise.withResolvers<void>(); requestAnimationFrame(() => next.resolve()); await next.promise; }
 async function until(predicate: () => unknown, label: string) {
   for (let i = 0; i < 1500; i++) { if (predicate()) return; await frame(); }
+  failureObservation = readingObservation();
   throw Error(`Timed out: ${label}`);
 }
 function currentView() { return document.querySelector<View>('.foliate-publication[aria-busy="false"] > foliate-view'); }
-function text(view = currentView()) { return view?.renderer.getContents().find(({ index }) => index === view.renderer.primaryIndex)?.doc.body.textContent ?? ""; }
+function locationDocument(view = currentView()) {
+  if (!view?.lastLocation?.cfi) return;
+  const { index } = view.resolveCFI(view.lastLocation.cfi);
+  return view.renderer.getContents().find(content => content.index === index)?.doc;
+}
+function paintedPassage(view: View, cfi: string) {
+  const { index, anchor } = view.resolveCFI(cfi);
+  const doc = view.renderer.getContents().find(content => content.index === index)?.doc;
+  if (!doc) return false;
+  const range = anchor(doc).cloneRange();
+  if (range.startContainer.nodeType === Node.ELEMENT_NODE) {
+    const node = range.startContainer.childNodes[range.startOffset] ?? range.startContainer;
+    const text = node.nodeType === Node.TEXT_NODE ? node : doc.createTreeWalker(node, NodeFilter.SHOW_TEXT).nextNode();
+    if (!text) return false;
+    range.setStart(text, 0);
+  }
+  const node = range.startContainer;
+  if (node.nodeType !== Node.TEXT_NODE) return false;
+  const text = node.textContent ?? "";
+  const next = text.slice(range.startOffset).search(/\S/u);
+  if (next < 0) return false;
+  const start = range.startOffset + next;
+  range.setStart(node, start);
+  range.setEnd(node, start + String.fromCodePoint(text.codePointAt(start)!).length);
+  const frameRect = doc.defaultView?.frameElement?.getBoundingClientRect();
+  if (!frameRect) return false;
+  const viewport = view.getBoundingClientRect();
+  return [...range.getClientRects()].some(rect => rect.width > 0 && rect.height > 0 &&
+    frameRect.left + rect.left < viewport.right && frameRect.left + rect.right > viewport.left &&
+    frameRect.top + rect.top < viewport.bottom && frameRect.top + rect.bottom > viewport.top);
+}
+function text(view = currentView()) {
+  return view?.lastLocation?.cfi && paintedPassage(view, view.lastLocation.cfi)
+    ? locationDocument(view)?.body.textContent ?? "" : "";
+}
+function readingObservation() {
+  return {
+    native: isTauri(), errors: runtimeErrors.slice(-8),
+    views: [...document.querySelectorAll<View>("foliate-view")].slice(0, 4).map(view => ({
+      busy: view.parentElement?.getAttribute("aria-busy"), primary: view.renderer?.primaryIndex,
+      viewport: view.getBoundingClientRect().toJSON(), cfi: view.lastLocation?.cfi,
+      cfiSection: view.lastLocation?.cfi ? view.resolveCFI(view.lastLocation.cfi).index : null,
+      addressedPaint: view.lastLocation?.cfi ? paintedPassage(view, view.lastLocation.cfi) : false,
+      contents: view.renderer?.getContents().slice(0, 4).map(({ index, doc }) => ({
+        index, title: doc.title, text: doc.body.textContent?.slice(0, 180),
+        frame: doc.defaultView?.frameElement?.getBoundingClientRect().toJSON(),
+      })),
+    })),
+  };
+}
 function button(label: string) {
   const found = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find(el => el.textContent?.trim() === label);
   check(found, `Missing button ${label}`); found.click();
@@ -72,32 +126,7 @@ async function positionCompatibility() {
     check(JSON.stringify(records.get(path)) === JSON.stringify(record) && writes.length === 0, "restore/reflow/close overwrote protected position");
     check(records.get("/canonical/other.epub") === other && records.size === 2, "position identity or other record changed");
   };
-  const visible = (view: View, cfi: string) => {
-    const { index, anchor } = view.resolveCFI(cfi);
-    const doc = view.renderer.getContents().find(c => c.index === index)?.doc;
-    if (!doc) return false;
-    const range = anchor(doc).cloneRange();
-    if (range.startContainer.nodeType === Node.ELEMENT_NODE) {
-      const node = range.startContainer.childNodes[range.startOffset] ?? range.startContainer;
-      const text = doc.createTreeWalker(node, NodeFilter.SHOW_TEXT).nextNode();
-      if (text) range.setStart(text, 0);
-      else range.selectNodeContents(node);
-    }
-    if (range.startContainer.nodeType === Node.TEXT_NODE) {
-      const node = range.startContainer;
-      const text = node.textContent ?? "";
-      const next = text.slice(range.startOffset).search(/\S/u);
-      if (next < 0) return false;
-      const start = range.startOffset + next;
-      range.setStart(node, start);
-      range.setEnd(node, start + String.fromCodePoint(text.codePointAt(start)!).length);
-    }
-    const frameRect = doc.defaultView!.frameElement!.getBoundingClientRect();
-    const viewport = view.getBoundingClientRect();
-    return [...range.getClientRects()].some(r => r.width > 0 && r.height > 0 &&
-      frameRect.left + r.left < viewport.right && frameRect.left + r.right > viewport.left &&
-      frameRect.top + r.top < viewport.bottom && frameRect.top + r.bottom > viewport.top);
-  };
+  const visible = paintedPassage;
   const compatibility = [];
   try {
     for (const name of ["gutenberg-11.epub", "gutenberg-1342.epub"]) {
@@ -201,11 +230,18 @@ async function run() {
   cases.push("non-document spine MIME rejected");
   createRoot(document.getElementById("root")!).render(<StrictMode><App /></StrictMode>);
   await until(() => document.querySelector('input[type="file"]'), "App startup");
+  // DOM commit precedes StrictMode's passive-effect replay. Let its cleanup
+  // finish before dispatching a user acquisition, as the lifecycle fixture does.
+  const startup = new MessageChannel();
+  const settled = Promise.withResolvers<void>();
+  startup.port1.onmessage = () => { startup.port1.close(); startup.port2.close(); settled.resolve(); };
+  startup.port2.postMessage(null);
+  await settled.promise; await frame();
   await select("acquisition-a.epub");
   await until(() => text().includes("book A section 1"), "First EPUB render");
   const first = currentView()!;
   check(first.getBoundingClientRect().height > 500, "Reader does not fill the viewport");
-  const committedDoc = first.renderer.getContents().find(({ index }) => index === first.renderer.primaryIndex)!.doc;
+  const committedDoc = locationDocument(first)!;
   check(committedDoc.defaultView!.getComputedStyle(committedDoc.documentElement).columnWidth !== "auto", "Committing the publication lost its pagination");
   await select("invalid.epub");
   await until(() => document.querySelector('[role="alert"]'), "Invalid replacement error");
@@ -250,7 +286,7 @@ async function run() {
   target.click();
   await until(() => text().includes("book B section 3"), "TOC navigation");
   cases.push("shared command palette and TOC navigation");
-  const doc = () => second.renderer.getContents().find(({ index }) => index === second.renderer.primaryIndex)!.doc;
+  const doc = () => locationDocument(second)!;
   const beforeSize = doc().defaultView!.getComputedStyle(doc().body).fontSize;
   await command("Reading preferences");
   await option("Text size…");
@@ -347,7 +383,8 @@ async function run() {
     check(!document.body.dataset.publicationCanary, "Publication executed JavaScript");
     const link = Array.from(doc.querySelectorAll<HTMLAnchorElement>('a[href]')).find(el => el.textContent?.includes('Safe internal'));
     check(link, "Internal fragment link lost"); link.click();
-    await until(() => malicious.view.renderer.primaryIndex === 1 && text(malicious.view).includes('section 2'), "Internal chapter fragment navigation");
+    await until(() => text(malicious.view).includes('section 2') &&
+      malicious.view.resolveCFI(malicious.view.lastLocation!.cfi).index === 1, "Internal chapter fragment navigation");
     cases.push("G1C content retained; script and nested document restrictions; internal chapter fragment link");
   } finally { malicious.dispose(); }
   const prefixBytes = await (await fetch("/__fixtures/active-prefix.epub")).arrayBuffer();
@@ -404,4 +441,5 @@ async function run() {
 // The native fixture runner installs this well-known WebKit message handler.
 const bridgeWindow = window as unknown as { webkit: { messageHandlers: { test: { postMessage(value: string): void } } } };
 const bridge = (value: object) => bridgeWindow.webkit.messageHandlers.test.postMessage(JSON.stringify(value));
-run().then(bridge).catch(error => bridge({ passed: false, error: String(error), stack: error.stack, cases, document: document.body.innerText }));
+run().then(bridge).catch(error => bridge({ passed: false, error: String(error), stack: error.stack, cases,
+  document: document.body.innerText, observation: failureObservation ?? readingObservation() }));

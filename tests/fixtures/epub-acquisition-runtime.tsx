@@ -9,6 +9,7 @@ declare global {
     __acquisitionOpen: (source: ReaderFileSource) => Promise<void>;
     __acquisitionLoad: (path: string) => Promise<EpubReadingPosition | null>;
     __acquisitionPositions: Map<string, EpubReadingPosition>;
+    __acquisitionPreload?: (renderer: View["renderer"], index: number) => Promise<void>;
   }
 }
 import App from "../../src/App";
@@ -22,9 +23,57 @@ const check: (value: unknown, message: string) => asserts value = (value, messag
 const observe = (promise: PromiseLike<unknown>): Promise<Outcome> => Promise.resolve(promise).then(
   value => ({ status: "fulfilled", value }), reason => ({ status: "rejected", reason }),
 );
+let failureObservation: unknown;
+function paintedPassage(view: View, cfi: string) {
+  const { index, anchor } = view.resolveCFI(cfi);
+  const doc = view.renderer.getContents().find(content => content.index === index)?.doc;
+  if (!doc) return false;
+  const range = anchor(doc).cloneRange();
+  if (range.startContainer.nodeType === Node.ELEMENT_NODE) {
+    const node = range.startContainer.childNodes[range.startOffset] ?? range.startContainer;
+    const text = node.nodeType === Node.TEXT_NODE ? node : doc.createTreeWalker(node, NodeFilter.SHOW_TEXT).nextNode();
+    if (!text) return false;
+    range.setStart(text, 0);
+  }
+  const node = range.startContainer;
+  if (node.nodeType !== Node.TEXT_NODE) return false;
+  const text = node.textContent ?? "";
+  const next = text.slice(range.startOffset).search(/\S/u);
+  if (next < 0) return false;
+  const start = range.startOffset + next;
+  range.setStart(node, start);
+  range.setEnd(node, start + String.fromCodePoint(text.codePointAt(start)!).length);
+  const frameRect = doc.defaultView?.frameElement?.getBoundingClientRect();
+  if (!frameRect) return false;
+  const viewport = view.getBoundingClientRect();
+  return [...range.getClientRects()].some(rect => rect.width > 0 && rect.height > 0 &&
+    frameRect.left + rect.left < viewport.right && frameRect.left + rect.right > viewport.left &&
+    frameRect.top + rect.top < viewport.bottom && frameRect.top + rect.bottom > viewport.top);
+}
+function readingObservation() {
+  const saved = [...(window.__acquisitionPositions ?? new Map<string, EpubReadingPosition>())];
+  return {
+    saved, document: document.body.innerText.slice(0, 1200),
+    views: [...document.querySelectorAll<View>("foliate-view")].slice(0, 4).map(view => ({
+      busy: view.parentElement?.getAttribute("aria-busy"), primary: view.renderer?.primaryIndex,
+      viewport: view.getBoundingClientRect().toJSON(), cfi: view.lastLocation?.cfi,
+      cfiSection: view.lastLocation?.cfi ? view.resolveCFI(view.lastLocation.cfi).index : null,
+      addressedPaint: view.lastLocation?.cfi ? paintedPassage(view, view.lastLocation.cfi) : false,
+      savedPaint: saved.map(([path, position]) => ({ path, cfi: position.cfi,
+        section: view.resolveCFI(position.cfi).index, painted: paintedPassage(view, position.cfi) })),
+      contents: view.renderer?.getContents().slice(0, 4).map(({ index, doc }) => ({
+        index, title: doc.title, text: doc.body.textContent?.slice(0, 180),
+        frame: doc.defaultView?.frameElement?.getBoundingClientRect().toJSON(),
+      })),
+    })),
+  };
+}
 async function bounded<T>(promise: PromiseLike<T>, label: string): Promise<T> {
   const deadline = Promise.withResolvers<never>();
-  const timer = setTimeout(() => deadline.reject(new Error(`Unsettled ${label}`)), 5_000);
+  const timer = setTimeout(() => {
+    failureObservation = readingObservation();
+    deadline.reject(new Error(`Unsettled ${label}`));
+  }, 5_000);
   try {
     return await Promise.race([promise, deadline.promise]);
   } finally { clearTimeout(timer); }
@@ -116,10 +165,16 @@ async function foliateLifecycle(a: Uint8Array, b: Uint8Array, invalid: Uint8Arra
   const current = () => document.querySelector<View>('.foliate-publication[aria-busy="false"] > foliate-view');
   const readable = (label: string, index = 0) => {
     const view = current();
-    return view?.renderer.primaryIndex === index && view.renderer.getContents().some(c => c.index === index && c.doc.body.textContent?.includes(`book ${label} section ${index + 1}`));
+    const cfi = view?.lastLocation?.cfi;
+    if (!view || !cfi || view.resolveCFI(cfi).index !== index) return false;
+    // Primary is the renderer's navigation selection, not the publication
+    // passage reported for a spread. Require the addressed document and paint.
+    const doc = view.renderer.getContents().find(content => content.index === index)?.doc;
+    return doc?.body.textContent?.includes(`book ${label} section ${index + 1}`) && paintedPassage(view, cfi);
   };
-  const ready = async (label: string, index = 0) => {
-    await until(() => readable(label, index), `${label} readable section ${index + 1}`);
+  const ready = async (label: string, index = 0, restoredCfi?: string) => {
+    await until(() => readable(label, index) && (!restoredCfi || paintedPassage(current()!, restoredCfi)),
+      `${label} readable section ${index + 1}`);
     check(document.querySelectorAll('.foliate-reader:not([inert])').length === 1, "duplicate active Foliate sessions");
     return current()!;
   };
@@ -166,7 +221,7 @@ async function foliateLifecycle(a: Uint8Array, b: Uint8Array, invalid: Uint8Arra
     cases.push("foliate-close-during-acquisition");
     await open("A"); const searching = await ready("A");
     await searching.goTo(2);
-    await until(() => positions.get("/canonical/A.epub")?.cfi === searching.lastLocation?.cfi,
+    await until(() => readable("A", 2) && positions.get("/canonical/A.epub")?.cfi === searching.lastLocation?.cfi,
       "A navigation position did not finish saving");
     const savedA = positions.get("/canonical/A.epub")!;
     check(savedA?.cfiModel === "foliate-html-v1", "A navigation was not persisted");
@@ -220,7 +275,7 @@ async function foliateLifecycle(a: Uint8Array, b: Uint8Array, invalid: Uint8Arra
       "retired listeners/search changed replacement state");
     cases.push("foliate-replacement-retires-search-and-listeners");
     await replacement.goTo(1);
-    await until(() => positions.get("/canonical/B.epub")?.cfi === replacement.lastLocation?.cfi,
+    await until(() => readable("B", 1) && positions.get("/canonical/B.epub")?.cfi === replacement.lastLocation?.cfi,
       "B navigation position did not finish saving");
     const savedB = positions.get("/canonical/B.epub")!;
     check(savedB?.cfiModel === "foliate-html-v1", "B navigation was not persisted");
@@ -228,9 +283,27 @@ async function foliateLifecycle(a: Uint8Array, b: Uint8Array, invalid: Uint8Arra
       positions.delete("/canonical/A.epub");
       const load = pendingLoad = gate(fail ? Error("late position load failure") : undefined);
       await open("A"); await bounded(load.entered.promise, "A pending stored position");
-      await open("B"); await ready("B", 1);
+      // Keep B's real adjacent iframe at about:blank through the saved-position
+      // restore attempt. Navigation must await that preload, not resolve the CFI
+      // against its unfinished Document and fall back to the start of B.
+      const preload = gate();
+      window.__acquisitionPreload = async (renderer, index) => {
+        if (index !== 1 || !renderer.getContents().some(content => content.doc.body?.textContent?.includes("book B section 1"))) return;
+        delete window.__acquisitionPreload;
+        preload.entered.resolve();
+        await preload.release.promise;
+      };
+      try {
+        await open("B");
+        await bounded(preload.entered.promise, "B adjacent frame begins loading");
+        await checkpoint();
+      } finally {
+        delete window.__acquisitionPreload;
+        preload.release.resolve();
+      }
+      await ready("B", 1, savedB.cfi);
       positions.set("/canonical/A.epub", savedA);
-      await open("A"); const winner = await ready("A", 2);
+      await open("A"); const winner = await ready("A", 2, savedA.cfi);
       const before = winner.lastLocation!.cfi;
       load.release.resolve(); await checkpoint();
       check(current() === winner && readable("A", 2) && winner.lastLocation!.cfi === before &&
@@ -241,7 +314,7 @@ async function foliateLifecycle(a: Uint8Array, b: Uint8Array, invalid: Uint8Arra
     cases.push("foliate-rapid-position-success-and-failure");
     const previous = current()!;
     await menu("Close document"); await until(() => !current(), "close for same-book reopen");
-    await open("A"); const reopened = await ready("A", 2);
+    await open("A"); const reopened = await ready("A", 2, savedA.cfi);
     check(reopened !== previous && !previous.isConnected, "same-book reopen reused a retired session");
     await menu("Previous chapter"); await until(() => readable("A", 1), "single reopened navigation");
     cases.push("foliate-fresh-reopen");
@@ -287,4 +360,5 @@ const bridge = (result: object) => {
 run().then(bridge).catch(error => bridge({
   passed: false, cases, errors, created: created.length, revoked: revoked.length,
   error: error instanceof Error ? error.message : String(error), stack: error instanceof Error ? error.stack : undefined,
+  observation: failureObservation ?? readingObservation(),
 }));

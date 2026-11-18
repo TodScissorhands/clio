@@ -116,6 +116,12 @@
  }
 --- a/paginator.js
 +++ b/paginator.js
+@@ -564,1 +564,1 @@
+-    // find the offset at which visibility changes
++    // Find intersecting characters, retaining lines clipped at viewport start.
+@@ -570,1 +570,1 @@
+-            return q.left > start ? -1 : 1
++            return p.right > start ? -1 : 1
 @@ -750,3 +750,10 @@
  class View {
 -    #observer = new ResizeObserver(() => this.expand())
@@ -172,6 +178,9 @@
 +            this.#anchor = anchor
 +            this.#hasReflowAnchor = true
 +        }
+@@ -3508,1 +3534,1 @@
+-                : ({ top, bottom }) => ({ left: top - marginTop, right: bottom - marginBottom })
++                : ({ top, bottom }) => ({ left: top, right: bottom })
 @@ -3748,1 +3773,2 @@
      async #scrollToAnchor(anchor, reason = 'anchor', smooth = false) {
 +        if (reason !== 'anchor') this.#hasReflowAnchor = false
@@ -220,7 +229,7 @@
 +            // A primary view without accepted content can differ from the
 +            // first visible passage. Keep the fraction scoped to the same
 +            // relocated section as the range and CFI.
-@@ -4395,6 +4412,11 @@
+@@ -4395,6 +4412,14 @@
 +    #turnCompletion = null
 +    #destroyed = false
      async goTo(target) {
@@ -228,12 +237,15 @@
 +        // Explicit navigation must not be silently lost during a screen turn.
 +        if (this.#turnCompletion) await this.#turnCompletion
 +        if (this.#destroyed) return
++        // Preloaded views can still hold about:blank until their fill completes.
++        if (this.#fillPromise) await this.#fillPromise
++        if (this.#destroyed) return
          if (this.#locked) return
          const resolved = await this.#toUnitTarget(await target)
 -        if (this.#canGoToIndex(resolved.index)) return this.#goTo(resolved)
 +        if (!this.#destroyed && this.#canGoToIndex(resolved.index)) return this.#goTo(resolved)
      }
-@@ -4459,1 +4481,11 @@
+@@ -4459,1 +4484,11 @@
      async #turnPage(dir, distance) {
 +        if (this.#locked || this.#destroyed) return
 +        const turn = this.#performTurn(dir, distance)
@@ -245,10 +257,10 @@
 +        }
 +    }
 +    async #performTurn(dir, distance) {
-@@ -4629,1 +4661,2 @@
+@@ -4629,1 +4664,2 @@
      destroy() {
 +        this.#destroyed = true
-@@ -4641,5 +4674,7 @@
+@@ -4641,5 +4677,7 @@
              this.#isAnimating = false
          }
 -        this.#observer.unobserve(this)
