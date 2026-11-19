@@ -229,7 +229,46 @@
 +            // A primary view without accepted content can differ from the
 +            // first visible passage. Keep the fraction scoped to the same
 +            // relocated section as the range and CFI.
-@@ -4395,6 +4412,14 @@
+@@ -4026,1 +4043,1 @@
+-        const { index, src, data, anchor, onLoad, select } = await promise
++        const { index, src, data, anchor, onLoad, select, alignStart } = await promise
+@@ -4074,1 +4091,1 @@
+-            if (needsPrev || this.scrolled) {
++            if ((!alignStart && needsPrev) || this.scrolled) {
+@@ -4100,1 +4117,1 @@
+-            { reanchor: !this.scrolled })
++            { reanchor: !this.scrolled, alignStart })
+@@ -4216,1 +4233,1 @@
+-    async #fillVisibleArea({ reanchor = true } = {}) {
++    async #fillVisibleArea({ reanchor = true, alignStart = false } = {}) {
+@@ -4229,1 +4246,1 @@
+-            if (primaryView && primaryView.contentPages > 0
++            if (!alignStart && primaryView && primaryView.contentPages > 0
+@@ -4285,1 +4302,1 @@
+-    async #goTo({ index, anchor, select }) {
++    async #goTo({ index, anchor, select, alignStart = false }) {
+@@ -4317,1 +4334,8 @@
+             this.#primaryIndex = index
++            // Explicit paged destinations must begin in their own spread.
++            // A retained half-spread predecessor otherwise paints first and
++            // the delayed scroll relocation moves the location back to it.
++            if (alignStart) {
++                for (const [i] of this.#sortedViews)
++                    if (i < index) this.#destroyView(i)
++            }
+@@ -4349,1 +4373,1 @@
+-            if (!this.scrolled) await loadPrev()
++            if (!this.scrolled && !alignStart) await loadPrev()
+@@ -4356,1 +4380,1 @@
+-            this.#fillPromise = this.#fillVisibleArea()
++            this.#fillPromise = this.#fillVisibleArea({ alignStart })
+@@ -4369,1 +4393,1 @@
+-                        if (Math.abs(i - index) <= 2) keep.add(i)
++                        if (Math.abs(i - index) <= 2 && (!alignStart || i > index)) keep.add(i)
+@@ -4387,1 +4411,1 @@
+-                    return { index, src, data, anchor, onLoad, select }
++                    return { index, src, data, anchor, onLoad, select, alignStart }
+@@ -4395,6 +4419,15 @@
 +    #turnCompletion = null
 +    #destroyed = false
      async goTo(target) {
@@ -243,9 +282,10 @@
          if (this.#locked) return
          const resolved = await this.#toUnitTarget(await target)
 -        if (this.#canGoToIndex(resolved.index)) return this.#goTo(resolved)
-+        if (!this.#destroyed && this.#canGoToIndex(resolved.index)) return this.#goTo(resolved)
++        if (!this.#destroyed && this.#canGoToIndex(resolved.index))
++            return this.#goTo({ ...resolved, alignStart: !this.scrolled })
      }
-@@ -4459,1 +4484,11 @@
+@@ -4459,1 +4492,11 @@
      async #turnPage(dir, distance) {
 +        if (this.#locked || this.#destroyed) return
 +        const turn = this.#performTurn(dir, distance)
@@ -257,10 +297,10 @@
 +        }
 +    }
 +    async #performTurn(dir, distance) {
-@@ -4629,1 +4664,2 @@
+@@ -4629,1 +4672,2 @@
      destroy() {
 +        this.#destroyed = true
-@@ -4641,5 +4677,7 @@
+@@ -4641,5 +4685,7 @@
              this.#isAnimating = false
          }
 -        this.#observer.unobserve(this)

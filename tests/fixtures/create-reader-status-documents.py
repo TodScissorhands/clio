@@ -74,5 +74,27 @@ with zipfile.ZipFile(folder / 'destinations.epub', 'w', compression=zipfile.ZIP_
     for name, text in resources.items():
         ET.fromstring(text)
         book.writestr(name, text)
+
+# Chapter reversal probe, including a non-reading-order section in the middle.
+resources = {'META-INF/container.xml': '<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="EPUB/book.opf" media-type="application/oebps-package+xml"/></rootfiles></container>'}
+manifest = ['<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>']
+spine = []
+toc = []
+for index, chapter in enumerate([1, None, 2, 3]):
+    title = f'Chapter {chapter}' if chapter else 'Nonlinear notes'
+    href = f'reversal-{index}.xhtml'
+    manifest.append(f'<item id="s{index}" href="{href}" media-type="application/xhtml+xml"/>')
+    spine.append(f'<itemref idref="s{index}"' + (' linear="no"' if chapter is None else '') + '/>')
+    if chapter:
+        toc.append(f'<li><a href="{href}">{title}</a></li>')
+    paragraphs = ''.join(f'<p id="p{paragraph}">{title}, passage {paragraph}. Select and copy this publication sentence. Chapter commands follow the painted reading location across shared spreads and skip nonlinear notes.</p>' for paragraph in range(1 if chapter == 3 else 40))
+    resources[f'EPUB/{href}'] = f'<html xmlns="http://www.w3.org/1999/xhtml"><head><title>{title}</title><style>body {{font:16px/1.5 serif;margin:16px}}</style></head><body><h1>{title} opening</h1>{paragraphs}</body></html>'
+resources['EPUB/nav.xhtml'] = '<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><head><title>Contents</title></head><body><nav epub:type="toc"><ol>' + ''.join(toc) + '</ol></nav></body></html>'
+resources['EPUB/book.opf'] = '<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="id"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:identifier id="id">clio-chapter-reversal</dc:identifier><dc:title>Chapter reversal</dc:title><dc:language>en</dc:language><meta property="dcterms:modified">2026-11-05T00:00:00Z</meta></metadata><manifest>' + ''.join(manifest) + '</manifest><spine>' + ''.join(spine) + '</spine></package>'
+with zipfile.ZipFile(folder / 'reversal.epub', 'w', compression=zipfile.ZIP_DEFLATED) as book:
+    book.writestr('mimetype', 'application/epub+zip', compress_type=zipfile.ZIP_STORED)
+    for name, text in resources.items():
+        ET.fromstring(text)
+        book.writestr(name, text)
 (folder / 'invalid.pdf').write_bytes(b'Not a PDF')
 (folder / 'invalid.epub').write_bytes(b'Not an EPUB')

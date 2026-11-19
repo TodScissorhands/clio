@@ -57,6 +57,7 @@ const coverage: string[] = [];
 const scrolling: Record<string, unknown> = {};
 const openingSnapshots: { label: string; detail: string }[] = [];
 const destinations: object[] = [];
+const reversals: object[] = [];
 let epubPreparations = 0;
 const epubOnly = new URLSearchParams(window.location.search).has("epubOnly");
 window.__readerStatusEngine = () => { epubPreparations += 1; };
@@ -176,6 +177,7 @@ async function close() {
 function expectedLabel(snapshot: Snapshot) {
   const index = snapshot.start.index;
   if (requestedName === "destinations.epub") return `Chapter ${String(index + 1).padStart(2, "0")}`;
+  if (requestedName === "reversal.epub") return ["Chapter 1", "Nonlinear notes", "Chapter 2", "Chapter 3"][index]!;
   if (!book.toc?.length) return `Section ${index + 1}`;
   // Fixture-specific oracle: real destinations and live heading positions,
   // independent of Foliate's TOCProgress and Clio's status adapter.
@@ -470,10 +472,73 @@ async function destinationProbe() {
   await close();
   check(!failures.length, `destination integrity failures: ${failures.join(",")}`);
 }
+async function chapterReversalProbe() {
+  const path = "/reversal.epub";
+  await direct("reversal.epub", "reversal.epub", path); await readyEpub();
+  for (const paged of [true, false]) {
+    if (!paged) { await command("Continuous layout"); await readyEpub(false); }
+    for (const width of paged ? [420, 1000] : [1000]) {
+      await resize(width, 700); await readyEpub(paged);
+      await chapter("Chapter 1", paged);
+      // Observe the real command's target and completion, not a direct goTo.
+      const step = async (name: string, expected: number, direction: 1 | -1, boundary = false) => {
+        const before = view.lastLocation!.cfi;
+        const primaryBefore = view.renderer.primaryIndex;
+        const original = view.goTo;
+        let navigation: ReturnType<View["goTo"]> | undefined;
+        let target: Parameters<View["goTo"]>[0] | undefined;
+        view.goTo = value => { target = value; return navigation = original.call(view, value); };
+        let arrived: Awaited<ReturnType<View["goTo"]>>;
+        try {
+          focusReader();
+          await key(direction === 1 ? "n" : "N", { code: "KeyN", shiftKey: direction === -1 });
+          arrived = await navigation;
+        } finally { view.goTo = original; }
+        // Foliate's native container-scroll relocation is debounced. Observe
+        // its settled result too, not just the immediate navigation relocate.
+        const idle = Promise.withResolvers<void>();
+        setTimeout(idle.resolve, 400);
+        await idle.promise;
+        await readyEpub(paged);
+        if (navigation) await until(() => window.__readerStatusPositions!.get(path)?.cfi === view.lastLocation!.cfi,
+          `${name}: chapter position did not save`);
+        const cfi = view.lastLocation!.cfi;
+        const visible = visiblePassage();
+        const viewport = view.renderer.shadowRoot!.querySelector<HTMLElement>("#container")!;
+        reversals.push({ name, paged, width, before, primaryBefore, target: target ?? null,
+          completed: !!navigation, arrival: arrived?.index ?? null, primaryIndex: view.renderer.primaryIndex,
+          cfi, cfiIndex: view.resolveCFI(cfi).index, visible, footer: label(), detail: detail(),
+          savedCfi: window.__readerStatusPositions!.get(path)?.cfi,
+          page: view.renderer.page, pages: view.renderer.pages,
+          viewport: viewport.getBoundingClientRect().toJSON(), scrollLeft: viewport.scrollLeft, scrollTop: viewport.scrollTop,
+          frames: contents().map(({ index, doc }) => ({ index, bounds: doc.defaultView!.frameElement!.getBoundingClientRect().toJSON() })) });
+        if (boundary) check(!navigation && cfi === before, `${name}: chapter boundary navigated`);
+        else check(target === expected && arrived?.index === expected, `${name}: wrong chapter target ${target}, expected ${expected}`);
+        check(visible?.index === expected && view.resolveCFI(cfi).index === expected && cfiVisible(cfi),
+          `${name}: painted passage and current CFI disagree with chapter ${expected}`);
+        if (!boundary) check(window.__readerStatusPositions!.get(path)?.cfi === cfi, `${name}: stale chapter save`);
+      };
+      await step("first-boundary", 0, -1, true);
+      for (let repeat = 0; repeat < 2; repeat++) {
+        await step(`next-${repeat}`, 2, 1);
+        await step(`previous-${repeat}`, 0, -1);
+      }
+      await step("skip-nonlinear-forward", 2, 1);
+      if (paged) {
+        await step("last-chapter", 3, 1);
+        await step("last-boundary", 3, 1, true);
+        await step("previous-adjacent", 2, -1);
+      }
+      await step("skip-nonlinear-backward", 0, -1);
+    }
+  }
+  await command("Paged layout"); await readyEpub(); await close();
+}
 async function run() {
   await until(() => app && document.querySelector(".document-viewport"), "real App did not mount");
   check(document.title === "Clio", "closed App title is not Clio");
   await destinationProbe();
+  await chapterReversalProbe();
   await resize(1000, 700); await open("status.epub"); await readyEpub();
   check(document.title === "status.epub — Clio", "EPUB filename was not committed");
   const first = location()!.start.cfi;
@@ -875,9 +940,9 @@ async function run() {
   await close(); coverage.push("literal-filename");
   check(nextGate === null && gates.every((gate) => gate.destroys === 1), "candidate preparation ownership leaked or double-destroyed");
   check(openingSnapshots.every((snapshot) => (!snapshot.label || snapshot.label === "EPUB") && !snapshot.detail), "new Book flashed the previous Book's label or pagination before its effect");
-  bridge({ passed: true, cases, coverage, scrolling, destinations, renditionInstances: serial, candidates: gates.map(({ kind, destroys }) => ({ kind, destroys })) });
+  bridge({ passed: true, cases, coverage, scrolling, destinations, reversals, renditionInstances: serial, candidates: gates.map(({ kind, destroys }) => ({ kind, destroys })) });
 }
 window.addEventListener("error", (event) => bridge({ passed: false, error: event.message }));
 createRoot(document.getElementById("root")!).render(<StrictMode><App /></StrictMode>);
-void run().catch((error: unknown) => bridge({ passed: false, error: String(error), stack: error instanceof Error ? error.stack : undefined, coverage, scrolling, destinations, location: location(), label: label(), detail: detail() }))
+void run().catch((error: unknown) => bridge({ passed: false, error: String(error), stack: error instanceof Error ? error.stack : undefined, coverage, scrolling, destinations, reversals, location: location(), label: label(), detail: detail() }))
   .finally(() => { nextGate = null; for (const gate of gates) gate.release(); });

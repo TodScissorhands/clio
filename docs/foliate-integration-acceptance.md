@@ -300,3 +300,66 @@ The complete suite ran the real-WebKitGTK security, historical-CFI, acquisition,
 Native executable SHA-256: before `ff04201b47d2dcec144beef8ec42042ef00a3925bebd9c8244e702563703215f`; after `f6903e1dcf92a664d355aec5f6524240d6db03bd52f950b36e9bbd2cfd500125`.
 
 Remaining experiment for the original report: run the same href/resolved-index/painted-character/CFI/scroll trace against the actual Chapter 48 publication, including its exact CSS and viewport. Controlled successes cannot exclude a book-specific boundary defect. Additional writes during repeated reflow are serialized by the existing queue; no concurrent-navigation race was demonstrated or claimed fixed.
+
+## EPUB-S2: paged chapter reversal
+
+Baseline: S1 committed at `5d58e66`; clean short status, one existing checkout. No commit, dependency/pin change, permission change, PDF change or `report.txt` modification.
+
+### Confirmed mechanism and correction
+
+The supplied `review-a.epub` reproduces the failure in fresh Tauri/WebKitGTK 2.54.2 with X11/XTEST. After ordinary-text focus, `n` paints Chapter 2 in the right column beside Chapter 1's tail; `Shift+N` does nothing. At settled idle, the rebuilt S1 baseline saves Chapter 1's tail (`/6/2!.../150[p59]...`), unlike the earlier review's Chapter 2 CFI. Both observations are retained, not conflated.
+
+A disposable real-App WebKitGTK trace separates target resolution from placement: `goTo(1)` completes with index 1, but the retained predecessor occupies half the destination spread. Paged anchor placement floors the target's global spread offset; the delayed container-scroll relocation selects that preceding section again. At 1280×700, requested/returned index is 1, settled primary/CFI/first-painted indices are 0, and previous-chapter issues no `goTo`. Repeating next without a new scroll can instead leave primary/CFI at 1 on the identical mixed spread. This is a placement/relocation disagreement, not an incorrect spine href or solely a stale saved CFI. Merely substituting CFI for primary index cannot correct the settled failing case.
+
+The declared Foliate patch now distinguishes public explicit paged navigation from ordinary page turns. It retires predecessor views before aligning that destination and prevents the same navigation's short-section/fill preloads from putting them back in front. The destination starts its own spread; following sections can still preload. Private page-turn navigation keeps its existing shared-spread behavior. Continuous navigation takes the unchanged path. No supported public Foliate API exposes predecessor-cache trimming, so this correction belongs in the existing pinned renderer patch, not host DOM/CSS compensation.
+
+Chapter commands derive their section from the existing `lastLocation.cfi` via `resolveCFI`, not spread ownership; absent location is a no-op. Existing nonlinear skipping, bounds, keyboard routing, navigation ownership and serialized canonical-path position writes remain.
+
+### Focused evidence and owned files
+
+Evidence directory: `/tmp/clio-s2-native/`; candidate binaries: `/home/tod/.cache/clio-s2-native/`. `trace-before-observed.json` and `trace-after-corrected.json` record requested target, actual completion, primary/CFI indices, first painted character, footer, saved CFI, viewport/frame geometry and scroll coordinates on the supplied archive at 420/1000/1280px.
+
+Before correction, the added real-App fixture fails wide chapter arrival: target/return/CFI index 2, but first-painted index 0. After correction, both complete and EPUB-only WebKitGTK status cases pass: 27 settled chapter/boundary observations each, 420px single-column and 1000px multi-column, repeated reversal, nonlinear skipping, a short last chapter and Continuous next/previous controls. Existing destination/reflow/reopen/status/acquisition cases remain enabled. A 400ms observation window includes Foliate's debounced native scroll relocation rather than accepting only immediate `goTo` completion.
+
+- `src/epub/FoliateReader.tsx`: read the current CFI section for chapter commands.
+- `patches/foliate-js-clio.patch`: explicit paged destination alignment and scoped preload behavior; no continuous or ordinary page-turn policy change.
+- `tests/fixtures/create-reader-status-documents.py`: independent four-spine archive, three linear chapters and a nonlinear middle section; existing archives unchanged.
+- `tests/fixtures/reader-status-runtime.tsx`: actual command/completion, painted passage, boundary, nonlinear, status and saved-position regressions.
+- `tests/reader-status-runtime.test.ts`: serve that archive.
+- `docs/foliate-integration-acceptance.md`: scoped evidence, results and remaining limits.
+
+### Native matrix and limits
+
+Fresh debug/no-bundle candidates used isolated Cargo targets and XDG state. Baseline: headless Cage/Xwayland, 1280×720. Corrected matrix: headless Sway/Xwayland with actual reader-window sizes 420×700, 1000×700 and 1280×700. Both use `GDK_BACKEND=x11`, scale/DPI scale 1, GTK 3.24.52 and WebKitGTK 2.54.2. These are trusted X11/XTEST events, not DOM keyboard dispatch or physical-human input.
+
+A matched 1280×720 Tauri round trip also passes. Initial and restored durable CFIs are exactly `epubcfi(/6/2!/4,/2,/40[p4]/1:196)`; after `n`, the saved CFI is `epubcfi(/6/4!/4,/2,/40[p4]/1:196)`. Chapter 2's heading moves from the baseline right-column x=674 to corrected first-column x=68; `Shift+N` restores Chapter 1 at x=68. `matched-native-summary.json` and the corresponding PNG/AT-SPI snapshots retain both runs.
+
+| Scenario | Before | After | Evidence |
+| --- | --- | --- | --- |
+| Supplied archive, wide Chapter 1 → `n` → `Shift+N` | FAIL | PASS | Tauri screenshots, AT-SPI geometry and real canonical-path JSON; instrumented WebKit target/completion trace |
+| Repeated adjacent chapter reversals at 420/1000/1280px | Wide failure; narrow trace PASS | PASS | Both native archives; 54 settled start/navigation/boundary observations |
+| First/last chapter boundaries | UNVERIFIED | PASS | Native unchanged CFI and addressed heading; WebKit asserts no navigation |
+| Nonlinear middle section, both directions | Narrow PASS; wide arrival FAIL | PASS | Native 0 → 2 → 0 spine indices; short last chapter at index 3 |
+| First-painted section, footer and durable CFI agreement | FAIL on mixed spread | PASS | Native screenshots/JSON plus independent WebKit painted-character/status/save assertions |
+| Content-focused colon, palette navigation, Escape focus return | Prior evidence only | PASS | Both native archives, all three widths |
+| Publication selection and native Ctrl+C | Prior evidence only | PASS | Exact GTK clipboard text on supplied archive at all three widths |
+| Continuous next/previous controls | Prior evidence only | PASS | Both native archives and WebKit control sequence |
+| Physical input, IME, native Wayland | UNVERIFIED | UNVERIFIED | Not exercised; Xwayland is not native Wayland evidence |
+
+Native footer pixels are retained in every per-action PNG. AT-SPI does not expose the hidden location span as text in this environment; the disposable WebKit fixture independently asserts footer/CFI agreement. The supplied archive starts with selection text and controls before its TOC `#start` heading, so the honest first-visible footer can be `Section 1`/`Section 2`, not the later heading label. It was not overridden to make navigation pass.
+
+Native internal primary/CFI/`goTo` telemetry comes from the separate disposable real-App WebKitGTK trace, not a production Tauri hook. Native Tauri itself establishes painted destination/geometry, trusted input and actual durable writes. Initial native probes encountered stale accessibility-bus configuration, shell-versus-reader window selection and chooser focus issues; the probes were corrected without application changes. An intermediate renderer patch had incorrect downstream hunk offsets and failed parsing; corrected offsets were reapplied with the frozen lockfile before successful focused/native execution. Failure logs remain under `/tmp/clio-s2-native/`.
+
+Risk: explicit paged navigation now retires cached predecessor documents, so reversing intentional chapter navigation may reload them. Ordinary page turns retain existing sharing/preloading; continuous scrolling, publication scripting/CSP/sandbox, native capabilities, canonical-path `reading-positions.json` and `cfiModel: "foliate-html-v1"` are unchanged. No historical CFI migration, new position tracker or broader 09C acceptance is claimed.
+
+### Gates and proposed scope
+
+Focused command: `CLIO_FOLIATE_REAL_BOOKS=/tmp/clio-foliate-books GDK_SCALE=1 GDK_DPI_SCALE=1 bun test tests/reader-status-runtime.test.ts` — **2 passed, 0 failed**, real WebKitGTK, 99.30s.
+
+`bunx tsc --noEmit` and `bun run build` exit 0. `cargo test --manifest-path src-tauri/Cargo.toml` with the task-owned Cargo target passes all **13 tests**, no failures/ignored tests; binary and doc-test targets complete. Fresh native debug/no-bundle builds pass before and after.
+
+Complete command `CLIO_FOLIATE_REAL_BOOKS=/tmp/clio-foliate-books GDK_SCALE=1 GDK_DPI_SCALE=1 bun test`: **1,258 passed, 0 failed, no skipped tests**, 8,527 expectations across 24 files, 318.23s. Real WebKitGTK status/reflow/reopen, historical two-book CFIs, security, acquisition, keyboard/listener lifecycle, EPUB preferences and the unchanged PDF suites ran. Full output is retained as `full-bun.log`; the final whitespace gate is retained as `diff-check.log`.
+
+Preserved evidence is also copied to `/home/tod/.cache/clio-s2-native/evidence/`. Native executable SHA-256: baseline `f6903e1dcf92a664d355aec5f6524240d6db03bd52f950b36e9bbd2cfd500125`, corrected `0c346e11f0ebda5b7a6a5dab378825983ed6d1de1e51166f5fb8acfeb0626ebc`. Task-owned native compositors/processes are stopped; disposable diagnostic scripts are removed.
+
+Proposed commit scope: the six files listed above; subject `fix(epub): align paged chapter destinations with reading location`. No commit, push or merge performed. Physical-human/IME/native-Wayland qualification and the separate hyperlink/09C limitations remain open; these fixture results do not close those workstreams.

@@ -75,7 +75,7 @@ test.skipIf(!probe || probe.exitCode !== 0).each(["complete", "epub-only"] as co
       assets.set("/" + output.fileName, content);
       if (output.fileName.endsWith(".html")) html = String(content);
     }
-    for (const name of ["status.pdf", "status.epub", "destinations.epub", "no-toc.epub", "invalid.pdf", "invalid.epub"]) {
+    for (const name of ["status.pdf", "status.epub", "destinations.epub", "reversal.epub", "no-toc.epub", "invalid.pdf", "invalid.epub"]) {
       assets.set("/__fixtures/" + name, new Uint8Array(await readFile(join(directory, name))));
     }
     server = Bun.serve({

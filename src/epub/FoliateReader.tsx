@@ -135,7 +135,9 @@ export function FoliateReader({ sessionId, canonicalPath, prepared, onClose, onO
         else onOpenDocument?.();
         break;
       case "next_chapter": case "previous_chapter": {
-        const current = view?.renderer.primaryIndex ?? 0;
+        if (!view?.lastLocation) break;
+        // Spread ownership can differ from the first-visible reading location.
+        const current = view.resolveCFI(view.lastLocation.cfi).index;
         const direction = id === "next_chapter" ? 1 : -1;
         let next = current + direction;
         while (book && next >= 0 && next < book.sections.length && book.sections[next].linear === "no") next += direction;
