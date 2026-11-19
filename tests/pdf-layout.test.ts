@@ -55,6 +55,15 @@ describe("PDF fractional fit scales", () => {
     expect(calculateFitScale("fit-spread", pages, "spread", available, 3))
       .toBeCloseTo(0.9, 10);
   });
+  test("does not fabricate dimensions for undiscovered pages", () => {
+    const page = { width: 600, height: 800 };
+    const available = { width: 1000, height: 900 };
+    expect(calculateFitScale("fit-page", [page, undefined], "single", available, 1)).toBe(1.125);
+    expect(calculateFitScale("fit-page", [page, undefined], "single", available, 2)).toBe(1);
+    expect(calculateFitScale("fit-width", [page, undefined], "spread", available, 1)).toBe(1);
+    expect(calculateFitScale("fit-spread", [page, undefined], "spread", available, 1)).toBe(1);
+  });
+
 
   test("measures PDF padding once without subtracting the fixed status bar", () => {
     const originalGetComputedStyle = globalThis.getComputedStyle;

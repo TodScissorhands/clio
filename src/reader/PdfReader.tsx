@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { preparePdfDocument, pdfErrorMessage } from "../pdf/engine";
-import type { PdfDocument, PdfLoadingTask, PdfReaderOpenRequest } from "../pdf/engine";
+import type { PdfDocument, PdfLoadingTask, PdfPageGeometry, PdfReaderOpenRequest } from "../pdf/engine";
 import { PdfViewerSurface } from "../pdf/PdfViewerSurface";
 import type { PdfViewerHandle } from "../pdf/PdfViewerSurface";
 import { normalizeSearchQuery, usePdfSearch } from "../pdf/search";
@@ -35,7 +35,7 @@ import {
   measureAvailableViewport,
   SPREAD_GAP,
 } from "./layout";
-import type { PageSize, RectBounds, ViewMode, ViewportSize, ZoomState } from "./layout";
+import type { FitMode, PageGeometry, RectBounds, ViewMode, ViewportSize, ZoomState } from "./layout";
 import {
   filterReaderCommands,
   READER_COMMANDS,
@@ -99,7 +99,7 @@ export function PdfReader({
   const [viewMode, setViewMode] = useState<ViewMode>("single");
   const [continuousScrolling, setContinuousScrolling] = useState(false);
   const [viewerSize, setViewerSize] = useState<ViewportSize>({ width: 0, height: 0 });
-  const [pageSizes, setPageSizes] = useState<PageSize[]>([]);
+  const [pageSizes, setPageSizes] = useState<PageGeometry[]>([]);
   const [pageElementsVersion, setPageElementsVersion] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -132,6 +132,8 @@ export function PdfReader({
   const pdfViewerRef = useRef<PdfViewerHandle["current"]>(null);
   const pageElementsRef = useRef<(HTMLDivElement | null)[]>([]);
   const scrollAnchorRef = useRef<{ page: number; top: number } | null>(null);
+  const viewerSizeRef = useRef(viewerSize);
+  viewerSizeRef.current = viewerSize;
   const zoomAnchorRef = useRef<ZoomAnchor | null>(null);
   const zoomAnchorFrameRef = useRef<number | null>(null);
   const pagedWheelStateRef = useRef(createPagedWheelState());
@@ -141,28 +143,38 @@ export function PdfReader({
   const pageNumberRef = useRef(1);
   const loadingTaskRef = useRef<PdfLoadingTask | null>(null);
   const committedTaskRef = useRef<PdfLoadingTask | null>(null);
+  const geometryRef = useRef<PdfPageGeometry | null>(null);
   const ownedTasksRef = useRef(new Set<PdfLoadingTask>());
+  const backgroundGeometryRef = useRef<PdfPageGeometry | null>(null);
+  const navigationGenerationRef = useRef(0);
   const generationRef = useRef(0);
   const openGenerationRef = useRef(openGeneration);
   openGenerationRef.current = openGeneration;
   const pendingOpenRef = useRef<{ generation: number; localGeneration: number } | null>(null);
+  const ensurePageGeometryRef = useRef<(page: number, mode?: ViewMode, fit?: FitMode, width?: number) => Promise<boolean>>(async () => false);
   const closingRef = useRef(false);
   const totalPages = document?.numPages ?? 0;
   pageNumberRef.current = pageNumber;
 
   const selectSearchMatch = useCallback((match: SearchMatch) => {
-    const pdf = documentRef.current;
-    if (!pdf) return;
-    pendingSearchRevealRef.current = { pdf, match, context: true, ready: true };
-    if (pageNumberRef.current !== match.page) {
-      pageNumberRef.current = match.page;
-      setPageNumber(match.page);
-    }
-    const pdfViewer = pdfViewerRef.current;
-    if (pdfViewer && pdfViewer.currentPageNumber !== match.page) {
-      pdfViewer.currentPageNumber = match.page;
-    }
-    scheduleSearchRevealRef.current();
+    const navigation = ++navigationGenerationRef.current;
+    const requestedPdf = documentRef.current;
+    void (async () => {
+      if (!await ensurePageGeometryRef.current(match.page) ||
+        navigation !== navigationGenerationRef.current || requestedPdf !== documentRef.current) return;
+      const pdf = documentRef.current;
+      if (!pdf) return;
+      pendingSearchRevealRef.current = { pdf, match, context: true, ready: true };
+      if (pageNumberRef.current !== match.page) {
+        pageNumberRef.current = match.page;
+        setPageNumber(match.page);
+      }
+      const pdfViewer = pdfViewerRef.current;
+      if (pdfViewer && pdfViewer.currentPageNumber !== match.page) {
+        pdfViewer.currentPageNumber = match.page;
+      }
+      scheduleSearchRevealRef.current();
+    })();
   }, []);
   const reportSearchError = useCallback((message: string) => setError(message), []);
   const search = usePdfSearch(document, selectSearchMatch, reportSearchError);
@@ -208,6 +220,37 @@ export function PdfReader({
   const fitBasis = zoomState.mode === "manual" ? zoomState.basis : zoomState.mode;
   const zoomFactor = zoomState.mode === "manual" ? zoomState.factor : 1;
   const pageScale = calculateFitScale(fitBasis, pageSizes, effectiveViewMode, viewerSize, pageNumber) * zoomFactor;
+  const ensurePageGeometry = useCallback(async (
+    page: number,
+    requestedMode = viewMode,
+    requestedFit: FitMode = zoomState.mode === "manual" ? zoomState.basis : zoomState.mode,
+    availableWidth = viewerSize.width,
+  ): Promise<boolean> => {
+    const geometry = geometryRef.current;
+    const pdf = documentRef.current;
+    const task = committedTaskRef.current;
+    if (!geometry || !pdf || !task || !Number.isInteger(page) || page < 1 || page > pdf.numPages) return false;
+    const generation = generationRef.current;
+    const appGeneration = openGenerationRef.current;
+    const isCurrent = () => geometryRef.current === geometry && documentRef.current === pdf &&
+      committedTaskRef.current === task && generationRef.current === generation && openGenerationRef.current === appGeneration;
+    const mode = requestedMode === "spread" &&
+      availableWidth >= MIN_SPREAD_PAGE_WIDTH * 2 + SPREAD_GAP ? "spread" : "single";
+    const pageIndex = page - 1;
+    const group = requestedFit === "fit-page"
+      ? [pageIndex]
+      : getPageGroupIndices(pdf.numPages, mode).find((indices) => indices.includes(pageIndex)) ?? [pageIndex];
+    try {
+      if (!await geometry.ensure(group.map((index) => index + 1), isCurrent)) return false;
+      if (!isCurrent()) return false;
+      setPageSizes([...geometry.sizes]);
+      return true;
+    } catch (cause) {
+      if (isCurrent()) setError(`Could not read PDF page geometry: ${pdfErrorMessage(cause)}`);
+      return false;
+    }
+  }, [zoomState, viewMode, viewerSize.width]);
+  ensurePageGeometryRef.current = ensurePageGeometry;
   const reportPositionError = useCallback((message: string) => setError(message), []);
   const positionLayout = useMemo(() => ({}),
     [pageElementsVersion, zoomState, viewerSize, effectiveViewMode, continuousScrolling, pageScale]);
@@ -268,12 +311,23 @@ export function PdfReader({
 
   const handlePageRenderError = useCallback((message: string) => setError(message), []);
   const handlePageChange = useCallback((nextPage: number) => {
-    // PDF.js emits intermediate visible-page changes while regrouping/scaling.
-    // Do not let those change the fit basis before the pending result is revealed.
     if (pendingSearchRevealRef.current && nextPage !== pendingSearchRevealRef.current.match.page) return;
     if (!Number.isInteger(nextPage) || pageNumberRef.current === nextPage) return;
-    pageNumberRef.current = nextPage;
-    setPageNumber(nextPage);
+    const navigation = ++navigationGenerationRef.current;
+    const pdf = documentRef.current;
+    void (async () => {
+      if (!await ensurePageGeometryRef.current(nextPage) || navigation !== navigationGenerationRef.current || pdf !== documentRef.current) return;
+      const viewer = viewerRef.current;
+      const page = pageElementsRef.current[nextPage - 1];
+      if (viewer && page) {
+        scrollAnchorRef.current = {
+          page: nextPage,
+          top: page.getBoundingClientRect().top - viewer.getBoundingClientRect().top,
+        };
+      }
+      pageNumberRef.current = nextPage;
+      setPageNumber(nextPage);
+    })();
   }, []);
   const handlePageElements = useCallback((pages: (HTMLDivElement | null)[]) => {
     if (pages.length === pageElementsRef.current.length &&
@@ -285,18 +339,32 @@ export function PdfReader({
     const viewer = viewerRef.current;
     if (!viewer) return;
     let rafId: number | null = null;
+    let resizeGeneration = 0;
     const updateSize = () => {
-      // Capture before deferred overlay/fit-layout work replaces the old bounds.
+      const generation = ++resizeGeneration;
       retainVisibleSearchMatch();
       if (rafId !== null) cancelAnimationFrame(rafId);
       rafId = requestAnimationFrame(() => {
         rafId = null;
         const nextSize = measureAvailableViewport(viewer);
-        setViewerSize((prev) => {
-          if (!hasViewportSizeChanged(prev, nextSize, 1)) return prev;
-          captureScrollAnchor();
-          return nextSize;
-        });
+        if (!hasViewportSizeChanged(viewerSizeRef.current, nextSize, 1)) return;
+        captureScrollAnchor();
+        void (async () => {
+          const needsSpreadGeometry = fitBasis !== "fit-page" && viewMode === "spread" &&
+            nextSize.width >= MIN_SPREAD_PAGE_WIDTH * 2 + SPREAD_GAP;
+          if (needsSpreadGeometry) {
+            let page = pageNumberRef.current;
+            while (true) {
+              if (!await ensurePageGeometryRef.current(page, "spread", fitBasis, nextSize.width)) return;
+              if (generation !== resizeGeneration) return;
+              const currentPage = pageNumberRef.current;
+              if (currentPage === page) break;
+              page = currentPage;
+            }
+          }
+          if (generation !== resizeGeneration) return;
+          setViewerSize(nextSize);
+        })();
       });
     };
     const observer = new ResizeObserver(updateSize);
@@ -304,10 +372,11 @@ export function PdfReader({
     const initialSize = measureAvailableViewport(viewer);
     setViewerSize((prev) => (hasViewportSizeChanged(prev, initialSize, 1) ? initialSize : prev));
     return () => {
+      resizeGeneration += 1;
       observer.disconnect();
       if (rafId !== null) cancelAnimationFrame(rafId);
     };
-  }, [captureScrollAnchor, retainVisibleSearchMatch, pageSizes]);
+  }, [captureScrollAnchor, retainVisibleSearchMatch, pageSizes, fitBasis, viewMode]);
 
 
   const applyZoomAnchor = useCallback((anchor: ZoomAnchor) => {
@@ -399,6 +468,8 @@ export function PdfReader({
 
   useEffect(() => () => {
     generationRef.current += 1;
+    geometryRef.current?.cancel();
+    geometryRef.current = null;
     loadingTaskRef.current = null;
     committedTaskRef.current = null;
     pendingOpenRef.current = null;
@@ -445,10 +516,10 @@ export function PdfReader({
         await releaseTask(replacementTask);
         return;
       }
-      const { task, pdf, sizes } = prepared;
-      if (!isCurrent()) { await releaseTask(task); return; }
+      const { task, pdf, geometry } = prepared;
+      if (!isCurrent()) { geometry.cancel(); await releaseTask(task); return; }
       await flushPositionSave();
-      if (!isCurrent()) { await releaseTask(task); return; }
+      if (!isCurrent()) { geometry.cancel(); await releaseTask(task); return; }
       let restoredPosition: ReadingPosition | null = null;
       if (source.path) {
         try {
@@ -460,6 +531,7 @@ export function PdfReader({
         }
       }
       if (!isCurrent()) {
+        geometry.cancel();
         await releaseTask(task);
         return;
       }
@@ -469,6 +541,15 @@ export function PdfReader({
       const restoredOffset = restoredPosition && Number.isFinite(restoredPosition.offset)
         ? Math.max(0, Math.min(1, restoredPosition.offset))
         : 0;
+      const hasInitialGeometry = await geometry.ensure([restoredPage], isCurrent);
+      if (!hasInitialGeometry || !isCurrent()) {
+        geometry.cancel();
+        await releaseTask(task);
+        return;
+      }
+      const previousGeometry = geometryRef.current;
+      previousGeometry?.cancel();
+      geometryRef.current = geometry;
       loadingTaskRef.current = task;
       committedTaskRef.current = task;
       queueRestoration(source.path ? { page: restoredPage, offset: restoredOffset } : null);
@@ -479,7 +560,7 @@ export function PdfReader({
       zoomAnchorRef.current = null;
       setDocument(pdf);
       onDocumentChange(source.name);
-      setPageSizes(sizes);
+      setPageSizes([...geometry.sizes]);
       setZoomState({ mode: "fit-page" });
       setContinuousScrolling(false);
       search.clear();
@@ -525,6 +606,9 @@ export function PdfReader({
       await flushPositionSave();
       if (!isCurrent()) return;
       generationRef.current += 1;
+      geometryRef.current?.cancel();
+      geometryRef.current = null;
+      backgroundGeometryRef.current = null;
       search.cancelSearch();
       search.clear();
       const activeTask = loadingTaskRef.current;
@@ -565,15 +649,18 @@ export function PdfReader({
     if (!totalPages || !Number.isInteger(page)) return;
     const nextPage = Math.max(1, Math.min(totalPages, page));
     if (pageNumberRef.current === nextPage && pdfViewerRef.current?.currentPageNumber === nextPage) return;
-    if (pageNumberRef.current !== nextPage) {
-      pageNumberRef.current = nextPage;
-      setPageNumber(nextPage);
-    }
-    const viewer = pdfViewerRef.current;
-    if (viewer && viewer.currentPageNumber !== nextPage) {
-      viewer.currentPageNumber = nextPage;
-    }
-  }, [totalPages, cancelSearchReveal]);
+    const navigation = ++navigationGenerationRef.current;
+    const pdf = documentRef.current;
+    void (async () => {
+      if (!await ensurePageGeometry(nextPage) || navigation !== navigationGenerationRef.current || pdf !== documentRef.current) return;
+      if (pageNumberRef.current !== nextPage) {
+        pageNumberRef.current = nextPage;
+        setPageNumber(nextPage);
+      }
+      const viewer = pdfViewerRef.current;
+      if (viewer && viewer.currentPageNumber !== nextPage) viewer.currentPageNumber = nextPage;
+    })();
+  }, [totalPages, cancelSearchReveal, ensurePageGeometry]);
 
   const getPdfReadingViewport = useCallback(() => {
     const container = viewerRef.current;
@@ -890,6 +977,19 @@ export function PdfReader({
       confirmAndAlignPageEdge();
     }
     retryRestoration(renderedPage);
+    const geometry = geometryRef.current;
+    const page = pageElementsRef.current[renderedPage - 1];
+    const canvas = page?.querySelector("canvas");
+    if (renderedPage !== pageNumberRef.current || !geometry || backgroundGeometryRef.current === geometry ||
+      !canvas || canvas.width <= 0 || canvas.height <= 0 || !page?.querySelector(".textLayer")?.textContent?.trim()) return;
+    const task = committedTaskRef.current;
+    const pdf = documentRef.current;
+    if (!task || !pdf) return;
+    backgroundGeometryRef.current = geometry;
+    void geometry.discoverRemaining(
+      () => geometryRef.current === geometry && committedTaskRef.current === task && documentRef.current === pdf,
+      () => {},
+    );
   }, [confirmAndAlignPageEdge, retryRestoration]);
 
   const registerActiveMatchElement = useCallback((index: number, element: HTMLDivElement | null) => {
@@ -903,24 +1003,32 @@ export function PdfReader({
 
 
   const restoreFitWidth = useCallback(() => {
-    captureScrollAnchor();
-    setZoomState({ mode: "fit-width" });
-  }, [captureScrollAnchor]);
+    const navigation = ++navigationGenerationRef.current;
+    const currentPage = pageNumberRef.current;
+    void (async () => {
+      if (!await ensurePageGeometry(currentPage, viewMode, "fit-width") || navigation !== navigationGenerationRef.current) return;
+      captureScrollAnchor();
+      setZoomState({ mode: "fit-width" });
+    })();
+  }, [captureScrollAnchor, ensurePageGeometry, viewMode]);
   const changeViewMode = useCallback((nextMode: ViewMode) => {
-    captureScrollAnchor();
-    setViewMode(nextMode);
-    setZoomState((current) => {
-      if (current.mode === "manual") {
-        const basis = current.basis === "fit-width"
-          ? current.basis
-          : nextMode === "spread" ? "fit-spread" : "fit-page";
-        return basis === current.basis ? current : { ...current, basis };
-      }
-      if (nextMode === "spread" && current.mode === "fit-page") return { mode: "fit-spread" };
-      if (nextMode === "single" && current.mode === "fit-spread") return { mode: "fit-page" };
-      return current;
-    });
-  }, [captureScrollAnchor]);
+    const current = zoomState;
+    const nextFit: FitMode = current.mode === "manual"
+      ? current.basis === "fit-width" ? current.basis : nextMode === "spread" ? "fit-spread" : "fit-page"
+      : nextMode === "spread" && current.mode === "fit-page" ? "fit-spread"
+        : nextMode === "single" && current.mode === "fit-spread" ? "fit-page"
+        : current.mode;
+    const navigation = ++navigationGenerationRef.current;
+    const currentPage = pageNumberRef.current;
+    void (async () => {
+      if (!await ensurePageGeometry(currentPage, nextMode, nextFit) || navigation !== navigationGenerationRef.current) return;
+      captureScrollAnchor();
+      setViewMode(nextMode);
+      setZoomState((value) => value.mode === "manual"
+        ? { ...value, basis: value.basis === "fit-width" ? value.basis : nextFit }
+        : nextFit === value.mode ? value : { mode: nextFit });
+    })();
+  }, [captureScrollAnchor, ensurePageGeometry, zoomState]);
 
   const runReaderCommand = useCallback((command: ReaderCommandId) => {
     const theme = commandTheme(command);
@@ -989,14 +1097,20 @@ export function PdfReader({
         restoreFitWidth();
         break;
       case "fit_to_page":
-        captureScrollAnchor();
-        setViewMode("single");
-        setZoomState({ mode: "fit-page" });
+        void (async () => {
+          if (!await ensurePageGeometry(pageNumberRef.current, "single", "fit-page")) return;
+          captureScrollAnchor();
+          setViewMode("single");
+          setZoomState({ mode: "fit-page" });
+        })();
         break;
       case "fit_to_spread":
-        captureScrollAnchor();
-        setViewMode("spread");
-        setZoomState({ mode: "fit-spread" });
+        void (async () => {
+          if (!await ensurePageGeometry(pageNumberRef.current, "spread", "fit-spread")) return;
+          captureScrollAnchor();
+          setViewMode("spread");
+          setZoomState({ mode: "fit-spread" });
+        })();
         break;
       case "toggle_recolor":
         setRecolorSettings((current) => {
@@ -1039,7 +1153,7 @@ export function PdfReader({
         requestAnimationFrame(() => colorInputRef.current?.focus());
         break;
     }
-  }, [search.moveMatch, totalPages, goToPage, effectiveViewMode, handleZoomChange, restoreFitWidth, changeViewMode, captureScrollAnchor, onToggleNightMode, onOpenDocument, closeDocument, document, recolorSettings]);
+  }, [search.moveMatch, totalPages, goToPage, effectiveViewMode, handleZoomChange, ensurePageGeometry, restoreFitWidth, changeViewMode, captureScrollAnchor, onToggleNightMode, onOpenDocument, closeDocument, document, recolorSettings]);
 
   const executePaletteCommand = useCallback((command: ReaderCommand) => {
     if (command.disabled) return;

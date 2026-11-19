@@ -5,6 +5,7 @@ export const SPREAD_GAP = 4;
 export const MIN_SPREAD_PAGE_WIDTH = 280;
 
 export type PageSize = { width: number; height: number };
+export type PageGeometry = PageSize | undefined;
 export type ViewMode = "single" | "spread";
 export type FitMode = "fit-width" | "fit-page" | "fit-spread";
 export type ZoomState =
@@ -25,9 +26,9 @@ export function getPageGroupIndices(pageCount: number, viewMode: ViewMode): numb
   return groups;
 }
 
-export function getPageGroups(pageSizes: PageSize[], viewMode: ViewMode): PageSize[][] {
+export function getPageGroups(pageSizes: PageGeometry[], viewMode: ViewMode): PageSize[][] {
   return getPageGroupIndices(pageSizes.length, viewMode)
-    .map((group) => group.map((index) => pageSizes[index]));
+    .map((group) => group.map((index) => pageSizes[index]).filter((size): size is PageSize => size !== undefined));
 }
 
 export function getAdjacentPageNumber(
@@ -45,7 +46,7 @@ export function getAdjacentPageNumber(
 
 export function calculateFitScale(
   mode: FitMode,
-  pageSizes: PageSize[],
+  pageSizes: PageGeometry[],
   viewMode: ViewMode,
   availableSize: ViewportSize,
   currentPageNumber = 1,
@@ -56,6 +57,7 @@ export function calculateFitScale(
   const requestedPage = Number.isFinite(currentPageNumber) ? Math.trunc(currentPageNumber) : 1;
   const pageIndex = Math.max(0, Math.min(pageSizes.length - 1, requestedPage - 1));
   const page = pageSizes[pageIndex];
+  if (!page) return 1;
 
   if (mode === "fit-page") {
     return Math.min(availableWidth / page.width, availableHeight / page.height);
@@ -64,9 +66,11 @@ export function calculateFitScale(
   const groupIndices = getPageGroupIndices(pageSizes.length, viewMode)
     .find((group) => group.includes(pageIndex)) ?? [pageIndex];
   const group = groupIndices.map((index) => pageSizes[index]);
-  const groupWidth = group.reduce((width, member) => width + member.width, 0);
-  const gapWidth = group.length > 1 ? SPREAD_GAP : 0;
-  const groupHeight = Math.max(...group.map((member) => member.height));
+  if (group.some((member) => member === undefined)) return 1;
+  const knownGroup = group as PageSize[];
+  const groupWidth = knownGroup.reduce((width, member) => width + member.width, 0);
+  const gapWidth = knownGroup.length > 1 ? SPREAD_GAP : 0;
+  const groupHeight = Math.max(...knownGroup.map((member) => member.height));
   const widthScale = Math.max(1, availableWidth - gapWidth) / groupWidth;
   return mode === "fit-width" ? widthScale : Math.min(widthScale, availableHeight / groupHeight);
 }
