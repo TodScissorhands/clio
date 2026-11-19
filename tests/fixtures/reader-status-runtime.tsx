@@ -56,6 +56,7 @@ const gates: Gate[] = [];
 const coverage: string[] = [];
 const scrolling: Record<string, unknown> = {};
 const openingSnapshots: { label: string; detail: string }[] = [];
+const destinations: object[] = [];
 let epubPreparations = 0;
 const epubOnly = new URLSearchParams(window.location.search).has("epubOnly");
 window.__readerStatusEngine = () => { epubPreparations += 1; };
@@ -122,7 +123,7 @@ async function choose(query: string) {
   await key("Enter");
 }
 async function command(query: string) { await palette(); await choose(query); }
-async function chapter(query: string) {
+async function chapter(query: string, paged = true) {
   await command("Go to chapter");
   await until(() => document.querySelector(".command-filter"), "chapter palette did not open");
   const original = view.goTo;
@@ -135,7 +136,7 @@ async function chapter(query: string) {
   } finally {
     view.goTo = original;
   }
-  await readyEpub();
+  await readyEpub(paged);
 }
 async function bytes(name: string) { return (await fetch(`/__fixtures/${name}`)).arrayBuffer(); }
 async function select(file: File) {
@@ -174,6 +175,7 @@ async function close() {
 }
 function expectedLabel(snapshot: Snapshot) {
   const index = snapshot.start.index;
+  if (requestedName === "destinations.epub") return `Chapter ${String(index + 1).padStart(2, "0")}`;
   if (!book.toc?.length) return `Section ${index + 1}`;
   // Fixture-specific oracle: real destinations and live heading positions,
   // independent of Foliate's TOCProgress and Clio's status adapter.
@@ -327,9 +329,151 @@ async function hold(kind: "pdf" | "epub") {
   await until(() => gates.length > count, `${kind} did not reach its real preparation boundary`);
   return gates.at(-1)!;
 }
+  const visiblePassage = (topFraction = 0, bottomFraction = 1) => {
+    const viewport = view.renderer.shadowRoot!.querySelector<HTMLElement>("#container")!;
+    const rect = viewport.getBoundingClientRect();
+    const bounds = { left: rect.left, right: rect.right,
+      top: rect.top + rect.height * topFraction, bottom: rect.top + rect.height * bottomFraction };
+    let first: { index: number; paragraph: string; top: number; left: number; cfi: string } | null = null;
+    for (const { doc, index } of contents()) {
+      const frame = doc.defaultView?.frameElement?.getBoundingClientRect();
+      if (!frame || frame.bottom <= bounds.top || frame.top >= bounds.bottom ||
+        frame.right <= bounds.left || frame.left >= bounds.right) continue;
+      const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT);
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        if (!node.textContent?.trim()) continue;
+        const textBounds = doc.createRange();
+        textBounds.selectNodeContents(node);
+        if (!Array.from(textBounds.getClientRects()).some(rect => rect.width > 0 && rect.height > 0 &&
+          frame.top + rect.bottom > bounds.top && frame.top + rect.top < bounds.bottom &&
+          frame.left + rect.right > bounds.left && frame.left + rect.left < bounds.right)) continue;
+        for (const match of node.textContent.matchAll(/\S/gu)) {
+          const range = doc.createRange();
+          range.setStart(node, match.index);
+          range.setEnd(node, match.index + match[0].length);
+          const rect = Array.from(range.getClientRects()).find(rect => rect.width > 0 && rect.height > 0 &&
+            frame.top + rect.bottom > bounds.top && frame.top + rect.top < bounds.bottom &&
+            frame.left + rect.right > bounds.left && frame.left + rect.left < bounds.right);
+          if (!rect) continue;
+          const top = frame.top + rect.top;
+          const left = frame.left + rect.left;
+          if (!first || top < first.top || (top === first.top && left < first.left))
+            first = { index, paragraph: node.textContent.trim().slice(0, 100), top, left, cfi: view.getCFI(index, range) };
+          break;
+        }
+        if (first?.index !== index) continue;
+        break;
+      }
+    }
+    return first;
+  };
+async function destinationProbe() {
+  const path = "/destinations.epub";
+  await direct("destinations.epub", "destinations.epub", path); await readyEpub();
+  const failures: string[] = [];
+  for (const paged of [true, false]) {
+    if (!paged) { await command("Continuous layout"); await readyEpub(false); }
+    for (const route of ["toc", "link", "fragment"]) {
+      for (const number of [48, 49, 48, 47, 1, 50]) {
+        const href = `EPUB/chapter-${number}.xhtml${route === "fragment" ? "#opening" : ""}`;
+        const resolved = view.resolveNavigation(href)!;
+        if (route === "toc") await chapter(`Chapter ${String(number).padStart(2, "0")}`, paged);
+        else {
+          const original = view.goTo;
+          let navigation: Promise<{ index: number } | undefined> | undefined;
+          view.goTo = target => navigation = original.call(view, target);
+          try {
+            const doc = contents().find(content => content.index === location()!.start.index)!.doc;
+            doc.getElementById(`${route === "fragment" ? "fragment" : "to"}-${number}`)!.click();
+            check(navigation, "publication link did not invoke navigation");
+            await navigation;
+          } finally { view.goTo = original; }
+          await readyEpub(paged);
+        }
+        await until(() => window.__readerStatusPositions!.get(path)?.cfi === view.lastLocation!.cfi,
+          "destination save did not settle");
+        const viewport = view.renderer.shadowRoot!.querySelector<HTMLElement>("#container")!;
+        const visible = visiblePassage();
+        const cfi = view.lastLocation!.cfi;
+        const targetDoc = contents().find(content => content.index === resolved.index)?.doc;
+        const heading = targetDoc?.getElementById("opening");
+        const range = targetDoc?.createRange();
+        if (heading) range?.selectNodeContents(heading);
+        const targetCfi = range ? view.getCFI(resolved.index, range) : null;
+        destinations.push({ route, layout: paged ? "paged" : "continuous", href, fragment: route === "fragment" ? "opening" : null,
+          resolvedIndex: resolved.index, primaryIndex: view.renderer.primaryIndex, visible,
+          cfi, cfiIndex: view.resolveCFI(cfi).index, footer: label(),
+          savedCfi: window.__readerStatusPositions!.get(path)?.cfi,
+          targetPainted: targetCfi && cfiVisible(targetCfi),
+          viewport: viewport.getBoundingClientRect().toJSON(), scrollTop: viewport.scrollTop,
+          scrollLeft: viewport.scrollLeft, scrollHeight: viewport.scrollHeight,
+          frames: contents().map(({ index, doc }) => ({ index, bounds: doc.defaultView!.frameElement!.getBoundingClientRect().toJSON() })) });
+        if (visible?.index !== resolved.index || !targetCfi || !cfiVisible(targetCfi) ||
+          view.resolveCFI(cfi).index !== visible?.index) failures.push(`${route}/${paged}/${number}`);
+      }
+    }
+  }
+  const viewport = view.renderer.shadowRoot!.querySelector<HTMLElement>("#container")!;
+  const movement: object[] = [];
+  scrolling.longSpine = movement;
+  const sample = async (step: string) => {
+    await until(() => {
+      const cfi = view.lastLocation!.cfi;
+      const visible = visiblePassage();
+      const savedCfi = window.__readerStatusPositions!.get(path)?.cfi;
+      scrolling.pending = { step, cfi, visible, savedCfi, painted: cfiVisible(cfi),
+        primaryIndex: view.renderer.primaryIndex, scrollTop: viewport.scrollTop,
+        scrollHeight: viewport.scrollHeight, viewport: viewport.getBoundingClientRect().toJSON() };
+      return cfiVisible(cfi) && visible?.index === location()!.start.index && savedCfi === cfi;
+    }, `${step}: painted/status/saved location disagreement`);
+    await readyEpub(view.renderer.getAttribute("flow") !== "scrolled");
+    movement.push({ step, visible: visiblePassage(), cfi: view.lastLocation!.cfi,
+      footer: label(), savedCfi: window.__readerStatusPositions!.get(path)?.cfi,
+      scrollTop: viewport.scrollTop, scrollHeight: viewport.scrollHeight,
+      viewport: viewport.getBoundingClientRect().toJSON(),
+      loaded: contents().map(({ index }) => index) });
+  };
+  await sample("before-large-jumps");
+  for (const edge of ["start", "end", "start", "end"]) {
+    const before = view.lastLocation!.cfi;
+    viewport.scrollTo(0, edge === "start" ? 0 : viewport.scrollHeight);
+    await until(() => view.lastLocation!.cfi !== before, `large ${edge} jump did not relocate`);
+    await sample(`large-${edge}`);
+  }
+  await resize(1000, 700); await sample("continuous-resize");
+  await command("Paged layout"); await readyEpub();
+  await display("EPUB/chapter-48.xhtml#p20");
+  focusReader(); await key("PageDown"); await readyEpub();
+  const pagedAnchor = view.lastLocation!.cfi;
+  await sample("passage-paged");
+  await command("Continuous layout"); await readyEpub(false);
+  await until(() => cfiVisible(pagedAnchor), "mode-only paged-to-continuous lost painted passage");
+  await sample("passage-continuous");
+  const beforeScroll = view.lastLocation!.cfi;
+  viewport.scrollBy(0, viewport.clientHeight * .85);
+  await until(() => view.lastLocation!.cfi !== beforeScroll, "layout sequence scroll did not relocate");
+  const scrolledAnchor = view.lastLocation!.cfi;
+  await sample("passage-scrolled");
+  await command("Paged layout"); await readyEpub();
+  await until(() => cfiVisible(scrolledAnchor), "mode-only continuous-to-paged lost painted passage");
+  await sample("passage-paged-again");
+  await command("Continuous layout"); await readyEpub(false);
+  await until(() => cfiVisible(scrolledAnchor), "second continuous transition lost painted passage");
+  await sample("passage-continuous-again");
+  const saved = window.__readerStatusPositions!.get(path)!.cfi;
+  await close();
+  await direct("destinations.epub", "destinations.epub", path); await readyEpub();
+  await until(() => cfiVisible(saved), "long-spine reopen lost saved painted passage");
+  movement.push({ step: "reopen", visible: visiblePassage(), cfi: view.lastLocation!.cfi,
+    footer: label(), savedCfi: window.__readerStatusPositions!.get(path)?.cfi });
+  await command("Paged layout"); await readyEpub();
+  await close();
+  check(!failures.length, `destination integrity failures: ${failures.join(",")}`);
+}
 async function run() {
   await until(() => app && document.querySelector(".document-viewport"), "real App did not mount");
   check(document.title === "Clio", "closed App title is not Clio");
+  await destinationProbe();
   await resize(1000, 700); await open("status.epub"); await readyEpub();
   check(document.title === "status.epub — Clio", "EPUB filename was not committed");
   const first = location()!.start.cfi;
@@ -425,41 +569,6 @@ async function run() {
   check(viewport.scrollHeight > viewport.clientHeight, "native viewport has no scrollable content");
   const firstVisibleIndex = () => view.resolveCFI(view.lastLocation!.cfi).index;
   const reportedSection = () => (view.lastLocation as { section?: { current: number } } | null)?.section?.current ?? null;
-  const visiblePassage = (topFraction = 0, bottomFraction = 1) => {
-    const rect = viewport.getBoundingClientRect();
-    const bounds = { left: rect.left, right: rect.right,
-      top: rect.top + rect.height * topFraction, bottom: rect.top + rect.height * bottomFraction };
-    let first: { index: number; paragraph: string; top: number } | null = null;
-    for (const { doc, index } of contents()) {
-      const frame = doc.defaultView?.frameElement?.getBoundingClientRect();
-      if (!frame || frame.bottom <= bounds.top || frame.top >= bounds.bottom ||
-        frame.right <= bounds.left || frame.left >= bounds.right) continue;
-      const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT);
-      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-        if (!node.textContent?.trim()) continue;
-        const textBounds = doc.createRange();
-        textBounds.selectNodeContents(node);
-        if (!Array.from(textBounds.getClientRects()).some(rect => rect.width > 0 && rect.height > 0 &&
-          frame.top + rect.bottom > bounds.top && frame.top + rect.top < bounds.bottom &&
-          frame.left + rect.right > bounds.left && frame.left + rect.left < bounds.right)) continue;
-        for (const match of node.textContent.matchAll(/\S/gu)) {
-          const range = doc.createRange();
-          range.setStart(node, match.index);
-          range.setEnd(node, match.index + match[0].length);
-          const rect = Array.from(range.getClientRects()).find(rect => rect.width > 0 && rect.height > 0 &&
-            frame.top + rect.bottom > bounds.top && frame.top + rect.top < bounds.bottom &&
-            frame.left + rect.right > bounds.left && frame.left + rect.left < bounds.right);
-          if (!rect) continue;
-          const top = frame.top + rect.top;
-          if (!first || top < first.top) first = { index, paragraph: node.textContent.trim().slice(0, 100), top };
-          break;
-        }
-        if (first?.index !== index) continue;
-        break;
-      }
-    }
-    return first;
-  };
   let scrollEvents = 0;
   let relocations = 0;
   let rendererRelocationIndex: number | null = null;
@@ -766,9 +875,9 @@ async function run() {
   await close(); coverage.push("literal-filename");
   check(nextGate === null && gates.every((gate) => gate.destroys === 1), "candidate preparation ownership leaked or double-destroyed");
   check(openingSnapshots.every((snapshot) => (!snapshot.label || snapshot.label === "EPUB") && !snapshot.detail), "new Book flashed the previous Book's label or pagination before its effect");
-  bridge({ passed: true, cases, coverage, scrolling, renditionInstances: serial, candidates: gates.map(({ kind, destroys }) => ({ kind, destroys })) });
+  bridge({ passed: true, cases, coverage, scrolling, destinations, renditionInstances: serial, candidates: gates.map(({ kind, destroys }) => ({ kind, destroys })) });
 }
 window.addEventListener("error", (event) => bridge({ passed: false, error: event.message }));
 createRoot(document.getElementById("root")!).render(<StrictMode><App /></StrictMode>);
-void run().catch((error: unknown) => bridge({ passed: false, error: String(error), stack: error instanceof Error ? error.stack : undefined, coverage, scrolling, location: location(), label: label(), detail: detail() }))
+void run().catch((error: unknown) => bridge({ passed: false, error: String(error), stack: error instanceof Error ? error.stack : undefined, coverage, scrolling, destinations, location: location(), label: label(), detail: detail() }))
   .finally(() => { nextGate = null; for (const gate of gates) gate.release(); });

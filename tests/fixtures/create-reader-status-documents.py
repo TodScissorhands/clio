@@ -53,5 +53,26 @@ for filename, empty in [('status.epub', False), ('no-toc.epub', True)]:
         book.writestr('mimetype', 'application/epub+zip', compress_type=zipfile.ZIP_STORED)
         for name, text in resources.items():
             book.writestr(name, text)
+
+# Separate long-spine destination probe; keep the six-section status book stable.
+resources = {'META-INF/container.xml': '<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="EPUB/book.opf" media-type="application/oebps-package+xml"/></rootfiles></container>'}
+manifest = ['<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>']
+spine = []
+toc = []
+for chapter in range(1, 51):
+    href = f'chapter-{chapter}.xhtml'
+    manifest.append(f'<item id="c{chapter}" href="{href}" media-type="application/xhtml+xml"/>')
+    spine.append(f'<itemref idref="c{chapter}"/>')
+    toc.append(f'<li><a href="{href}">Chapter {chapter:02}</a></li>')
+    links = ''.join(f'<p><a id="to-{target}" href="chapter-{target}.xhtml">Visit chapter {target}</a> · <a id="fragment-{target}" href="chapter-{target}.xhtml#opening">Opening {target}</a></p>' for target in [1, 47, 48, 49, 50])
+    paragraphs = ''.join(f'<p id="p{paragraph}">Chapter {chapter}, passage {paragraph}. Distinct painted reading text for destination, scrolling and layout integrity. Reading must retain this identifiable passage across layout changes.</p>' for paragraph in range(1, 41))
+    resources[f'EPUB/{href}'] = f'<html xmlns="http://www.w3.org/1999/xhtml"><head><title>Chapter {chapter}</title><style>body {{font:16px/1.5 serif;margin:16px}}</style></head><body><h1 id="opening">Chapter {chapter} opening</h1>{links}{paragraphs}</body></html>'
+resources['EPUB/nav.xhtml'] = '<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><head><title>Contents</title></head><body><nav epub:type="toc"><ol>' + ''.join(toc) + '</ol></nav></body></html>'
+resources['EPUB/book.opf'] = '<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="id"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:identifier id="id">clio-destinations-50</dc:identifier><dc:title>Destination integrity</dc:title><dc:language>en</dc:language><meta property="dcterms:modified">2026-11-05T00:00:00Z</meta></metadata><manifest>' + ''.join(manifest) + '</manifest><spine>' + ''.join(spine) + '</spine></package>'
+with zipfile.ZipFile(folder / 'destinations.epub', 'w', compression=zipfile.ZIP_DEFLATED) as book:
+    book.writestr('mimetype', 'application/epub+zip', compress_type=zipfile.ZIP_STORED)
+    for name, text in resources.items():
+        ET.fromstring(text)
+        book.writestr(name, text)
 (folder / 'invalid.pdf').write_bytes(b'Not a PDF')
 (folder / 'invalid.epub').write_bytes(b'Not an EPUB')

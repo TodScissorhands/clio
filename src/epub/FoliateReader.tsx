@@ -301,8 +301,10 @@ export function FoliateReader({ sessionId, canonicalPath, prepared, onClose, onO
         if (navigated) {
           permitSave.current = true;
           scrollStart.current = null;
-          queuePosition(view);
         }
+        // Once navigation permits saving, reflow/resize relocations must keep
+        // the durable position aligned with the same first-visible CFI.
+        if (event && !restoring) queuePosition(view);
       };
       view.renderer.addEventListener("relocate", updateLocation, { signal: listeners.signal });
       let saved: unknown = null;

@@ -227,3 +227,76 @@ Unverified release qualifications, not silently accepted:
 3. Universal absence of the historical intermittent freeze; only the listed bounded interactions were observed stable.
 
 **Final verdict: PASS — scoped Foliate integration and required automated acceptance.** The explicit physical/platform limits above remain unverified, not failures converted to passes. No reset, clean, rebase, discard, stage, commit, push, merge or PR operation was performed. Await authorization for the integration commit.
+
+## EPUB-S1: continuous navigation and location integrity
+
+Execution baseline: `master` at `1548ed3`; clean short status and one existing worktree at `/home/tod/Projects/clio`. No commit, merge, push, reset, dependency/pin, capability, PDF, security-policy or Shift+N change. `report.txt` was not touched.
+
+### Reproduction matrix
+
+| Scenario | Before | After | Evidence boundary |
+| --- | --- | --- | --- |
+| Reported original Chapter 48 publication | UNVERIFIED | UNVERIFIED | Original book unavailable; no claim that its defect is fixed |
+| Controlled 50-spine TOC, publication links and fragment links; Chapters 48→49→48→47→1→50, both layouts | PASS | PASS | 36 settled cases per complete/EPUB-only WebKitGTK run; native TOC/link chapter-48 activation also passed |
+| Forward/reverse continuous scroll across sections | PASS | PASS | Real WebKitGTK relocation/paint/footer/save checks and native XTEST wheel crossings |
+| Scrollbar-thumb drag and large jumps | PASS | PASS | Native thumb drags changed painted section and durable CFI in both directions; deterministic jumps recorded scroll geometry and loaded sections |
+| Resize first-visible CFI versus completed save, after navigation | FAIL | PASS | Real WebKitGTK viewport resize, 800×536→1000×676 |
+| Layout-reflow first-visible CFI versus completed save, after navigation | FAIL | PASS | Native mode switching plus deterministic layout sequence |
+| Addressed passage remains visible through paged→continuous→scroll→paged→continuous→close/reopen | PASS | PASS | Same-CFI painted-text geometry in WebKitGTK; native AT-SPI, screenshots and real position JSON |
+| Native Tauri viewport resize | UNVERIFIED | UNVERIFIED | Cage fullscreen rejected XRandR resize (`BadMatch`); XTEST window-size request timed out |
+| Keyboard/palette, selection/copy, lifecycle, historical CFI and publication security | PASS | PASS | Focused runtime coverage; native content-focused colon/Escape, PageDown and actual clipboard; complete gates below |
+
+The fixture is an equivalent controlled navigation probe, not a reconstruction of the missing publication's CSS/DOM. Chapter numbering is one-based: Chapter 48 resolves to spine index 47. Tests record requested href/fragment, resolved index, primary index, first painted text/CFI, `lastLocation.cfi`, footer, saved CFI, frame/viewport bounds and scroll coordinates. The footer is never relabeled to match a requested destination.
+
+### Confirmed cause and correction
+
+`FoliateReader.tsx:updateLocation()` updated the footer for every relocation but queued persistence only for navigation-class reasons. Foliate's resize/layout `anchor` relocations were excluded even after genuine navigation had enabled saving.
+
+Deterministic before/after: at the continuous end of Chapter 50, the 800×536 viewport first paints passage 32 and saves a CFI starting `/76[p32]/1:92`. Resizing to 1000×676 clamps scrollTop from 8017 to 7877; first painted text and `lastLocation.cfi` now start at `/72[p30]/1:92`. Before the correction, completed storage remains at passage 32 for the entire observation deadline. Afterward, storage equals the passage-30 `lastLocation.cfi`; footer remains correctly `Chapter 50` throughout.
+
+Correction: navigation still controls `permitSave`; subsequent renderer relocations, including reflow/resize, queue that same `lastLocation.cfi` through the existing serialized write queue. Initial restoration and incompatible/untagged historical records remain protected until intentional navigation. No second location tracker, position store, polling, footer override, new ordering abstraction or CSS compensation.
+
+**Not established:** incorrect spine resolution, lost chapter-48 paint, stale asynchronous navigation completion, or a mode-only anchor defect. `applyFoliatePreferences()` still captures a separate anchor only for typography changes. Foliate already renders flow changes using its navigation/scroll anchor; the addressed painted passage remained visible in the exercised transitions. No speculative mode-anchor or navigation-generation change was made.
+
+Paged layout can start before the addressed passage. Reopening preserves the saved passage, not byte-identical page-start CFIs: the deterministic reopen saves passage 37 and displays a paged range beginning at passage 28 that still contains the saved passage. Restoration does not rewrite that record merely because page boundaries differ.
+
+### Native evidence
+
+Task-owned debug/no-bundle Tauri builds used isolated Cargo and XDG paths, Cage headless/pixman, Xwayland `:2`, `GDK_BACKEND=x11`, scale/DPI scale 1, 1280×720 windows. Input was trusted X11/XTEST via `xdotool`; AT-SPI and screenshots observed the surface. No publication script or production diagnostic hook was installed.
+
+- Before correction, native continuous→paged reflow displayed `Chapter 48 opening` while real storage still began at `/26[p7]/1:91`.
+- After correction, native scrolling addressed Chapter 48 passage 7; paged reflow retained that passage and saved the actual first-visible passage-4 suffix (`/20[p4]/1:70`). Switching continuous again saved its current passage-7 start. Close/reopen kept the saved passage visible.
+- Final-candidate wheel input crossed Chapter 48→49 (saved `/6/98!`, passage 2) and back to Chapter 48 (saved `/6/96!`, passage 24). Native thumb drags reached Chapter 50 passage 18, then Chapter 45 passage 11. Painted text/footer and real tagged JSON agreed.
+- Final-candidate triple-click/Ctrl+C copied the complete expected Chapter 45 passage-12 sentence. Content-focused colon opened the real palette; Escape and PageDown worked.
+
+Native internals (`primaryIndex`, live CFI and scrollTop) were observed in deterministic real-WebKitGTK fixtures, not extracted from the uninstrumented Tauri process. Native evidence supplies actual painted geometry, footer, input delivery and durable JSON; do not mistake those for a native internal-state trace. Native resize, physical-human input, IME, Wayland and accessibility certification remain unverified.
+
+Persistent evidence directory: `/home/tod/.cache/clio-s1-native/evidence/`. Includes before/after executable hashes, screenshots, AT-SPI/position JSON, deterministic navigation/resize/layout records and gate logs. Task-owned native applications/compositors were terminated intentionally; temporary control tooling was removed.
+
+### Files and proposed commit scope
+
+- `src/epub/FoliateReader.tsx`: save eligible reflow/resize relocations after intentional navigation.
+- `tests/fixtures/create-reader-status-documents.py`: separate 50-section EPUB; existing six-section fixtures unchanged.
+- `tests/fixtures/reader-status-runtime.tsx`: destination, movement, resize, mode-switch and reopen regressions using the real App and painted-text oracle.
+- `tests/reader-status-runtime.test.ts`: serve the additional EPUB.
+- `docs/foliate-integration-acceptance.md`: this scoped evidence and limitations.
+
+Proposed subject: `fix(epub): persist first-visible location after reflow`. No commit authorized or created.
+
+### Gate results
+
+Focused final command (with `CLIO_FOLIATE_REAL_BOOKS=/tmp/clio-foliate-books`): status, preferences and Foliate runtime — **5 passed, 0 failed**, real WebKitGTK. The first invocation omitted that required real-book environment variable and failed its compatibility precondition; this was not counted as a pass.
+
+| Final gate | Result |
+| --- | --- |
+| Complete Bun suite, real-book environment supplied | 1,258 passed, 0 failed, no skipped tests; 8,527 expectations, 24 files, 334.52s |
+| `bunx tsc --noEmit` | Exit 0 |
+| `bun run build` | Exit 0 |
+| `cargo test --manifest-path src-tauri/Cargo.toml`, isolated Cargo target | 13 passed, 0 failed/ignored; binary/doc targets also completed |
+| Fresh native Tauri debug/no-bundle build | Exit 0, before and after |
+
+The complete suite ran the real-WebKitGTK security, historical-CFI, acquisition, keyboard/lifecycle and both status modes; none were silently skipped. Final whitespace-check output is retained as `diff-check.log` beside the gate logs.
+
+Native executable SHA-256: before `ff04201b47d2dcec144beef8ec42042ef00a3925bebd9c8244e702563703215f`; after `f6903e1dcf92a664d355aec5f6524240d6db03bd52f950b36e9bbd2cfd500125`.
+
+Remaining experiment for the original report: run the same href/resolved-index/painted-character/CFI/scroll trace against the actual Chapter 48 publication, including its exact CSS and viewport. Controlled successes cannot exclude a book-specific boundary defect. Additional writes during repeated reflow are serialized by the existing queue; no concurrent-navigation race was demonstrated or claimed fixed.
