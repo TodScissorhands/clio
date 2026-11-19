@@ -36,6 +36,64 @@ describe("PDF search index", () => {
     ]);
   });
 
+  test.each([
+    ["composed accent", "é", "e\u0301", 0, 1],
+    ["decomposed accent", "e\u0301", "é", 0, 2],
+    ["compatibility ligature", "ﬁ", "fi", 0, 1],
+    ["fullwidth", "Ａ", "a", 0, 1],
+    ["contextual final sigma", "ΟΣ", "ος", 0, 2],
+    ["supplementary UTF-16", "A𐐀Z", "𐐨", 1, 3],
+    ["RTL extraction order", "אבג", "בג", 1, 3],
+    ["compatibility Hangul composition", "ㄱㅏ", "가", 0, 2],
+    ["expanding lowercase", "İ", "i\u0307", 0, 1],
+  ])("maps %s to exact original UTF-16 ranges", (_label, source, query, start, end) => {
+    const index = buildPageSearchIndex(1, [item(source as string)]);
+    expect(findPageMatchesInIndex(index, normalizeSearchQuery(query as string))).toEqual([
+      { page: 1, segments: [{ itemIndex: 0, start, end }] },
+    ]);
+  });
+
+  test("composes combining sequences across adjacent spans without swallowing neighboring text", () => {
+    const index = buildPageSearchIndex(1, [
+      item("Xe", { width: 20 }),
+      item("\u0301Y", { x: 20 }),
+    ]);
+    expect(findPageMatchesInIndex(index, normalizeSearchQuery("é"))).toEqual([
+      { page: 1, segments: [
+        { itemIndex: 0, start: 1, end: 2 },
+        { itemIndex: 1, start: 0, end: 1 },
+      ] },
+    ]);
+  });
+
+  test("keeps partial emoji matches precise inside a joined grapheme", () => {
+    const index = buildPageSearchIndex(1, [item("👩‍💻")]);
+    expect(findPageMatchesInIndex(index, "💻")).toEqual([
+      { page: 1, segments: [{ itemIndex: 0, start: 3, end: 5 }] },
+    ]);
+  });
+
+  test("does not compose or match through structural gaps and EOL boundaries", () => {
+    for (const second of [item("\u0301", { x: 30 }), item("\u0301", { y: 80 })]) {
+      const index = buildPageSearchIndex(1, [item("e", { width: 10 }), second]);
+      expect(findPageMatchesInIndex(index, "é")).toEqual([]);
+      expect(findPageMatchesInIndex(index, normalizeSearchQuery("e \u0301"))).toEqual([
+        { page: 1, segments: [
+          { itemIndex: 0, start: 0, end: 1 },
+          { itemIndex: 1, start: 0, end: 1 },
+        ] },
+      ]);
+    }
+  });
+
+  test("maps collapsed source whitespace without including trimmed edges", () => {
+    const index = buildPageSearchIndex(1, [item(" \tA  B\n")]);
+    expect(index.text).toBe(normalizeSearchQuery(" \tA  B\n"));
+    expect(findPageMatchesInIndex(index, "a b")).toEqual([
+      { page: 1, segments: [{ itemIndex: 0, start: 2, end: 4 }, { itemIndex: 0, start: 5, end: 6 }] },
+    ]);
+  });
+
   test("maps only the matched suffix and prefix across a line break", () => {
     const index = buildPageSearchIndex(2, [
       item("Before split", { hasEOL: true }),

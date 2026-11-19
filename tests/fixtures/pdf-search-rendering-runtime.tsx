@@ -4,6 +4,8 @@ import type { PdfViewerHandle } from "../../src/pdf/PdfViewerSurface";
 import { READER_COMMANDS } from "../../src/reader/interactions";
 import type { ReaderCommandId } from "../../src/reader/interactions";
 import { pdfAdvancedAppearanceCommands, themeCommands } from "../../src/reader/appearanceCommands";
+import { buildPageSearchIndex, findPageMatchesInIndex, isPdfSearchTextItem, normalizeSearchQuery } from "../../src/pdf/searchIndex";
+import type { MatchSegment } from "../../src/pdf/searchIndex";
 import "../../src/index.css";
 
 const host = window as unknown as {
@@ -147,6 +149,91 @@ async function gateExtraction() {
   page.getTextContent = async (...args) => { await gate; return original.apply(page, args); };
   return () => { page.getTextContent = original; release(); };
 }
+async function unicodeSearch() {
+  await openFile("unicode.pdf"); await ready(3);
+  const content = await (await viewer().pdfDocument!.getPage(1)).getTextContent({ disableNormalization: true });
+  const items = content.items.filter(isPdfSearchTextItem);
+  const rendered = items.filter((item) => item.str.length);
+  const extracted = rendered.map((item) => item.str);
+  const sourceItem = (text: string) => {
+    const index = extracted.indexOf(text);
+    check(index >= 0, `Missing Unicode extraction ${JSON.stringify(text)}: ${JSON.stringify(extracted)}`);
+    return index;
+  };
+  const composed = sourceItem("é"), decomposed = sourceItem("e\u0301");
+  const base = sourceItem("e"), accent = sourceItem("\u0301");
+  check(accent === base + 1, "PDF.js did not retain adjacent split combining items");
+  const compatibility = sourceItem("ﬁＡ𐐀ΟΣ");
+  const rtl = sourceItem("גבא");
+  cases.push(`PDF.js unnormalized Unicode extraction: ${JSON.stringify(extracted.slice(composed))}`);
+  const index = buildPageSearchIndex(1, items);
+  function geometry(expected: MatchSegment[][]) {
+    const page = active()!.closest(".page")!;
+    const spans = [...page.querySelectorAll(".textLayer span:not(.markedContent)")];
+    const rectangles: DOMRect[] = [];
+    for (const match of expected) for (const segment of match) {
+      const span = spans[segment.itemIndex]!;
+      check(span?.textContent === extracted[segment.itemIndex], `Text layer altered source span ${segment.itemIndex}: ${span?.textContent}`);
+      const range = document.createRange();
+      range.setStart(span.firstChild!, segment.start); range.setEnd(span.firstChild!, segment.end);
+      rectangles.push(...range.getClientRects());
+    }
+    const actual = [...page.querySelectorAll(".pdfjs-search-highlight")].map((mark) => mark.getBoundingClientRect());
+    check(actual.length === rectangles.filter((rect) => rect.width > 0 && rect.height > 0).length, `Unicode rectangle count ${actual.length}/${rectangles.length}`);
+    for (const rect of rectangles.filter((rect) => rect.width > 0 && rect.height > 0)) {
+      check(actual.some((candidate) => (["left", "top", "width", "height"] as const).every((field) => Math.abs(candidate[field] - rect[field]) < .8)),
+        "Unicode overlay differs from original UTF-16 DOM range");
+    }
+    visible("Unicode reveal");
+  }
+  const accents = [
+    [{ itemIndex: composed, start: 0, end: 1 }],
+    [{ itemIndex: decomposed, start: 0, end: 2 }],
+    [{ itemIndex: base, start: 0, end: 1 }, { itemIndex: accent, start: 0, end: 1 }],
+  ];
+  const samples: [string, MatchSegment[][]][] = [
+    ["é", accents], ["e\u0301", accents],
+    ["fi", [[{ itemIndex: compatibility, start: 0, end: 1 }]]],
+    ["ａ𐐨", [[{ itemIndex: compatibility, start: 1, end: 4 }]]],
+    ["𐐨", [[{ itemIndex: compatibility, start: 2, end: 4 }]]],
+    ["ος", [[{ itemIndex: compatibility, start: 4, end: 6 }]]],
+    ["בא", [[{ itemIndex: rtl, start: 1, end: 3 }]]],
+  ];
+  for (const [query, expected] of samples) {
+    const found = findPageMatchesInIndex(index, normalizeSearchQuery(query));
+    check(JSON.stringify(found.map((match) => match.segments)) === JSON.stringify(expected), `Unicode source ranges ${query}: ${JSON.stringify(found)}`);
+    await search(query, expected.length * 3); geometry(expected);
+  }
+  await search("é", 9);
+  for (let result = 0; result < 3; result++) { geometry(accents); await key("Enter"); }
+  await key("Escape");
+  for (const id of ["single_page_view", "two_page_spread", "toggle_continuous_scrolling", "zoom_in", "theme_dark", "theme_light", "theme_original"] as const) {
+    await command(id);
+    geometry(accents);
+    for (let frame = 0; frame < 4; frame++) { await settle(); geometry(accents); }
+  }
+  for (const query of ["𐐨", "ος", "e\u0301", "é"]) {
+    await edit(query); check(status() === "" && marks().length === 0, "Unicode edit retained stale highlights");
+  }
+  cases.push("Unicode exact UTF-16 source spans/DOM ranges/reveal, split items, single/spread/continuous/zoom/recolor and repeated edits");
+
+  // Fresh documents have no cached search index. Delay actual extraction,
+  // then retire its owner; never override the returned Unicode text/items.
+  for (const close of [false, true]) {
+    const previous = viewer().pdfDocument;
+    await openFile("unicode.pdf");
+    await until(() => viewer().pdfDocument !== previous, "Fresh Unicode document did not commit");
+    await ready(3);
+    const release = await gateExtraction();
+    await edit("é"); await key("Enter"); await until(() => status() === "Searching…", "Unicode extraction did not start");
+    if (close) { await key("Escape"); await command("close_document"); }
+    else { await openFile("replacement.pdf"); await ready(1); }
+    release(); await settle(); await settle();
+    check(status() === "" && marks().length === 0, "Retired Unicode extraction restored results");
+  }
+  cases.push("Unicode extraction retirement on replacement and close");
+}
+
 async function run() {
   localStorage.clear(); root.render(<App />);
   await until(() => document.querySelector('input[type="file"]'), "App did not mount");
@@ -249,6 +336,7 @@ async function run() {
   check(status() === "" && marks().length === 0, "Old document callback repopulated search");
   await search("needle", 3); await key("Escape"); await command("close_document");
   check(!viewer().pdfDocument && status() === "" && marks().length === 0, "Close retained search state");
+  await unicodeSearch();
   root.unmount(); await settle();
   check(errors.length === 0, errors.join("; "));
   cases.push("query invalidation/empty/no matches, invalid replacement retention, committed replacement/cancellation and close");

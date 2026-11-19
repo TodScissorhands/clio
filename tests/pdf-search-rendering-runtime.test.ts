@@ -5,30 +5,46 @@ import type { Server, Subprocess } from "bun";
 import { join } from "node:path";
 
 // Real text, dense reading context, a two-line phrase and an image XObject.
-function pdf(pages: number) {
+function pdf(pages: number, unicode = false) {
   const image = "E02010".repeat(16 * 16) + ">";
+  const byteLength = (value: string) => new TextEncoder().encode(value).length;
+  const cmapObject = 5 + pages * 2;
+  const cmap = "/CIDInit /ProcSet findresource begin 12 dict begin begincmap\n"
+    + "/CIDSystemInfo << /Registry (Clio) /Ordering (Unicode) /Supplement 0 >> def\n"
+    + "/CMapName /ClioUnicode def /CMapType 2 def\n1 begincodespacerange <00> <FF> endcodespacerange\n"
+    + "12 beginbfchar\n<65> <0065>\n<80> <00E9>\n<81> <00650301>\n<82> <0301>\n"
+    + "<83> <FB01>\n<84> <FF21>\n<85> <D801DC00>\n<86> <039F>\n<87> <03A3>\n"
+    + "<88> <05D0>\n<89> <05D1>\n<8A> <05D2>\nendbfchar\nendcmap\n"
+    + "CMapName currentdict /CMap defineresource pop end end\n";
   const objects = [
     "<< /Type /Catalog /Pages 2 0 R >>",
     `<< /Type /Pages /Count ${pages} /Kids [${Array.from({ length: pages }, (_, i) => `${5 + i * 2} 0 R`).join(" ")}] >>`,
-    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    unicode
+      ? `<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding << /Type /Encoding /BaseEncoding /WinAnsiEncoding /Differences [128 /eacute /eacute /acute /fi /A /A /O /S /a /b /g] >> /ToUnicode ${cmapObject} 0 R >>`
+      : "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
     `<< /Type /XObject /Subtype /Image /Width 16 /Height 16 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /ASCIIHexDecode /Length ${image.length} >>\nstream\n${image}\nendstream`,
   ];
   for (let page = 0; page < pages; page++) {
     const text = (x: number, y: number, value: string) => `BT /F1 16 Tf ${x} ${y} Td (${value}) Tj ET\n`;
+    const encoded = (x: number, y: number, hex: string) => `/Span BMC BT /F1 16 Tf ${x} ${y} Td <${hex}> Tj ET EMC\n`;
     const stream = "1 1 1 rg 0 0 800 1000 re f\nq 72 0 0 72 300 860 cm /Im1 Do Q\n0 0 0 rg\n"
       + "/Span BMC\n" + text(48, 800, "Before needle after") + "EMC\n" + text(680, 500, "needle")
       + text(48, 300, "Before split") + text(48, 270, "phrase after")
       + text(48, 150, "Another needle here")
-      + Array.from({ length: 18 }, (_, i) => text(48, 750 - i * 20, `Reading context line ${i + 1} on page ${page + 1}.`)).join("");
+      + Array.from({ length: 18 }, (_, i) => text(48, 750 - i * 20, `Reading context line ${i + 1} on page ${page + 1}.`)).join("")
+      + (unicode ? encoded(330, 300, "80") + encoded(330, 270, "81")
+        + encoded(330, 240, "65") + encoded(338.896, 240, "82")
+        + encoded(330, 210, "8384858687") + encoded(330, 180, "88898A") : "");
     objects.push(
       `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 800 1000] /Resources << /Font << /F1 3 0 R >> /XObject << /Im1 4 0 R >> >> /Contents ${6 + page * 2} 0 R >>`,
-      `<< /Length ${stream.length} >>\nstream\n${stream}endstream`,
+      `<< /Length ${byteLength(stream)} >>\nstream\n${stream}endstream`,
     );
   }
+  if (unicode) objects.push(`<< /Length ${byteLength(cmap)} >>\nstream\n${cmap}endstream`);
   let source = "%PDF-1.4\n";
   const offsets = [0];
-  objects.forEach((object, i) => { offsets.push(source.length); source += `${i + 1} 0 obj\n${object}\nendobj\n`; });
-  const xref = source.length;
+  objects.forEach((object, i) => { offsets.push(byteLength(source)); source += `${i + 1} 0 obj\n${object}\nendobj\n`; });
+  const xref = byteLength(source);
   source += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
   source += offsets.slice(1).map((offset) => `${String(offset).padStart(10, "0")} 00000 n \n`).join("");
   return new TextEncoder().encode(source + `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF`);
@@ -63,6 +79,7 @@ test("real WebKit PDF search markers, reveal, transitions and document ownership
     assets.set("/__fixtures/search.pdf", pdf(3));
     assets.set("/__fixtures/replacement.pdf", pdf(1));
     assets.set("/__fixtures/invalid.pdf", "not a PDF");
+    assets.set("/__fixtures/unicode.pdf", pdf(3, true));
     server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request) {
       const path = new URL(request.url).pathname;
       if (path === "/") return new Response(html, { headers: { "content-type": "text/html" } });
