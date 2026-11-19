@@ -33,6 +33,13 @@ function App() {
   const pendingEpubAbortRef = useRef<AbortController | null>(null);
   const nativeAcquisitionRef = useRef<Promise<number> | null>(null);
   const activeEpubRef = useRef(activeEpub);
+  const pdfPositionFlushRef = useRef<(() => Promise<void>) | null>(null);
+  const registerPdfPositionFlush = useCallback((flush: () => Promise<void>) => {
+    pdfPositionFlushRef.current = flush;
+    return () => {
+      if (pdfPositionFlushRef.current === flush) pdfPositionFlushRef.current = null;
+    };
+  }, []);
   useDocumentTitle(documentName);
   const toggleNightMode = useCallback(() => setNightMode((current) => !current), []);
   const cancelPendingPdf = useCallback(() => {
@@ -91,6 +98,8 @@ function App() {
         epub = { session, nativeId: null, path: source.path, generation };
       }
       candidate = epub;
+      if (generation !== openGenerationRef.current) { retire(epub); return; }
+      await pdfPositionFlushRef.current?.();
       if (generation !== openGenerationRef.current) { retire(epub); return; }
       if (epub.nativeId) await invoke("commit_epub_session", { sessionId: epub.nativeId });
       if (generation !== openGenerationRef.current) { retire(epub); return; }
@@ -272,6 +281,7 @@ function App() {
             onInitialSourceConsumed={clearPendingPdfSource}
             onDocumentChange={handlePdfDocumentChange}
             openGeneration={openGeneration}
+            onRegisterPositionFlush={registerPdfPositionFlush}
           />}
     </main>
   );

@@ -80,6 +80,7 @@ export function PdfReader({
   onInitialSourceConsumed,
   onDocumentChange,
   openGeneration,
+  onRegisterPositionFlush,
 }: {
   nightMode: boolean;
   onToggleNightMode: () => void;
@@ -88,6 +89,7 @@ export function PdfReader({
   onInitialSourceConsumed: (request: PdfReaderOpenRequest) => void;
   onDocumentChange: (name: string | null) => void;
   openGeneration: number;
+  onRegisterPositionFlush: (flush: () => Promise<void>) => () => void;
 }) {
 
   const [documentPath, setDocumentPath] = useState<string | null>(null);
@@ -144,6 +146,7 @@ export function PdfReader({
   const openGenerationRef = useRef(openGeneration);
   openGenerationRef.current = openGeneration;
   const pendingOpenRef = useRef<{ generation: number; localGeneration: number } | null>(null);
+  const closingRef = useRef(false);
   const totalPages = document?.numPages ?? 0;
   pageNumberRef.current = pageNumber;
 
@@ -206,15 +209,18 @@ export function PdfReader({
   const zoomFactor = zoomState.mode === "manual" ? zoomState.factor : 1;
   const pageScale = calculateFitScale(fitBasis, pageSizes, effectiveViewMode, viewerSize, pageNumber) * zoomFactor;
   const reportPositionError = useCallback((message: string) => setError(message), []);
-  const { handleViewportScroll, queueRestoration, retryRestoration } = useReadingPosition({
+  const positionLayout = useMemo(() => ({}),
+    [pageElementsVersion, zoomState, viewerSize, effectiveViewMode, continuousScrolling, pageScale]);
+  const { handleViewportScroll, queueRestoration, retryRestoration, flushPositionSave } = useReadingPosition({
     path: documentPath,
     pageNumber,
     pageNumberRef,
     viewerRef,
     pageElementsRef,
-    layoutVersion: pageElementsVersion,
+    layoutVersion: positionLayout,
     onError: reportPositionError,
   });
+  useEffect(() => onRegisterPositionFlush(flushPositionSave), [onRegisterPositionFlush, flushPositionSave]);
   const focusReader = useCallback(() => {
     requestAnimationFrame(() => viewerRef.current?.focus());
   }, []);
@@ -440,6 +446,9 @@ export function PdfReader({
         return;
       }
       const { task, pdf, sizes } = prepared;
+      if (!isCurrent()) { await releaseTask(task); return; }
+      await flushPositionSave();
+      if (!isCurrent()) { await releaseTask(task); return; }
       let restoredPosition: ReadingPosition | null = null;
       if (source.path) {
         try {
@@ -487,7 +496,7 @@ export function PdfReader({
         setLoading(false);
       }
     }
-  }, [onDocumentChange, queueRestoration, releaseTask, search.cancelSearch, search.clear]);
+  }, [onDocumentChange, queueRestoration, releaseTask, search.cancelSearch, search.clear, flushPositionSave]);
 
 
   useEffect(() => {
@@ -505,37 +514,51 @@ export function PdfReader({
     });
   }, [focusReader, initialSource, onInitialSourceConsumed, openPdfSource]);
 
-  const closeDocument = useCallback(() => {
-    if (loading) return;
-    generationRef.current += 1;
-    search.cancelSearch();
-    search.clear();
-    const activeTask = loadingTaskRef.current;
-    loadingTaskRef.current = null;
-    committedTaskRef.current = null;
-    pdfViewerRef.current?.setDocument(null);
-    void releaseTask(activeTask);
-    setDocument(null);
-    onDocumentChange(null);
-    setDocumentPath(null);
-    setPageNumber(1);
-    pageNumberRef.current = 1;
-    setPageSizes([]);
-    setZoomState({ mode: "fit-page" });
-    setContinuousScrolling(false);
-    setViewMode("single");
-    setLoading(false);
-    setError("");
-    setOverlay(null);
-    setJumpInput("");
-    setCommandQuery("");
-    setCommandIndex(0);
-    activeMatchElementRef.current = null;
-    pageElementsRef.current = [];
-    scrollAnchorRef.current = null;
-    zoomAnchorRef.current = null;
-    queueRestoration(null);
-  }, [loading, onDocumentChange, queueRestoration, releaseTask, search.cancelSearch, search.clear]);
+  const closeDocument = useCallback(async () => {
+    if (loading || closingRef.current) return;
+    closingRef.current = true;
+    const generation = generationRef.current;
+    const acquisition = openGenerationRef.current;
+    const isCurrent = () => generation === generationRef.current && acquisition === openGenerationRef.current;
+    setLoading(true);
+    try {
+      await flushPositionSave();
+      if (!isCurrent()) return;
+      generationRef.current += 1;
+      search.cancelSearch();
+      search.clear();
+      const activeTask = loadingTaskRef.current;
+      loadingTaskRef.current = null;
+      committedTaskRef.current = null;
+      pdfViewerRef.current?.setDocument(null);
+      void releaseTask(activeTask);
+      setDocument(null);
+      onDocumentChange(null);
+      setDocumentPath(null);
+      setPageNumber(1);
+      pageNumberRef.current = 1;
+      setPageSizes([]);
+      setZoomState({ mode: "fit-page" });
+      setContinuousScrolling(false);
+      setViewMode("single");
+      setLoading(false);
+      setError("");
+      setOverlay(null);
+      setJumpInput("");
+      setCommandQuery("");
+      setCommandIndex(0);
+      activeMatchElementRef.current = null;
+      pageElementsRef.current = [];
+      scrollAnchorRef.current = null;
+      zoomAnchorRef.current = null;
+      queueRestoration(null);
+    } catch (cause) {
+      if (isCurrent()) setError(`Could not close document: ${pdfErrorMessage(cause)}`);
+    } finally {
+      closingRef.current = false;
+      if (isCurrent()) setLoading(false);
+    }
+  }, [loading, onDocumentChange, queueRestoration, releaseTask, search.cancelSearch, search.clear, flushPositionSave]);
 
   const goToPage = useCallback((page: number) => {
     cancelSearchReveal();

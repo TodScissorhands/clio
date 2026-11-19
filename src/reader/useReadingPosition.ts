@@ -27,28 +27,79 @@ export function useReadingPosition({
   const initialPageRef = useRef<number | null>(null);
   const suppressPositionSaveRef = useRef(false);
   const retryRafRef = useRef<number | null>(null);
+  const restorationLayoutFrameRef = useRef<number | null>(null);
+
+  const pathRef = useRef(path);
+  pathRef.current = path;
+  const errorRef = useRef(onError);
+  errorRef.current = onError;
+  const ownerRef = useRef<object | null>(null);
+  const savesRef = useRef(new Map<string, Promise<void>>());
+
+  const capturePosition = useCallback(() => {
+    const savePath = pathRef.current;
+    if (!savePath || suppressPositionSaveRef.current || pendingRestoreRef.current ||
+      appliedRestorationScrollTopRef.current !== null) return null;
+    const viewer = viewerRef.current;
+    const number = pageNumberRef.current;
+    const page = pageElementsRef.current[number - 1];
+    if (!Number.isInteger(number) || number < 1 || !viewer?.isConnected || !page?.isConnected) return null;
+    const pageRect = page.getBoundingClientRect();
+    const viewerRect = viewer.getBoundingClientRect();
+    const offset = (viewerRect.top - pageRect.top) / pageRect.height;
+    if (!Number.isFinite(offset) || pageRect.height <= 0 || viewerRect.height <= 0 ||
+      pageRect.bottom <= viewerRect.top || pageRect.top >= viewerRect.bottom) return null;
+    return { path: savePath, position: { page: number, offset: Math.max(0, Math.min(1, offset)) } };
+  }, [pageNumberRef, viewerRef, pageElementsRef]);
+
+  const enqueuePosition = useCallback((snapshot: { path: string; position: ReadingPosition }) => {
+    const previous = savesRef.current.get(snapshot.path);
+    const save = (previous ?? Promise.resolve()).catch(() => undefined)
+      .then(() => saveReadingPosition(snapshot.path, snapshot.position));
+    savesRef.current.set(snapshot.path, save);
+    const owner = ownerRef.current;
+    void save.catch(cause => {
+      if (owner !== null && ownerRef.current === owner && pathRef.current === snapshot.path) {
+        errorRef.current(`Could not save reading position: ${pdfErrorMessage(cause)}`);
+      }
+    }).finally(() => {
+      if (savesRef.current.get(snapshot.path) === save) savesRef.current.delete(snapshot.path);
+    });
+    return save;
+  }, []);
 
   const schedulePositionSave = useCallback(() => {
-    if (!path || suppressPositionSaveRef.current || pendingRestoreRef.current !== null) return;
+    if (!pathRef.current || suppressPositionSaveRef.current || pendingRestoreRef.current !== null) return;
     if (positionSaveTimerRef.current !== null) window.clearTimeout(positionSaveTimerRef.current);
-    const savePath = path;
     positionSaveTimerRef.current = window.setTimeout(() => {
       positionSaveTimerRef.current = null;
-      if (!path || path !== savePath || suppressPositionSaveRef.current || pendingRestoreRef.current !== null) return;
-      const viewer = viewerRef.current;
-      const page = pageElementsRef.current[pageNumberRef.current - 1];
-      if (!viewer || !page || !page.isConnected) return;
-      const pageRect = page.getBoundingClientRect();
-      if (pageRect.height <= 0) return;
-      const offset = Math.max(0, Math.min(1,
-        (viewer.getBoundingClientRect().top - pageRect.top) / pageRect.height,
-      ));
-      void saveReadingPosition(savePath, { page: pageNumberRef.current, offset })
-        .catch((cause) => onError(`Could not save reading position: ${pdfErrorMessage(cause)}`));
+      const snapshot = capturePosition();
+      if (snapshot) void enqueuePosition(snapshot);
     }, 700);
-  }, [path, pageNumberRef, viewerRef, pageElementsRef, onError]);
+  }, [capturePosition, enqueuePosition]);
+
+  const flushPositionSave = useCallback(async () => {
+    if (positionSaveTimerRef.current !== null) {
+      window.clearTimeout(positionSaveTimerRef.current);
+      positionSaveTimerRef.current = null;
+    }
+    // Snapshot before awaiting anything: retirement may remove the live geometry.
+    const snapshot = capturePosition();
+    const pending = snapshot ? enqueuePosition(snapshot) : pathRef.current
+      ? savesRef.current.get(pathRef.current) : undefined;
+    if (!pending) return;
+    let timeout: number | undefined;
+    try {
+      await Promise.race([pending, new Promise<never>((_, reject) => {
+        timeout = window.setTimeout(() => reject(new Error("Reading-position save timed out; document retained.")), 5000);
+      })]);
+    } finally {
+      window.clearTimeout(timeout);
+    }
+  }, [capturePosition, enqueuePosition]);
 
   const handleViewportScroll = useCallback(() => {
+    if (restorationLayoutFrameRef.current !== null) return;
     if (appliedRestorationScrollTopRef.current !== null) {
       const currentTop = viewerRef.current?.scrollTop ?? 0;
       if (Math.abs(currentTop - appliedRestorationScrollTopRef.current) < 1) {
@@ -60,6 +111,7 @@ export function useReadingPosition({
   }, [schedulePositionSave, viewerRef]);
 
   const queueRestoration = useCallback((position: ReadingPosition | null) => {
+    ownerRef.current = {};
     if (positionSaveTimerRef.current !== null) {
       window.clearTimeout(positionSaveTimerRef.current);
       positionSaveTimerRef.current = null;
@@ -111,7 +163,17 @@ export function useReadingPosition({
 
   useLayoutEffect(() => {
     applyRestoration();
-  }, [applyRestoration, layoutVersion]);
+    // PDF.js scale/grouping changes can emit scroll after React's anchor work.
+    // That movement is not a user departure from the restored position.
+    if (appliedRestorationScrollTopRef.current === null) return;
+    if (restorationLayoutFrameRef.current !== null) cancelAnimationFrame(restorationLayoutFrameRef.current);
+    restorationLayoutFrameRef.current = requestAnimationFrame(() => {
+      restorationLayoutFrameRef.current = null;
+      if (appliedRestorationScrollTopRef.current !== null && viewerRef.current) {
+        appliedRestorationScrollTopRef.current = viewerRef.current.scrollTop;
+      }
+    });
+  }, [applyRestoration, layoutVersion, viewerRef]);
 
   useEffect(() => {
     if (appliedRestorationScrollTopRef.current !== null && initialPageRef.current !== null && pageNumber !== initialPageRef.current) {
@@ -122,8 +184,14 @@ export function useReadingPosition({
     }
   }, [pageNumber, schedulePositionSave]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
+    ownerRef.current = {};
     return () => {
+      ownerRef.current = null;
+      if (restorationLayoutFrameRef.current !== null) {
+        cancelAnimationFrame(restorationLayoutFrameRef.current);
+        restorationLayoutFrameRef.current = null;
+      }
       if (positionSaveTimerRef.current !== null) {
         window.clearTimeout(positionSaveTimerRef.current);
         positionSaveTimerRef.current = null;
@@ -132,12 +200,10 @@ export function useReadingPosition({
         cancelAnimationFrame(retryRafRef.current);
         retryRafRef.current = null;
       }
-      pendingRestoreRef.current = null;
-      initialPageRef.current = null;
-      appliedRestorationScrollTopRef.current = null;
-      suppressPositionSaveRef.current = false;
+      // Explicit transitions flush first. Effect replay must not save or discard
+      // pending restoration, and async cleanup cannot guarantee IPC completion.
     };
   }, [path]);
 
-  return { schedulePositionSave, handleViewportScroll, queueRestoration, retryRestoration };
+  return { schedulePositionSave, flushPositionSave, handleViewportScroll, queueRestoration, retryRestoration };
 }
