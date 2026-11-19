@@ -228,6 +228,71 @@ mod tests {
     }
 
     #[test]
+    fn pending_save_serializes_with_retirement_and_newer_session() {
+        use std::sync::{mpsc, TryLockError};
+        use std::time::{Duration, Instant};
+
+        let sessions = Sessions::default();
+        sessions.0.lock().unwrap().insert("old".into(), Session {
+            path: "/selected/book.epub".into(), bytes: Arc::from([]),
+            ready: None, generation: 0, committed: true,
+        });
+        let directory = super::super::tests::TestDirectory::new();
+        let destination = directory.0.join("reading-positions.json");
+        let lock = Mutex::new(());
+        let position_guard = lock.lock().unwrap();
+        let newer = "epubcfi(/6/4!/4/2/1:20)";
+        std::thread::scope(|scope| {
+            let (sessions, destination, lock) = (&sessions, &destination, &lock);
+            let (started, received) = mpsc::channel();
+            let old_save = scope.spawn(move || {
+                started.send(()).unwrap();
+                save_session_position(&sessions, "epub-old", "old",
+                    "epubcfi(/6/2!/4/2/1:0)".into(), &destination, &lock)
+            });
+            received.recv_timeout(Duration::from_secs(5)).unwrap();
+            // The position lock is held here: once authorization is locked,
+            // the real save must be pending inside the storage transaction.
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                match sessions.0.try_lock() {
+                    Err(TryLockError::WouldBlock) => break,
+                    Err(TryLockError::Poisoned(_)) => panic!("unexpected session poison"),
+                    Ok(guard) => drop(guard),
+                }
+                assert!(Instant::now() < deadline, "save did not acquire authorization");
+                std::thread::yield_now();
+            }
+            let (retiring, retirement_started) = mpsc::channel();
+            let replacement = scope.spawn(move || {
+                retiring.send(()).unwrap();
+                {
+                    let mut state = sessions.0.lock().unwrap();
+                    state.remove("old").unwrap();
+                    state.insert("new".into(), Session {
+                        path: "/selected/book.epub".into(), bytes: Arc::from([]),
+                        ready: None, generation: 1, committed: true,
+                    });
+                }
+                save_session_position(&sessions, "epub-new", "new",
+                    newer.into(), &destination, &lock)
+            });
+            retirement_started.recv_timeout(Duration::from_secs(5)).unwrap();
+            assert!(matches!(sessions.0.try_lock(), Err(TryLockError::WouldBlock)));
+            drop(position_guard);
+            old_save.join().unwrap().unwrap();
+            replacement.join().unwrap().unwrap();
+        });
+        let before = std::fs::read(&destination).unwrap();
+        assert_eq!(super::super::read_positions(&destination).unwrap()
+            .remove("/selected/book.epub").unwrap().into_epub().unwrap().cfi, newer);
+        assert_eq!(save_session_position(&sessions, "epub-old", "old",
+            "epubcfi(/6/2!/4/2/1:0)".into(), &destination, &lock).unwrap_err(),
+            "Closed EPUB session");
+        assert_eq!(std::fs::read(destination).unwrap(), before);
+    }
+
+    #[test]
     fn cancelling_candidates_preserves_committed_publication() {
         let sessions = Sessions::default();
         let (sender, receiver) = std::sync::mpsc::channel();

@@ -2,11 +2,15 @@ mod epub_session;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Manager, State};
 
 #[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct ReadingPosition {
     page: u32,
     offset: f64,
@@ -138,19 +142,147 @@ fn read_positions(path: &Path) -> Result<HashMap<String, StoredPosition>, String
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PositionWriteStage {
+    QuarantineCandidate,
+    QuarantineCreated,
+    QuarantineWritten,
+    QuarantineSynced,
+    BeforeQuarantineRemove,
+    TemporaryCandidate,
+    TemporaryCreated,
+    TemporaryWritten,
+    BeforeReplace,
+    Replaced,
+}
+
+// Candidate names are advisory; create_new is the authority even after a crash
+// or a PID/clock reuse. Never open an existing candidate for writing.
+fn create_position_sibling(
+    destination: &Path,
+    suffix: &str,
+    stage: PositionWriteStage,
+    hook: &mut impl FnMut(PositionWriteStage, &Path) -> Result<(), String>,
+) -> Result<(PathBuf, fs::File), String> {
+    static NEXT_FILE: AtomicU64 = AtomicU64::new(0);
+    loop {
+        let mut name = destination.file_name().ok_or("Invalid app-data path.")?.to_os_string();
+        name.push(format!(".{suffix}.{}.{}", std::process::id(), NEXT_FILE.fetch_add(1, Ordering::Relaxed)));
+        let path = destination.with_file_name(name);
+        hook(stage, &path)?;
+        match fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(file) => return Ok((path, file)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+}
+
+fn sync_position_directory(directory: &Path) -> Result<(), String> {
+    #[cfg(unix)]
+    fs::File::open(directory).and_then(|file| file.sync_all()).map_err(|error| error.to_string())?;
+    #[cfg(not(unix))]
+    let _ = directory;
+    Ok(())
+}
+
+fn positions_for_write(
+    destination: &Path,
+    hook: &mut impl FnMut(PositionWriteStage, &Path) -> Result<(), String>,
+) -> Result<HashMap<String, StoredPosition>, String> {
+    let bytes = match fs::read(destination) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(HashMap::new()),
+        Err(error) => return Err(error.to_string()),
+    };
+    if let Ok(positions) = serde_json::from_slice(&bytes) {
+        return Ok(positions);
+    }
+    let directory = destination.parent().ok_or("Invalid app-data path.")?;
+    let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)
+        .map_err(|error| error.to_string())?.as_millis();
+    let (quarantine, mut file) = create_position_sibling(destination,
+        &format!("corrupt.{timestamp}"), PositionWriteStage::QuarantineCandidate, hook)?;
+    let protection = (|| {
+        hook(PositionWriteStage::QuarantineCreated, &quarantine)?;
+        file.write_all(&bytes).map_err(|error| error.to_string())?;
+        hook(PositionWriteStage::QuarantineWritten, &quarantine)?;
+        file.sync_all().map_err(|error| error.to_string())?;
+        hook(PositionWriteStage::QuarantineSynced, &quarantine)?;
+        sync_position_directory(directory)
+    })();
+    drop(file);
+    if let Err(error) = protection {
+        let _ = fs::remove_file(&quarantine);
+        return Err(error);
+    }
+    // No deletion before both the copy and its directory entry are protected.
+    hook(PositionWriteStage::BeforeQuarantineRemove, &quarantine)?;
+    fs::remove_file(destination).map_err(|error| error.to_string())?;
+    eprintln!("Quarantined malformed reading positions; original preserved at {}", quarantine.display());
+    Ok(HashMap::new())
+}
+
+#[cfg(not(windows))]
+fn replace_position_file(temporary: &Path, destination: &Path) -> Result<(), String> {
+    fs::rename(temporary, destination).map_err(|error| error.to_string())
+}
+
+#[cfg(windows)]
+fn replace_position_file(temporary: &Path, destination: &Path) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+    let source: Vec<u16> = temporary.as_os_str().encode_wide().chain(Some(0)).collect();
+    let target: Vec<u16> = destination.as_os_str().encode_wide().chain(Some(0)).collect();
+    // Both paths are siblings. No copy fallback or destination removal: a
+    // replacement failure must leave the old store intact.
+    if unsafe { MoveFileExW(source.as_ptr(), target.as_ptr(),
+        MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) } == 0 {
+        return Err(std::io::Error::last_os_error().to_string());
+    }
+    Ok(())
+}
+
 fn write_position(
     destination: &Path,
     canonical: String,
     position: StoredPosition,
 ) -> Result<(), String> {
-    let mut positions = read_positions(destination)?;
+    write_position_with_hook(destination, canonical, position, &mut |_, _| Ok(()))
+}
+
+fn write_position_with_hook(
+    destination: &Path,
+    canonical: String,
+    position: StoredPosition,
+    hook: &mut impl FnMut(PositionWriteStage, &Path) -> Result<(), String>,
+) -> Result<(), String> {
+    let mut positions = positions_for_write(destination, hook)?;
     positions.insert(canonical, position);
     let directory = destination.parent().ok_or("Invalid app-data path.")?;
     fs::create_dir_all(directory).map_err(|error| error.to_string())?;
-    let temporary = destination.with_extension("json.tmp");
     let bytes = serde_json::to_vec(&positions).map_err(|error| error.to_string())?;
-    fs::write(&temporary, bytes).map_err(|error| error.to_string())?;
-    fs::rename(temporary, destination).map_err(|error| error.to_string())
+    let (temporary, mut file) = create_position_sibling(destination, "tmp",
+        PositionWriteStage::TemporaryCandidate, hook)?;
+    let preparation = (|| {
+        hook(PositionWriteStage::TemporaryCreated, &temporary)?;
+        file.write_all(&bytes).map_err(|error| error.to_string())?;
+        hook(PositionWriteStage::TemporaryWritten, &temporary)?;
+        file.sync_all().map_err(|error| error.to_string())
+    })();
+    drop(file);
+    let result = preparation
+        .and_then(|()| hook(PositionWriteStage::BeforeReplace, &temporary))
+        .and_then(|()| replace_position_file(&temporary, destination));
+    if let Err(error) = result {
+        let _ = fs::remove_file(&temporary);
+        return Err(error);
+    }
+    // A failure here is reported even though complete new JSON is visible.
+    hook(PositionWriteStage::Replaced, destination)?;
+    sync_position_directory(directory)
 }
 
 // Keep the complete read/modify/replace transaction under the one shared lock.
@@ -159,8 +291,17 @@ fn with_position_lock<T>(
     lock: &Mutex<()>,
     transaction: impl FnOnce() -> Result<T, String>,
 ) -> Result<T, String> {
-    let _guard = lock.lock().map_err(|error| error.to_string())?;
-    transaction()
+    let (guard, poisoned) = match lock.lock() {
+        Ok(guard) => (guard, false),
+        Err(error) => (error.into_inner(), true),
+    };
+    // Disk, not protected in-memory state, is authoritative. Failed or panicked
+    // transactions leave poison set; only a successful serialized transaction
+    // establishes that the recoverable on-disk state can be used again.
+    let result = transaction();
+    if poisoned && result.is_ok() { lock.clear_poison(); }
+    drop(guard);
+    result
 }
 
 #[tauri::command]
@@ -289,10 +430,10 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    struct TestDirectory(PathBuf);
+    pub(super) struct TestDirectory(pub(super) PathBuf);
 
     impl TestDirectory {
-        fn new() -> Self {
+        pub(super) fn new() -> Self {
             static NEXT_ID: AtomicU64 = AtomicU64::new(0);
             let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
             let path = std::env::temp_dir().join(format!(
@@ -309,6 +450,230 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn reading_positions_quarantine_failures_retain_original_bytes() {
+        for stage in [
+            PositionWriteStage::QuarantineCandidate,
+            PositionWriteStage::QuarantineCreated,
+            PositionWriteStage::QuarantineWritten,
+            PositionWriteStage::QuarantineSynced,
+            PositionWriteStage::BeforeQuarantineRemove,
+        ] {
+            let directory = TestDirectory::new();
+            let destination = directory.0.join("reading-positions.json");
+            let original = b"{malformed\0\xff";
+            fs::write(&destination, original).unwrap();
+            let mut preserved = None;
+            let error = positions_for_write(&destination, &mut |current, path| {
+                if current != stage { return Ok(()); }
+                if current == PositionWriteStage::QuarantineCreated {
+                    fs::write(path, b"partial copy").unwrap();
+                }
+                preserved = Some(path.to_path_buf());
+                Err("injected quarantine failure".into())
+            }).err().unwrap();
+            assert_eq!(error, "injected quarantine failure");
+            assert_eq!(fs::read(&destination).unwrap(), original);
+            let path = preserved.unwrap();
+            if stage == PositionWriteStage::BeforeQuarantineRemove {
+                assert_eq!(fs::read(path).unwrap(), original);
+            } else {
+                assert!(!path.exists());
+            }
+        }
+    }
+
+    #[test]
+    fn reading_positions_quarantines_are_unique_and_never_overwrite() {
+        let directory = TestDirectory::new();
+        let destination = directory.0.join("reading-positions.json");
+        let mut collision = None;
+        for original in [b"{first".as_slice(), b"{second".as_slice()] {
+            fs::write(&destination, original).unwrap();
+            positions_for_write(&destination, &mut |stage, path| {
+                if stage == PositionWriteStage::QuarantineCandidate && collision.is_none() {
+                    fs::write(path, b"existing quarantine").unwrap();
+                    collision = Some(path.to_path_buf());
+                }
+                Ok(())
+            }).unwrap();
+        }
+        assert_eq!(fs::read(collision.unwrap()).unwrap(), b"existing quarantine");
+        let mut contents: Vec<_> = fs::read_dir(&directory.0).unwrap()
+            .map(|entry| fs::read(entry.unwrap().path()).unwrap()).collect();
+        contents.sort();
+        let mut expected = vec![b"{first".to_vec(), b"{second".to_vec(), b"existing quarantine".to_vec()];
+        expected.sort();
+        assert_eq!(contents, expected);
+    }
+
+    #[test]
+    fn reading_positions_replacement_failure_after_quarantine_retains_recoverable_bytes() {
+        let directory = TestDirectory::new();
+        let destination = directory.0.join("reading-positions.json");
+        let original = b"{malformed\0\xff";
+        fs::write(&destination, original).unwrap();
+        let error = write_position_with_hook(&destination, "failed.pdf".into(),
+            StoredPosition::Pdf(ReadingPosition { page: 1, offset: 0.0 }),
+            &mut |stage, _| {
+                if stage == PositionWriteStage::TemporaryCandidate {
+                    Err("injected temp creation failure after quarantine".into())
+                } else { Ok(()) }
+            }).unwrap_err();
+        assert_eq!(error, "injected temp creation failure after quarantine");
+        assert!(!destination.exists());
+        let quarantine = fs::read_dir(&directory.0).unwrap().next().unwrap().unwrap().path();
+        assert_eq!(fs::read(&quarantine).unwrap(), original);
+        write_position(&destination, "recovered.pdf".into(),
+            StoredPosition::Pdf(ReadingPosition { page: 3, offset: 0.5 })).unwrap();
+        assert_eq!(read_positions(&destination).unwrap().remove("recovered.pdf")
+            .unwrap().into_pdf().unwrap().page, 3);
+        assert_eq!(fs::read(quarantine).unwrap(), original);
+    }
+
+    #[test]
+    fn reading_positions_native_replacement_error_retains_old_store() {
+        let directory = TestDirectory::new();
+        let destination = directory.0.join("reading-positions.json");
+        let original = br#"{"old":{"page":9,"offset":0.25}}"#;
+        fs::write(&destination, original).unwrap();
+        let result = write_position_with_hook(&destination, "new".into(),
+            StoredPosition::Pdf(ReadingPosition { page: 2, offset: 0.5 }),
+            &mut |stage, path| {
+                if stage == PositionWriteStage::BeforeReplace {
+                    // Force the platform replacement API itself to fail.
+                    fs::remove_file(path).unwrap();
+                }
+                Ok(())
+            });
+        assert!(result.is_err());
+        assert_eq!(fs::read(&destination).unwrap(), original);
+        assert_eq!(read_positions(&destination).unwrap().remove("old")
+            .unwrap().into_pdf().unwrap().page, 9);
+    }
+
+    #[test]
+    fn reading_positions_failed_preparation_retains_complete_old_store() {
+        for stage in [
+            PositionWriteStage::TemporaryCandidate,
+            PositionWriteStage::TemporaryCreated,
+            PositionWriteStage::TemporaryWritten,
+            PositionWriteStage::BeforeReplace,
+        ] {
+            let directory = TestDirectory::new();
+            let destination = directory.0.join("reading-positions.json");
+            let original = br#"{"/library/old.pdf":{"page":9,"offset":0.25}}"#;
+            fs::write(&destination, original).unwrap();
+            let orphan = directory.0.join("reading-positions.json.tmp.orphan");
+            fs::write(&orphan, b"incomplete orphan").unwrap();
+            let error = write_position_with_hook(&destination, "/library/new.pdf".into(),
+                StoredPosition::Pdf(ReadingPosition { page: 2, offset: 0.5 }),
+                &mut |current, path| {
+                    if current != stage { return Ok(()); }
+                    if current == PositionWriteStage::TemporaryCreated {
+                        fs::write(path, b"partial JSON").unwrap();
+                    }
+                    Err("injected temp failure".into())
+                }).unwrap_err();
+            assert_eq!(error, "injected temp failure");
+            assert_eq!(fs::read(&destination).unwrap(), original);
+            assert_eq!(read_positions(&destination).unwrap().remove("/library/old.pdf")
+                .unwrap().into_pdf().unwrap().page, 9);
+            assert_eq!(fs::read(&orphan).unwrap(), b"incomplete orphan");
+            assert_eq!(fs::read_dir(&directory.0).unwrap().count(), 2);
+        }
+    }
+
+    #[test]
+    fn reading_positions_interrupted_write_and_collision_preserve_data() {
+        let directory = TestDirectory::new();
+        let destination = directory.0.join("reading-positions.json");
+        let original = br#"{"old":{"page":9,"offset":0.25}}"#;
+        fs::write(&destination, original).unwrap();
+        let mut orphan = None;
+        let interrupted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            write_position_with_hook(&destination, "interrupted".into(),
+                StoredPosition::Pdf(ReadingPosition { page: 1, offset: 0.0 }),
+                &mut |stage, path| {
+                    if stage == PositionWriteStage::TemporaryWritten {
+                        orphan = Some(path.to_path_buf());
+                        panic!("interrupted before replacement");
+                    }
+                    Ok(())
+                })
+        }));
+        assert!(interrupted.is_err());
+        assert_eq!(fs::read(&destination).unwrap(), original);
+        let orphan = orphan.unwrap();
+        let orphan_bytes = fs::read(&orphan).unwrap();
+        let mut collision = None;
+        write_position_with_hook(&destination, "new".into(),
+            StoredPosition::Pdf(ReadingPosition { page: 3, offset: 0.5 }),
+            &mut |stage, path| {
+                if stage == PositionWriteStage::TemporaryCandidate && collision.is_none() {
+                    fs::write(path, b"pre-existing temp").unwrap();
+                    collision = Some(path.to_path_buf());
+                }
+                Ok(())
+            }).unwrap();
+        assert_eq!(fs::read(collision.unwrap()).unwrap(), b"pre-existing temp");
+        assert_eq!(fs::read(orphan).unwrap(), orphan_bytes);
+        let mut saved = read_positions(&destination).unwrap();
+        assert_eq!(saved.remove("old").unwrap().into_pdf().unwrap().page, 9);
+        assert_eq!(saved.remove("new").unwrap().into_pdf().unwrap().page, 3);
+        assert!(!saved.contains_key("interrupted"));
+    }
+
+    #[test]
+    fn reading_positions_post_replace_failure_leaves_complete_new_store() {
+        let directory = TestDirectory::new();
+        let destination = directory.0.join("reading-positions.json");
+        fs::write(&destination, b"{}").unwrap();
+        let error = write_position_with_hook(&destination, "new".into(),
+            StoredPosition::Pdf(ReadingPosition { page: 7, offset: 0.25 }),
+            &mut |stage, _| {
+                if stage == PositionWriteStage::Replaced {
+                    Err("injected directory sync failure".into())
+                } else { Ok(()) }
+            }).unwrap_err();
+        assert_eq!(error, "injected directory sync failure");
+        assert_eq!(read_positions(&destination).unwrap().remove("new").unwrap()
+            .into_pdf().unwrap().page, 7);
+    }
+
+    #[test]
+    fn malformed_positions_are_quarantined_before_recovery() {
+        let directory = TestDirectory::new();
+        let destination = directory.0.join("reading-positions.json");
+        let original = b"{malformed";
+        fs::write(&destination, original).unwrap();
+        let result = write_position(&destination, "/library/book.pdf".into(),
+            StoredPosition::Pdf(ReadingPosition { page: 12, offset: 0.25 }));
+        if let Err(error) = &result {
+            assert_eq!(fs::read(&destination).unwrap(), original);
+            eprintln!("Recovery failed; original bytes retained: {error}");
+        }
+        result.unwrap();
+        let quarantines: Vec<_> = fs::read_dir(&directory.0).unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.file_name().unwrap().to_string_lossy()
+                .starts_with("reading-positions.json.corrupt."))
+            .collect();
+        assert_eq!(quarantines.len(), 1);
+        assert_eq!(fs::read(&quarantines[0]).unwrap(), original);
+        write_position(&destination, "/library/book.epub".into(),
+            StoredPosition::Epub(EpubReadingPosition {
+                cfi: "epubcfi(/6/4!/4/2/1:20)".into(),
+                cfi_model: Some(EpubCfiModel::FoliateHtmlV1),
+            })).unwrap();
+        let mut positions = read_positions(&destination).unwrap();
+        assert_eq!(positions.len(), 2);
+        assert_eq!(positions.remove("/library/book.pdf").unwrap().into_pdf().unwrap().page, 12);
+        let epub = positions.remove("/library/book.epub").unwrap().into_epub().unwrap();
+        assert_eq!(epub.cfi, "epubcfi(/6/4!/4/2/1:20)");
+        assert!(matches!(epub.cfi_model, Some(EpubCfiModel::FoliateHtmlV1)));
     }
 
     #[test]
@@ -401,7 +766,6 @@ mod tests {
             positions.remove(&second).unwrap().into_epub().unwrap().cfi,
             "epubcfi(/6/4!/4/2/1:8)"
         );
-        assert!(!destination.with_extension("json.tmp").exists());
     }
 
     #[test]
@@ -455,7 +819,6 @@ mod tests {
             saved["/library/book.epub"],
             serde_json::json!({ "cfi": "epubcfi(/6/2!/4/2/1:42)" })
         );
-        assert!(!destination.with_extension("json.tmp").exists());
     }
 
     #[test]
@@ -556,7 +919,6 @@ mod tests {
         assert_eq!((saved_pdf.page, saved_pdf.offset), (7, 0.5));
         assert_eq!(positions.remove(&epub).unwrap().into_epub().unwrap().cfi,
             "epubcfi(/6/2!/4/2/1:8)");
-        assert!(!destination.with_extension("json.tmp").exists());
     }
 
     #[test]
@@ -622,11 +984,50 @@ mod tests {
             serialized["shared.pdf"]);
         assert_eq!(positions.remove("shared.epub").unwrap().into_epub().unwrap().cfi,
             format!("epubcfi(/6/2!/4/2/1:{})", serialized["shared.epub"]));
-        assert!(!destination.with_extension("json.tmp").exists());
     }
 
     #[test]
-    fn blocking_workers_propagate_io_json_join_and_poison_errors() {
+    fn reading_positions_preserve_unsupported_records_across_pdf_epub_writes() {
+        let directory = TestDirectory::new();
+        let destination = directory.0.join("reading-positions.json");
+        let fixture = serde_json::json!({
+            "/library/legacy.epub": { "cfi": "epubcfi(/6/2!/4/2/1:0)" },
+            "/library/current.epub": { "cfi": "epubcfi(/6/2!/4/2/1:4)", "cfiModel": "foliate-html-v1" },
+            "/library/future.epub": { "cfi": "epubcfi(/6/2!/4/2/1:8)", "cfiModel": "future", "extra": null },
+            "/library/null-model.epub": { "cfi": "epubcfi(/6/2!/4/2/1:8)", "cfiModel": null },
+            "/library/future.pdf": { "page": 9, "offset": 0.5, "future": null },
+            "/library/unrelated.pdf": { "page": 17, "offset": 0.375 },
+            "/library/malformed.epub": { "cfi": 42 },
+            "/library/null": null,
+            "/library/array": [1, false, null],
+            "/library/unknown": { "version": 42, "location": { "line": 3 } }
+        });
+        fs::write(&destination, serde_json::to_vec(&fixture).unwrap()).unwrap();
+        let pdf = directory.0.join("new.pdf");
+        let epub = directory.0.join("new.epub");
+        fs::write(&pdf, []).unwrap();
+        fs::write(&epub, []).unwrap();
+        let pdf = canonicalize_pdf_path_sync(pdf.to_string_lossy().into_owned()).unwrap();
+        let epub = canonicalize_epub_path_sync(epub.to_string_lossy().into_owned()).unwrap();
+        write_position(&destination, pdf.clone(),
+            StoredPosition::Pdf(ReadingPosition { page: 5, offset: 0.75 })).unwrap();
+        write_position(&destination, epub.clone(),
+            StoredPosition::Epub(EpubReadingPosition {
+                cfi: "epubcfi(/6/4!/4/2/1:20)".into(),
+                cfi_model: Some(EpubCfiModel::FoliateHtmlV1),
+            })).unwrap();
+        let saved: serde_json::Value = serde_json::from_slice(&fs::read(&destination).unwrap()).unwrap();
+        for (key, value) in fixture.as_object().unwrap() {
+            assert_eq!(&saved[key], value, "untouched record {key}");
+        }
+        assert_eq!(saved[&pdf], serde_json::json!({ "page": 5, "offset": 0.75 }));
+        assert_eq!(saved[&epub], serde_json::json!({
+            "cfi": "epubcfi(/6/4!/4/2/1:20)", "cfiModel": "foliate-html-v1"
+        }));
+    }
+
+    #[test]
+    fn blocking_workers_propagate_read_io_and_join_errors() {
         let directory = TestDirectory::new();
         let destination = directory.0.join("reading-positions.json");
         fs::write(&destination, b"{malformed").unwrap();
@@ -636,35 +1037,69 @@ mod tests {
         let worker_destination = destination.clone();
         let expected = read_positions(&destination).err().unwrap();
         assert_eq!(tauri::async_runtime::block_on(blocking_io(move || {
-            with_position_lock(&worker_lock, || write_position(&worker_destination,
-                "book.pdf".into(), StoredPosition::Pdf(ReadingPosition { page: 1, offset: 0.0 })))
-        })).unwrap_err(), expected);
+            with_position_lock(&worker_lock, || read_positions(&worker_destination))
+        })).err().unwrap(), expected);
         assert_eq!(fs::read(&destination).unwrap(), original);
 
-        // A directory at the temporary path forces a real write error, even as root.
-        fs::write(&destination, b"{}").unwrap();
-        fs::create_dir(destination.with_extension("json.tmp")).unwrap();
-        let expected = fs::write(destination.with_extension("json.tmp"), b"{}")
-            .unwrap_err().to_string();
+        // A directory instead of the destination is an actual filesystem read
+        // failure, not malformed JSON. It must never trigger quarantine.
+        fs::remove_file(&destination).unwrap();
+        fs::create_dir(&destination).unwrap();
+        let expected = fs::read(&destination).unwrap_err().to_string();
         let worker_destination = destination.clone();
-        let worker_lock = Arc::clone(&lock);
         let error = tauri::async_runtime::block_on(blocking_io(move || {
-            with_position_lock(&worker_lock, || write_position(&worker_destination,
+            with_position_lock(&lock, || write_position(&worker_destination,
                 "book.pdf".into(), StoredPosition::Pdf(ReadingPosition { page: 1, offset: 0.0 })))
         })).unwrap_err();
         assert_eq!(error, expected);
-        assert_eq!(fs::read(&destination).unwrap(), b"{}");
-
-        let panic_lock = Arc::clone(&lock);
+        assert_eq!(fs::read_dir(&directory.0).unwrap().count(), 1);
         let error = tauri::async_runtime::block_on(blocking_io::<()>(move || {
-            let _guard = panic_lock.lock().unwrap();
             panic!("controlled worker panic")
         })).unwrap_err();
         assert!(error.starts_with("Native I/O worker failed: "));
         assert!(error.contains("controlled worker panic"));
-        let expected = lock.lock().unwrap_err().to_string();
-        assert_eq!(tauri::async_runtime::block_on(blocking_io(move || {
-            with_position_lock(&lock, || Ok(()))
-        })).unwrap_err(), expected);
+    }
+
+    #[test]
+    fn reading_positions_poison_clears_only_after_successful_disk_transaction() {
+        let directory = TestDirectory::new();
+        let destination = directory.0.join("reading-positions.json");
+        let lock = Arc::new(Mutex::new(()));
+        let worker_lock = Arc::clone(&lock);
+        let worker_destination = destination.clone();
+        assert!(std::thread::spawn(move || {
+            with_position_lock(&worker_lock, || {
+                write_position_with_hook(&worker_destination, "interrupted.pdf".into(),
+                    StoredPosition::Pdf(ReadingPosition { page: 1, offset: 0.0 }),
+                    &mut |stage, _| {
+                        if stage == PositionWriteStage::TemporaryWritten {
+                            panic!("interrupted storage worker");
+                        }
+                        Ok(())
+                    })
+            })
+        }).join().is_err());
+        assert!(lock.is_poisoned());
+        let error = with_position_lock(&lock, || {
+            assert!(lock.is_poisoned());
+            write_position_with_hook(&destination, "failed.pdf".into(),
+                StoredPosition::Pdf(ReadingPosition { page: 2, offset: 0.0 }),
+                &mut |stage, _| {
+                    if stage == PositionWriteStage::BeforeReplace {
+                        Err("injected failure while poisoned".into())
+                    } else { Ok(()) }
+                })
+        }).unwrap_err();
+        assert_eq!(error, "injected failure while poisoned");
+        assert!(lock.is_poisoned());
+        with_position_lock(&lock, || {
+            assert!(lock.is_poisoned());
+            write_position(&destination, "recovered.pdf".into(),
+                StoredPosition::Pdf(ReadingPosition { page: 3, offset: 0.5 }))
+        }).unwrap();
+        assert!(!lock.is_poisoned());
+        let mut records = with_position_lock(&lock, || read_positions(&destination)).unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records.remove("recovered.pdf").unwrap().into_pdf().unwrap().page, 3);
     }
 }
