@@ -1,6 +1,6 @@
 Foliate-js — https://github.com/readest/foliate-js
 Pinned revision: 22a49acaa120877ede21f713679ab8ba4d1ef663
-Clio patch: local EPUB-only format dispatch, bounded resize cleanup, first-visible reflow anchoring and continuous relocation, navigation/turn completion, retired archive-resource ownership, per-entry malformed navigation-destination recovery, and anchor-position-aware continuous-scroll relocation. No Readest application code.
+Clio patch: local EPUB-only format dispatch, bounded resize cleanup, first-visible reflow anchoring and continuous relocation, cross-axis sizing before continuous reflow measurement, shared-spread anchor visibility and coordinate ownership, navigation/turn completion, retired archive-resource ownership, per-entry malformed navigation-destination recovery, and anchor-position-aware continuous-scroll relocation. No Readest application code.
 
 MIT License
 

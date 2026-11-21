@@ -134,12 +134,22 @@
 +        })
 +    })
      #element = document.createElement('div')
-@@ -1469,1 +1476,3 @@
+@@ -1278,1 +1285,6 @@
++            // Measure continuous content at its new cross-axis size, not the
++            // retained paginated width. A later ResizeObserver expansion
++            // otherwise shifts preceding sections after reflow has anchored.
++            this.#iframe.style[otherSide] = '100%'
++            this.#element.style[otherSide] = '100%'
+             const contentSize = documentElement.getBoundingClientRect()[side]
+@@ -1295,2 +1307,0 @@
+-            this.#iframe.style[otherSide] = '100%'
+-            this.#element.style[otherSide] = '100%'
+@@ -1469,1 +1479,3 @@
 -        if (this.document?.body) this.#observer.unobserve(this.document.body)
 +        if (this.#resizeFrame !== null) cancelAnimationFrame(this.#resizeFrame)
 +        this.#resizeFrame = null
 +        this.#observer.disconnect()
-@@ -1535,1 +1544,8 @@
+@@ -1535,1 +1547,8 @@
 -    #observer = new ResizeObserver(() => this.render())
 +    #resizeFrame = null
 +    #observer = new ResizeObserver(() => {
@@ -149,10 +159,10 @@
 +            this.render()
 +        })
 +    })
-@@ -1555,1 +1571,1 @@
+@@ -1555,1 +1574,1 @@
 -    #justAnchored = false
 +    #anchoredPosition = null
-@@ -1764,7 +1780,9 @@
+@@ -1764,7 +1783,9 @@
          const scrolledScrollRelocate = () => {
 -            // Skip entirely while stabilizing — preserve #justAnchored
 -            // so the first post-stabilization fire still sees it.
@@ -166,11 +176,11 @@
 +                && Math.abs(this.containerPosition - anchoredPosition) < 1) return
 +            this.#afterScroll('scroll')
          }
-@@ -2430,1 +2448,2 @@
+@@ -2430,1 +2451,2 @@
 -    render() {
 +    #hasReflowAnchor = false
 +    render(anchor) {
-@@ -2435,1 +2454,7 @@
+@@ -2435,1 +2457,7 @@
          if (!primaryView) return
 +        // A preference transaction can replace the navigation target with the
 +        // first visible passage, without navigation selection/focus effects.
@@ -178,13 +188,34 @@
 +            this.#anchor = anchor
 +            this.#hasReflowAnchor = true
 +        }
-@@ -3508,1 +3534,1 @@
+@@ -3508,1 +3537,1 @@
 -                : ({ top, bottom }) => ({ left: top - marginTop, right: bottom - marginBottom })
 +                : ({ top, bottom }) => ({ left: top, right: bottom })
-@@ -3748,1 +3773,2 @@
+@@ -3537,1 +3565,8 @@
+     async #scrollToRect(rect, reason) {
++        // A shared spread's first-visible view need not own the anchor.
++        // Map the rectangle in its own document's coordinate space.
++        const doc = (this.#anchor?.startContainer ?? this.#anchor)?.ownerDocument
++        let index = this.#primaryIndex
++        for (const [i, view] of this.#views)
++            if (view.document === doc) { index = i; break }
++        const view = this.#views.get(index)
+@@ -3541,2 +3576,2 @@
+-            const localOffset = this.#getRectMapper()(rect).left - 3
+-            const viewOffset = this.#getViewOffset(this.#primaryIndex)
++            const localOffset = this.#getRectMapper(view)(rect).left - 3
++            const viewOffset = this.#getViewOffset(index)
+@@ -3546,3 +3581,3 @@
+-        // coordinates by adding the primary view's offset.
+-        const localOffset = this.#getRectMapper()(rect).left
+-        const viewOffset = this.#getViewOffset(this.#primaryIndex)
++        // coordinates by adding the anchor view's offset.
++        const localOffset = this.#getRectMapper(view)(rect).left
++        const viewOffset = this.#getViewOffset(index)
+@@ -3748,1 +3783,2 @@
      async #scrollToAnchor(anchor, reason = 'anchor', smooth = false) {
 +        if (reason !== 'anchor') this.#hasReflowAnchor = false
-@@ -3829,12 +3855,3 @@
+@@ -3829,12 +3865,3 @@
 -            // In scrolled mode several sections can share the viewport at a
 -            // section boundary, and the primary view may even be scrolled out
 -            // of view. Prefer the view that covers the viewport centre — that
@@ -200,9 +231,9 @@
 +            // Clio status and persistence describe the first visible passage,
 +            // not the centre-preferred section used by Readest (readest#4436).
 +            // Sorted views preserve reading order at section boundaries.
-@@ -3852,1 +3869,0 @@
+@@ -3852,1 +3879,0 @@
 -                const coversCenter = center >= off && center < off + vSize
-@@ -3862,7 +3878,6 @@
+@@ -3862,7 +3888,6 @@
 -                    if (!collapsed || coversCenter) collapsed = { range, index }
 +                    collapsed ??= { range, index }
                      continue
@@ -213,41 +244,63 @@
              }
 -            return fallback ?? collapsed
 +            return collapsed
-@@ -3973,1 +3988,1 @@
+@@ -3883,4 +3908,17 @@
+-        // comparePoint throws for a node rooted outside the range's document,
+-        // i.e. an anchor in another section or in a torn-down document.
+-        if (!node.isConnected || node.ownerDocument !== range.startContainer.ownerDocument)
+-            return false
++        if (!node.isConnected) return false
++        // The first-visible range can belong to a preceding section while
++        // the addressed passage still paints in the same shared spread.
++        if (node.ownerDocument !== range.startContainer.ownerDocument) {
++            for (const [index, view] of this.#views) {
++                if (view.document !== node.ownerDocument) continue
++                const offset = this.#getViewOffset(index)
++                const size = view.element.getBoundingClientRect()[this.sideProp]
++                if (offset + size <= this.#renderedStart || offset >= this.#renderedEnd)
++                    return false
++                range = getVisibleRange(view.document, this.#renderedStart - offset,
++                    this.#renderedEnd - offset, this.#getRectMapper(view))
++                break
++            }
++            if (!range || node.ownerDocument !== range.startContainer.ownerDocument)
++                return false
++        }
+@@ -3973,1 +4011,1 @@
 -            this.#justAnchored = true
 +            this.#anchoredPosition = this.containerPosition
-@@ -3982,2 +3997,4 @@
+@@ -3982,2 +4020,4 @@
 -        else if (reason !== 'container-scroll' || !this.#anchorIsVisible(range))
 +        else if (reason !== 'container-scroll' || !this.#anchorIsVisible(range)) {
              this.#anchor = range
 +            this.#hasReflowAnchor = false
 +        }
-@@ -3989,3 +4006,3 @@
+@@ -3989,3 +4029,3 @@
 -            // The relocated index may differ from #primaryIndex (the centre of
 -            // the viewport can sit in a different view than its top edge), so
 -            // size the fraction against the relocated view to keep it in sync.
 +            // A primary view without accepted content can differ from the
 +            // first visible passage. Keep the fraction scoped to the same
 +            // relocated section as the range and CFI.
-@@ -4026,1 +4043,1 @@
+@@ -4026,1 +4066,1 @@
 -        const { index, src, data, anchor, onLoad, select } = await promise
 +        const { index, src, data, anchor, onLoad, select, alignStart } = await promise
-@@ -4074,1 +4091,1 @@
+@@ -4074,1 +4114,1 @@
 -            if (needsPrev || this.scrolled) {
 +            if ((!alignStart && needsPrev) || this.scrolled) {
-@@ -4100,1 +4117,1 @@
+@@ -4100,1 +4140,1 @@
 -            { reanchor: !this.scrolled })
 +            { reanchor: !this.scrolled, alignStart })
-@@ -4216,1 +4233,1 @@
+@@ -4216,1 +4256,1 @@
 -    async #fillVisibleArea({ reanchor = true } = {}) {
 +    async #fillVisibleArea({ reanchor = true, alignStart = false } = {}) {
-@@ -4229,1 +4246,1 @@
+@@ -4229,1 +4269,1 @@
 -            if (primaryView && primaryView.contentPages > 0
 +            if (!alignStart && primaryView && primaryView.contentPages > 0
-@@ -4285,1 +4302,1 @@
+@@ -4285,1 +4325,1 @@
 -    async #goTo({ index, anchor, select }) {
 +    async #goTo({ index, anchor, select, alignStart = false }) {
-@@ -4317,1 +4334,8 @@
+@@ -4317,1 +4357,8 @@
              this.#primaryIndex = index
 +            // Explicit paged destinations must begin in their own spread.
 +            // A retained half-spread predecessor otherwise paints first and
@@ -256,19 +309,19 @@
 +                for (const [i] of this.#sortedViews)
 +                    if (i < index) this.#destroyView(i)
 +            }
-@@ -4349,1 +4373,1 @@
+@@ -4349,1 +4396,1 @@
 -            if (!this.scrolled) await loadPrev()
 +            if (!this.scrolled && !alignStart) await loadPrev()
-@@ -4356,1 +4380,1 @@
+@@ -4356,1 +4403,1 @@
 -            this.#fillPromise = this.#fillVisibleArea()
 +            this.#fillPromise = this.#fillVisibleArea({ alignStart })
-@@ -4369,1 +4393,1 @@
+@@ -4369,1 +4416,1 @@
 -                        if (Math.abs(i - index) <= 2) keep.add(i)
 +                        if (Math.abs(i - index) <= 2 && (!alignStart || i > index)) keep.add(i)
-@@ -4387,1 +4411,1 @@
+@@ -4387,1 +4434,1 @@
 -                    return { index, src, data, anchor, onLoad, select }
 +                    return { index, src, data, anchor, onLoad, select, alignStart }
-@@ -4395,6 +4419,15 @@
+@@ -4395,6 +4442,15 @@
 +    #turnCompletion = null
 +    #destroyed = false
      async goTo(target) {
@@ -285,7 +338,7 @@
 +        if (!this.#destroyed && this.#canGoToIndex(resolved.index))
 +            return this.#goTo({ ...resolved, alignStart: !this.scrolled })
      }
-@@ -4459,1 +4492,11 @@
+@@ -4459,1 +4515,11 @@
      async #turnPage(dir, distance) {
 +        if (this.#locked || this.#destroyed) return
 +        const turn = this.#performTurn(dir, distance)
@@ -297,10 +350,10 @@
 +        }
 +    }
 +    async #performTurn(dir, distance) {
-@@ -4629,1 +4672,2 @@
+@@ -4629,1 +4695,2 @@
      destroy() {
 +        this.#destroyed = true
-@@ -4641,5 +4685,7 @@
+@@ -4641,5 +4708,7 @@
              this.#isAnimating = false
          }
 -        this.#observer.unobserve(this)

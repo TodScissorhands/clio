@@ -477,45 +477,156 @@ async function chapterReversalProbe() {
   await direct("reversal.epub", "reversal.epub", path); await readyEpub();
   for (const paged of [true, false]) {
     if (!paged) { await command("Continuous layout"); await readyEpub(false); }
-    for (const width of paged ? [420, 1000] : [1000]) {
-      await resize(width, 700); await readyEpub(paged);
+    // Retain the original 420×676 reader repro alongside the design geometries.
+    for (const [width, height] of [[420, 700], [420, 600], [1000, 700], [1440, 800]] as const) {
+      await resize(width, height); await readyEpub(paged);
       await chapter("Chapter 1", paged);
-      // Observe the real command's target and completion, not a direct goTo.
+      // Inspect paint and the physical scroll limit independently of the
+      // resolved index. A short final section cannot fill a continuous screen.
+      const sample = (index: number) => {
+        const viewport = view.renderer.shadowRoot!.querySelector<HTMLElement>("#container")!;
+        const doc = contents().find(content => content.index === index)?.doc;
+        const frame = doc?.defaultView?.frameElement?.getBoundingClientRect();
+        const heading = doc?.querySelector("h1")?.getBoundingClientRect();
+        return {
+          cfi: view.lastLocation!.cfi, cfiIndex: location()!.start.index,
+          primaryIndex: view.renderer.primaryIndex, visible: visiblePassage(),
+          footer: label(), detail: detail(), savedCfi: window.__readerStatusPositions!.get(path)?.cfi,
+          page: view.renderer.page, pages: view.renderer.pages,
+          viewport: viewport.getBoundingClientRect().toJSON(),
+          scrollLeft: viewport.scrollLeft, scrollTop: viewport.scrollTop,
+          maximumScrollTop: viewport.scrollHeight - viewport.clientHeight,
+          targetFrame: frame?.toJSON(),
+          headingTop: frame && heading ? frame.top + heading.top : null,
+          frames: contents().map(({ index, doc }) => ({
+            index, bounds: doc.defaultView!.frameElement!.getBoundingClientRect().toJSON(),
+          })),
+        };
+      };
+      const transition = async (name: string, nextPaged: boolean, addressed: string, restoring = false) => {
+        const renderer = view.renderer;
+        let revision = 0;
+        let stabilized = false;
+        const events: object[] = [];
+        const observe = (event: Event) => {
+          revision++;
+          if (event.type === "stabilized") stabilized = true;
+          events.push({ at: performance.now(), type: event.type,
+            reason: (event as CustomEvent).detail?.reason, ...sample(2) });
+        };
+        renderer.addEventListener("relocate", observe);
+        renderer.addEventListener("stabilized", observe);
+        renderer.addEventListener("scroll", observe);
+        const before = sample(2);
+        let previous = "";
+        let equalFrames = 0;
+        try {
+          await command(nextPaged ? "Paged layout" : "Continuous layout");
+          const immediate = sample(2);
+          await until(() => {
+            const state = sample(2);
+            const tuple = JSON.stringify({ revision, ...state });
+            equalFrames = tuple === previous ? equalFrames + 1 : 0;
+            previous = tuple;
+            if (!stabilized || equalFrames < 4 ||
+              renderer.getAttribute("flow") !== (nextPaged ? "paginated" : "scrolled") ||
+              state.visible?.index !== state.cfiIndex || !cfiVisible(state.cfi) ||
+              state.savedCfi !== (restoring ? addressed : state.cfi) ||
+              state.footer !== expectedLabel(location()!)) return false;
+            const { index, anchor } = view.resolveCFI(state.cfi);
+            const doc = contents().find(content => content.index === index)!.doc;
+            const painted = view.resolveCFI(state.visible.cfi).anchor(doc);
+            // The reported range must include the independently painted first
+            // character, not merely some later visible paragraph in the section.
+            return anchor(doc).comparePoint(painted.startContainer, painted.startOffset) === 0;
+          }, `${name}: mode paint/CFI/footer/save did not settle`);
+          await readyEpub(nextPaged);
+          const settled = sample(2);
+          reversals.push({ name, paged, width, height, nextPaged, addressed,
+            addressedPainted: cfiVisible(addressed), before, immediate, ...settled, events });
+          check(cfiVisible(addressed), `${name}: chapter mode reversal lost addressed passage`);
+        } catch (error) {
+          reversals.push({ name: `${name}-failure`, paged, width, height, addressed,
+            addressedPainted: cfiVisible(addressed), ...sample(2), events });
+          throw error;
+        } finally {
+          renderer.removeEventListener("relocate", observe);
+          renderer.removeEventListener("stabilized", observe);
+          renderer.removeEventListener("scroll", observe);
+        }
+      };
+      const roundTrip = async (name: string, addressed = view.lastLocation!.cfi) => {
+        for (let cycle = 0; cycle < 2; cycle++) {
+          await transition(`${name}-switch-${cycle}`, !paged, addressed);
+          await transition(`${name}-return-${cycle}`, paged, addressed);
+        }
+        const reopening = window.__readerStatusPositions!.get(path)!.cfi;
+        await close(); await direct("reversal.epub", "reversal.epub", path); await readyEpub();
+        await until(() => cfiVisible(reopening), `${name}: chapter reopen lost saved passage`);
+        if (!paged) {
+          // Restoration/reflow alone must retain the saved record until an
+          // intentional navigation enables writes for this new reader.
+          await transition(`${name}-reopened-continuous`, false, reopening, true);
+        }
+      };
       const step = async (name: string, expected: number, direction: 1 | -1, boundary = false) => {
         const before = view.lastLocation!.cfi;
         const primaryBefore = view.renderer.primaryIndex;
         const original = view.goTo;
         let navigation: ReturnType<View["goTo"]> | undefined;
         let target: Parameters<View["goTo"]>[0] | undefined;
-        view.goTo = value => { target = value; return navigation = original.call(view, value); };
+        let requested: ReturnType<View["resolveNavigation"]>;
+        const relocations: object[] = [];
+        const observe = (event: Event) => relocations.push({
+          reason: (event as CustomEvent).detail.reason, ...sample(expected),
+        });
+        view.renderer.addEventListener("relocate", observe);
+        view.goTo = value => {
+          target = value; requested = view.resolveNavigation(value);
+          return navigation = original.call(view, value);
+        };
         let arrived: Awaited<ReturnType<View["goTo"]>>;
+        let immediate: ReturnType<typeof sample>;
         try {
           focusReader();
           await key(direction === 1 ? "n" : "N", { code: "KeyN", shiftKey: direction === -1 });
           arrived = await navigation;
+          immediate = sample(expected);
         } finally { view.goTo = original; }
-        // Foliate's native container-scroll relocation is debounced. Observe
-        // its settled result too, not just the immediate navigation relocate.
-        const idle = Promise.withResolvers<void>();
-        setTimeout(idle.resolve, 400);
-        await idle.promise;
+        // Include the debounced container-scroll relocation and asynchronous
+        // fill, rather than treating goTo's returned index as visual arrival.
+        await new Promise<void>(resolve => setTimeout(resolve, 400));
         await readyEpub(paged);
         if (navigation) await until(() => window.__readerStatusPositions!.get(path)?.cfi === view.lastLocation!.cfi,
           `${name}: chapter position did not save`);
-        const cfi = view.lastLocation!.cfi;
-        const visible = visiblePassage();
-        const viewport = view.renderer.shadowRoot!.querySelector<HTMLElement>("#container")!;
+        view.renderer.removeEventListener("relocate", observe);
+        const settled = sample(expected);
+        const { cfi, visible } = settled;
         reversals.push({ name, paged, width, before, primaryBefore, target: target ?? null,
-          completed: !!navigation, arrival: arrived?.index ?? null, primaryIndex: view.renderer.primaryIndex,
-          cfi, cfiIndex: view.resolveCFI(cfi).index, visible, footer: label(), detail: detail(),
-          savedCfi: window.__readerStatusPositions!.get(path)?.cfi,
-          page: view.renderer.page, pages: view.renderer.pages,
-          viewport: viewport.getBoundingClientRect().toJSON(), scrollLeft: viewport.scrollLeft, scrollTop: viewport.scrollTop,
-          frames: contents().map(({ index, doc }) => ({ index, bounds: doc.defaultView!.frameElement!.getBoundingClientRect().toJSON() })) });
+          requestedIndex: requested?.index, requestedAnchor: requested?.anchor ? "anchor" : 0,
+          completed: !!navigation, arrival: arrived?.index ?? null, immediate, ...settled, relocations });
         if (boundary) check(!navigation && cfi === before, `${name}: chapter boundary navigated`);
         else check(target === expected && arrived?.index === expected, `${name}: wrong chapter target ${target}, expected ${expected}`);
-        check(visible?.index === expected && view.resolveCFI(cfi).index === expected && cfiVisible(cfi),
-          `${name}: painted passage and current CFI disagree with chapter ${expected}`);
+        const clamped = !paged && expected === 3;
+        if (clamped) {
+          check(settled.targetFrame && settled.targetFrame.height < settled.viewport.height &&
+            Math.abs(settled.scrollTop - settled.maximumScrollTop) <= 1 &&
+            settled.targetFrame.top > settled.viewport.top + 1,
+          `${name}: short final destination is not explained by the physical scroll limit`);
+          check(settled.headingTop !== null && settled.headingTop > settled.viewport.top &&
+            settled.headingTop < settled.viewport.bottom, `${name}: clamped destination opening is not painted`);
+        } else if (!boundary) {
+          check(visible?.paragraph === `Chapter ${expected === 0 ? 1 : expected === 2 ? 2 : 3} opening`,
+            `${name}: preceding passage paints above the reachable chapter opening`);
+          // Scroll offsets quantize while accumulated section bounds retain
+          // fractional CSS pixels (including WebKit's device-scale rounding).
+          if (!paged) check(settled.targetFrame && Math.abs(settled.targetFrame.top - settled.viewport.top) <= 2,
+            `${name}: reachable continuous section did not align at reading start`);
+        }
+        check(visible?.index === (clamped ? 2 : expected) &&
+          view.resolveCFI(cfi).index === visible?.index && cfiVisible(cfi),
+          `${name}: painted passage and current CFI disagree`);
+        check(label() === expectedLabel(location()!), `${name}: footer misidentifies first-visible text`);
         if (!boundary) check(window.__readerStatusPositions!.get(path)?.cfi === cfi, `${name}: stale chapter save`);
       };
       await step("first-boundary", 0, -1, true);
@@ -524,12 +635,39 @@ async function chapterReversalProbe() {
         await step(`previous-${repeat}`, 0, -1);
       }
       await step("skip-nonlinear-forward", 2, 1);
+      await step("last-chapter", 3, 1);
+      await roundTrip("short-final-chapter");
       if (paged) {
-        await step("last-chapter", 3, 1);
         await step("last-boundary", 3, 1, true);
         await step("previous-adjacent", 2, -1);
+        await step("skip-nonlinear-backward", 0, -1);
+      } else {
+        // The clamp truthfully leaves Chapter 2 first-visible: repeated next
+        // still requests Chapter 3; previous follows that same visible CFI.
+        await step("repeat-clamped-destination", 3, 1);
+        await step("previous-from-clamped-location", 0, -1);
       }
-      await step("skip-nonlinear-backward", 0, -1);
+      // Issue a reverse without the usual 400ms settlement after the forward
+      // command; also overlap explicit navigation with a screen/page turn.
+      focusReader(); await key("n", { code: "KeyN" });
+      await until(() => location()?.start.index === 2, "rapid forward did not reach Chapter 2");
+      await step("rapid-reverse", 0, -1);
+      focusReader();
+      const turning = key("PageDown");
+      await step("chapter-during-page-turn", 2, 1);
+      await turning;
+      await roundTrip("chapter-opening");
+      const middle = "EPUB/reversal-2.xhtml#p20";
+      await view.goTo(middle); await readyEpub(paged);
+      await until(() => window.__readerStatusPositions!.get(path)?.cfi === view.lastLocation!.cfi,
+        "middle-passage navigation did not save");
+      const doc = contents().find(content => content.index === 2)!.doc;
+      const target = doc.createRange();
+      target.selectNodeContents(doc.getElementById("p20")!);
+      target.collapse(true);
+      // Navigation addressed p20, not the earlier p19 suffix that shares its
+      // paginated page. Reflow may change that page-start CFI legitimately.
+      await roundTrip("long-middle-passage", view.getCFI(2, target));
     }
   }
   await command("Paged layout"); await readyEpub(); await close();
