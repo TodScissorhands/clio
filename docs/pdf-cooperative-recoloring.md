@@ -59,3 +59,45 @@ With fit-width basis, factor 1.78 had only a 3502×4532 main canvas. Factor 1.78
 Before correction, high-zoom main background pixels were `[40,40,40]`, while the visible detail pixels and native screenshot were `[255,255,255]`. Hiding only the detail canvas changed the screenshot to `[40,40,40]`; restoring it brought back white. The real detail completion event had `source === pageView.detailView`, `cssTransform: false`, and `isDetailView: true`; Clio previously processed only `pageView.canvas`.
 
 After correction, both native WebGL and forced cooperative CPU output retained full-resolution detail and the selected background. A 3259×2523 WebGL detail rendered `[40,40,40]`; CPU main/detail rendered `[48,48,48]` for a temporary `#303030` background and `[40,40,40]` after returning to Gruvbox. Panning replaced the detail canvas while preserving an embedded image's `[245,210,80]` pixels. Native `+` crossed the threshold from factor 1.75 to 1.8375 correctly; native page navigation, resizing, single/spread/continuous layouts, rapid appearance changes, Ctrl+W close/reopen and PDF→EPUB→PDF replacement also retained correct output.
+
+## S4E context loss and resource ownership
+
+Real WebKitGTK 2.54.2 `WEBGL_lose_context` events exposed two GPU publication defects:
+
+- While lost, WebGL calls did not throw. `render()` returned true and the surface accepted stale `[40,40,40]` background pixels instead of the requested `[16,41,63]`; no CPU operation started.
+- After restoration, the old program/VAO/texture handles were invalid. Three draw calls returned through the success path but produced black `[0,0,0]` instead of `[40,40,40]`.
+
+The renderer now checks `isContextLost()` before GPU work and immediately before publication. A lost context takes the existing pristine-source cooperative CPU path. One pair of canvas-owned listeners permits restoration, invalidates lost handles, and rebuilds the existing shader program, VAO/buffer and texture. Initialization publishes handles only as a complete set and releases partial allocations; failed initialization leaves CPU fallback available. No recoloring math, document lifecycle, PDF.js cache policy or renderer API changes.
+
+The singleton intentionally retains one offscreen canvas/context, program, VAO-owned vertex buffer and texture for reuse across documents. Its listeners share that lifetime, not a page/component lifetime. Uploaded texture pixels do not retain the source DOM canvas. Context loss retires the context-bound storage; restoration creates a new set. PDF.js still owns main/detail output canvases and tasks; the surface owns only independent pristine copies, recolor requests/controllers and its observer/listener/timer/frame lifecycle. Geometry cancellation prevents new work/publication but does not interrupt an already pending PDF.js `getPage()`; its eventual page is cleaned up.
+
+The detail runtime now runs development StrictMode and production builds in independent GPU/CPU processes. Actual loss produces correct main/detail and compositor `[16,41,63]` output through CPU; actual restoration produces `[40,40,40]` through GPU again, with three draws and no additional fallback. The test observer does not prevent the loss event's default; restoration depends on the production listener. Coverage also checks text/search-highlight range geometry after canvas replacement, rapid high-zoom navigation while CPU work is held, real cache eviction, ten alternating document reopen/close cycles, and balanced surface listeners/observers after replay/unmount. No diagnostic hooks ship in the application.
+
+Bounded observations on Xwayland `:1`, DPR 2.5, the existing 1,500,000-pixel test cap and twelve generated pages:
+
+| Settled boundary | Main pristine entries | Detail entries | Pristine pixels | Requests / CPU buffers |
+| --- | ---: | ---: | ---: | ---: |
+| Initial pixel mode | 2 | 0 | 1,170,450 | 0 / 0 |
+| After twelve-page navigation | 10 | 1 | 4,975,331 | 0 / 0 |
+| Close, then five and ten reopen/close cycles | 0 | 0 | 0 | 0 / 0 |
+
+Both forced-CPU runs peaked at one active operation and one `ImageData`; all 92 operations settled, including six discarded operations. Retired sources had zero backing dimensions, and obsolete held targets received no late publication. Development replay left one live surface, five surface listeners and one connected highlight observer; final unmount removed every surface listener and observer and drained requests/timers.
+
+The runner samples `/proc/<pid>/status` RSS and `smaps_rollup` PSS for itself and its WebKit network/web-process descendants only at drained, equivalent workload boundaries, without forced GC:
+
+| Process-tree PSS (KiB) | Close | After five cycles | After ten cycles |
+| --- | ---: | ---: | ---: |
+| Production GPU | 348,669 | 365,193 | 363,177 |
+| Production CPU | 378,081 | 378,357 | 381,443 |
+| Development GPU | 407,824 | 421,296 | 436,056 |
+| Development CPU | 386,481 | 379,293 | 382,399 |
+
+These process/allocator observations are not a browser-heap or device-memory measurement and do not establish a leak: Clio's measured owned maps, backing stores and pending work were empty at every close. Test probes deliberately retain retired owners for inspection.
+
+Original focused baseline: 989 passed. Before-change failure logs and corrected runtime measurements are retained at `/tmp/clio-s4e-before-focused.log`, `/tmp/clio-s4e-context-before.log`, `/tmp/clio-s4e-restoration-before.log`, `/tmp/clio-s4e-context-after.log` and `/tmp/clio-s4e-resource-range.log`. This establishes recoverable context-loss failures, not the cause of the historical application freeze or recovery from every hardware/driver failure.
+
+Fresh debug/no-bundle Tauri candidate SHA-256: `fe49391f1bbb840bdaa543abb0d230288681410c239a3056861c2f365b53e713`. An isolated scale-1 Sway/pixman/Xwayland `:2` session exercised trusted XTEST theme changes, advanced recoloring, zoom, page/spread/single navigation, selection/copy (`Status P`), close/reopen, PDF→EPUB→PDF and PDF A→B→A. Settled reopening/replacement screenshots require the expected finished text layer plus actual foreground/background pixels, not just the footer or loading background. The actual position JSON retained page 2 offset 0; SQLite retained enabled Gruvbox, hue/image preservation and `#282828` / `#EBDBB2`.
+
+Native controller failures are retained separately: palette choices remain open until Escape; reflow retires AT-SPI objects; spread changes can select the pair's first page; the EPUB footer is painted but not exposed as text; and the covered host footer is not the front EPUB window's footer. Correcting these probes did not change application behavior. Forced context loss/restoration is verified in the disposable real WebKit runtime, not in the Tauri candidate. Native Wayland, physical-human input and other drivers/platforms remain unverified.
+
+Complete gates: 1,277 Bun tests passed across 27 files, zero failures/skips, including both manifest-verified real books, S4C modifiers, EPUB mode-round-trip coverage and the unchanged preference/reflow assertion; TypeScript, frontend build, all 24 Rust tests and whitespace checks passed. The intermittent EPUB reflow failure did not reproduce in this run. Evidence, including original failures, full logs, native screenshots, state and archived disposable controllers: `/home/tod/.cache/clio-s4e-dTgMSg/`. No commit was created.

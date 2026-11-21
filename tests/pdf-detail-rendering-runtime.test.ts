@@ -43,13 +43,16 @@ function replaceOnce(code: string, anchor: string, replacement: string) {
   return code.replace(anchor, replacement);
 }
 
-test.skipIf(!probe || probe.exitCode !== 0)("real WebKit main/detail pixels, compositor filters, CPU cancellation and ownership", async () => {
+for (const runtime of ["development", "production"]) {
+test.skipIf(!probe || probe.exitCode !== 0)(`real WebKit main/detail pixels, context recovery and ownership in ${runtime}`, async () => {
   const directory = await mkdtemp(join(tmpdir(), "clio-detail-runtime-"));
   let server: Server<undefined> | undefined;
   let child: Subprocess<"ignore", "pipe", "pipe"> | undefined;
   try {
     const built = await build({
       configFile: false, root: join(import.meta.dir, ".."), logLevel: "error",
+      define: { "process.env.NODE_ENV": JSON.stringify(runtime) },
+      oxc: { jsx: { development: runtime === "development" } },
       plugins: [{
         name: "test-only-detail-observation", enforce: "pre",
         transform(code, id) {
@@ -58,7 +61,21 @@ test.skipIf(!probe || probe.exitCode !== 0)("real WebKit main/detail pixels, com
             const anchor = "  const cancelRecolorRef = useRef<() => void>(() => {});";
             code = replaceOnce(code, anchor, `  window.__pdfDetail = { ...window.__pdfDetail, map: pristineCanvasesRef.current, details: detailPristineCanvasesRef.current, viewerHandle, pdf };\n${anchor}`);
             const active = "let active: PageRecolorRequest | null = null;";
-            code = replaceOnce(code, active, `${active}\n    Object.assign(window.__pdfDetail, { queue: requests, active: () => active, timer: () => queuedTimer });`);
+            code = replaceOnce(code, active, `${active}
+    let observing = false;
+    const registered = new Set();
+    window.__detailLifetimes.push(() => ({
+      disposed, viewer: !!viewer, observing, lastFrame: highlightFrame,
+      queue: requests.size, active: !!active, timer: queuedTimer,
+      listeners: listeners.filter(([, listener]) => registered.has(listener)).length,
+    }));
+    Object.assign(window.__pdfDetail, { queue: requests, active: () => active, timer: () => queuedTimer });`);
+            code = replaceOnce(code, "highlightObserver.observe(container);", "highlightObserver.observe(container); observing = true;");
+            code = replaceOnce(code, "highlightObserver?.disconnect();", "highlightObserver?.disconnect(); observing = false;");
+            code = replaceOnce(code, "for (const [name, listener] of listeners) eventBus.on(name, listener);",
+              "for (const [name, listener] of listeners) { eventBus.on(name, listener); registered.add(listener); }");
+            code = replaceOnce(code, "if (eventBus) for (const [name, listener] of listeners) eventBus.off(name, listener);",
+              "if (eventBus) for (const [name, listener] of listeners) { eventBus.off(name, listener); registered.delete(listener); }");
             // Test only: normal scale .6 stays below the cap; scale 2 crosses
             // it. Actual DPR and crop dimensions are reported, not assumed.
             code = replaceOnce(code, "viewer = new PDFViewer({", "viewer = new PDFViewer({\n        maxCanvasPixels: 1_500_000,");
@@ -112,7 +129,7 @@ test.skipIf(!probe || probe.exitCode !== 0)("real WebKit main/detail pixels, com
     // Separate processes ensure the native shader and forced cooperative fallback
     // cannot accidentally share a singleton or inherit each other's observations.
     for (const backend of ["gpu", "cpu"]) {
-      child = Bun.spawn([python!, join(import.meta.dir, "fixtures/run-pdf-detail-webkit.py"), `http://127.0.0.1:${server.port}/?backend=${backend}`], {
+      child = Bun.spawn([python!, join(import.meta.dir, "fixtures/run-pdf-detail-webkit.py"), `http://127.0.0.1:${server.port}/?backend=${backend}&runtime=${runtime}`], {
         env: { ...process.env, GDK_BACKEND: process.env.DISPLAY ? "x11" : "wayland", GDK_SCALE: "2", GDK_DPI_SCALE: "1" }, stdout: "pipe", stderr: "pipe",
       });
       const [stdout, stderr, exitCode] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
@@ -123,7 +140,7 @@ test.skipIf(!probe || probe.exitCode !== 0)("real WebKit main/detail pixels, com
       if (backend === "gpu") {
         expect(result.cpu.gpuReady).toBe(true);
         expect(result.cpu.gpuDraws).toBeGreaterThan(0);
-        expect(result.cpu.started).toBe(0);
+        expect(result.cpu.started).toBeGreaterThan(0);
       } else {
         expect(result.cpu.gpuReady).toBe(false);
         expect(result.cpu.maxActive).toBe(1);
@@ -133,10 +150,11 @@ test.skipIf(!probe || probe.exitCode !== 0)("real WebKit main/detail pixels, com
         expect(result.cpu.yields).toBeGreaterThan(0);
       }
       expect(result.cpu.buffers).toBe(0);
-      console.info(`WebKit detail ${backend}:`, JSON.stringify(result));
+      console.info(`WebKit detail ${runtime} ${backend}:`, JSON.stringify(result));
     }
   } finally {
     child?.kill(); server?.stop(true);
     await rm(directory, { recursive: true, force: true });
   }
 }, 240_000);
+}

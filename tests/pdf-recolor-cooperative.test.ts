@@ -379,7 +379,7 @@ describe("CPU renderer transactional publication", () => {
     const pair = canvasPair();
     const renderer = cpuRenderer();
     Object.assign(renderer, {
-      gl: { viewport: () => { throw new Error("lost GPU context"); } },
+      gl: { isContextLost: () => false, viewport: () => { throw new Error("GPU draw failed"); } },
       program: {}, texture: {}, canvas: { width: 0, height: 0 },
     });
     const warning = spyOn(console, "warn").mockImplementation(() => {});

@@ -3,6 +3,8 @@ import ctypes
 from ctypes.util import find_library
 import json
 import sys
+import os
+from pathlib import Path
 
 import gi
 
@@ -114,12 +116,41 @@ def snapshot_finished(webview, response, request):
     view.evaluate_javascript("window.__detailSnapshot(" + json.dumps(payload) + ")", -1, None, None, None, None, None)
 
 
+def process_memory():
+    """Settled runner + descendant RSS/PSS; no GC or device-memory claim."""
+    processes = {}
+    for directory in Path("/proc").glob("[0-9]*"):
+        try:
+            status = dict(line.split(":", 1) for line in (directory / "status").read_text().splitlines() if ":" in line)
+            processes[int(directory.name)] = (int(status["PPid"]), status)
+        except (OSError, ValueError, KeyError):
+            continue
+    owned = {os.getpid()}
+    while True:
+        children = {pid for pid, (parent, _) in processes.items() if parent in owned}
+        if children <= owned:
+            break
+        owned.update(children)
+    samples = []
+    for pid in sorted(owned):
+        try:
+            status = processes[pid][1]
+            rollup = dict(line.split(":", 1) for line in Path(f"/proc/{pid}/smaps_rollup").read_text().splitlines() if ":" in line)
+            samples.append({"pid": pid, "name": status["Name"].strip(),
+                            "rssKiB": int(status["VmRSS"].split()[0]), "pssKiB": int(rollup["Pss"].split()[0])})
+        except (OSError, ValueError, KeyError):
+            samples.append({"pid": pid, "unavailable": True})
+    return samples
+
+
 def receive(_manager, message):
     global result
     payload = json.loads(message.get_js_value().to_string())
     if "snapshot" in payload:
         view.get_snapshot(WebKit2.SnapshotRegion.VISIBLE, WebKit2.SnapshotOptions.NONE,
                           None, snapshot_finished, payload)
+    elif payload.get("memory"):
+        view.evaluate_javascript("window.__detailMemory(" + json.dumps(process_memory()) + ")", -1, None, None, None, None, None)
     else:
         result = payload
         Gtk.main_quit()

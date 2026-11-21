@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { StrictMode, useRef } from "react";
 import type { CSSProperties } from "react";
 import { createRoot } from "react-dom/client";
 import App from "../../src/App";
@@ -6,7 +6,7 @@ import { PdfViewerSurface } from "../../src/pdf/PdfViewerSurface";
 import type { PdfViewerHandle } from "../../src/pdf/PdfViewerSurface";
 import { createPdfLoadingTask } from "../../src/pdf/engine";
 import type { PdfDocument, PdfLoadingTask } from "../../src/pdf/engine";
-import { computeSvgColorMatrix, DEFAULT_RECOLOR_SETTINGS, parseHexColor, recolorImageDataCpu, RECOLOR_PRESETS } from "../../src/pdf/recolor";
+import { computeSvgColorMatrix, DEFAULT_RECOLOR_SETTINGS, parseHexColor, recolorImageDataCpu, RecolorShaderRenderer, RECOLOR_PRESETS } from "../../src/pdf/recolor";
 import type { CpuRecolorOptions, PdfRecolorSettings } from "../../src/pdf/recolor";
 import { READER_COMMANDS } from "../../src/reader/interactions";
 import { pdfAdvancedAppearanceCommands } from "../../src/reader/appearanceCommands";
@@ -28,9 +28,12 @@ type CpuProbe = {
   invoke: (operation: () => Promise<boolean>) => Promise<boolean>;
   yield: (options: CpuRecolorOptions, operation: () => Promise<boolean>) => Promise<boolean>;
 };
+type Lifetime = { disposed: boolean; viewer: boolean; observing: boolean; lastFrame?: number; queue: number; active: boolean; timer?: number; listeners: number };
 declare global {
   interface Window {
     __pdfDetail: Observation; __detailCpu: CpuProbe;
+    __detailLifetimes: (() => Lifetime)[];
+    __detailMemory: (sample: object) => void;
     __detailSnapshot: (payload: { id: number; pixels?: number[][]; error?: string }) => void;
     webkit: { messageHandlers: { test: { postMessage: (value: string) => void } } };
   }
@@ -42,6 +45,8 @@ const metrics: object[] = [];
 window.addEventListener("error", (event) => errors.push(event.message));
 window.addEventListener("unhandledrejection", (event) => errors.push(String(event.reason)));
 const backend = new URLSearchParams(location.search).get("backend");
+const runtime = new URLSearchParams(location.search).get("runtime");
+window.__detailLifetimes = [];
 const gates = new Set<() => void>();
 const cpu: CpuProbe = window.__detailCpu = {
   hold: false, started: 0, settled: 0, active: 0, maxActive: 0, buffers: 0, maxBuffers: 0,
@@ -81,7 +86,9 @@ const pixel = { ...svg, recolorKeephue: true, recolorReverseVideo: true };
 const alternate = { ...pixel, recolorLightcolor: "#10293F", recolorDarkcolor: "#E8C8AA", recolorAdjustLightness: true };
 type Configuration = { pdf: PdfDocument | null; pageNumber: number; scale: number; spread: boolean; continuousScrolling: boolean; recolorSettings: PdfRecolorSettings };
 let configuration: Configuration = { pdf: null, pageNumber: 1, scale: .6, spread: false, continuousScrolling: false, recolorSettings: plain };
-const emptyMatches = new Map<number, never[]>();
+const matches = new Map(Array.from({ length: 12 }, (_, index) => [index + 1, [{
+  index: 0, match: { page: index + 1, segments: [{ itemIndex: 0, start: 0, end: 6 }] },
+}]]));
 const ignore = () => {};
 let renderSignals = 0;
 const changedPage = (pageNumber: number) => { configuration = { ...configuration, pageNumber }; draw(); };
@@ -99,13 +106,13 @@ function Harness() {
       <div ref={containerRef} className="document-viewport" tabIndex={0}>
         <div ref={viewerRef} className="pdfViewer" />
         <PdfViewerSurface containerRef={containerRef} viewerRef={viewerRef} viewerHandle={viewerHandle} {...configuration}
-          matchesByPage={emptyMatches} activeMatch={-1} onPageChange={changedPage} onActiveMatchElement={ignore} onPageElements={ignore}
+          matchesByPage={matches} activeMatch={0} onPageChange={changedPage} onActiveMatchElement={ignore} onPageElements={ignore}
           onPageRendered={() => { renderSignals++; }} onRenderError={(message) => errors.push(message)} />
       </div>
     </div>
   </>;
 }
-function draw() { root.render(<Harness />); }
+function draw() { root.render(<StrictMode><Harness /></StrictMode>); }
 const settle = () => {
   const { promise, resolve } = Promise.withResolvers<void>();
   requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
@@ -242,6 +249,35 @@ function released(canvases: HTMLCanvasElement[], observation: Observation, label
   check(!observation.map.size && !observation.details.size, `${label}: independent source maps retained entries`);
   check(canvases.length > 0 && canvases.every((canvas) => !canvas.width && !canvas.height), `${label}: independent backing stores were not zeroed`);
 }
+async function resourceSample(label: string) {
+  await idle(label);
+  const lifetimes = window.__detailLifetimes.map((read) => read());
+  const sources = retained();
+  const { promise, resolve } = Promise.withResolvers<object>();
+  window.__detailMemory = resolve;
+  window.webkit.messageHandlers.test.postMessage(JSON.stringify({ memory: true }));
+  metrics.push({
+    label, main: observed().map.size, detail: observed().details.size,
+    pristinePixels: sources.reduce((sum, canvas) => sum + canvas.width * canvas.height, 0),
+    dimensions: sources.map((canvas) => [canvas.width, canvas.height]),
+    queue: observed().queue.size, active: !!observed().active(), timer: observed().timer(),
+    buffers: cpu.buffers, lifetimes, memory: await promise,
+  });
+}
+async function highlighted(label: string) {
+  await until(() => pageView()?.canvas?.closest(".page")?.querySelector(".pdfjs-search-highlight.is-active"), `${label}: current text highlight missing`);
+  const page = pageView()!.canvas!.closest(".page")!;
+  const mark = page.querySelector<HTMLElement>(".pdfjs-search-highlight.is-active")!;
+  const text = page.querySelector<HTMLElement>(".textLayer span")!;
+  const range = document.createRange();
+  range.setStart(text.firstChild!, 0); range.setEnd(text.firstChild!, 6);
+  const a = mark.getBoundingClientRect(), b = range.getBoundingClientRect();
+  metrics.push({ label, selectedText: range.toString(), highlight: a.toJSON(), text: b.toJSON() });
+  check(range.toString() === "Detail" && a.width > 0 && a.height > 0 &&
+    Math.abs(a.left - b.left) < 2 && Math.abs(a.right - b.right) < 2 &&
+    Math.abs(a.top - b.top) < 2 && Math.abs(a.bottom - b.bottom) < 2,
+  `${label}: text/search highlight geometry no longer matches rendered text: ${JSON.stringify({ mark: a, range: b })}`);
+}
 async function load(name: string) {
   const task = createPdfLoadingTask(new Uint8Array(await (await fetch(`/__fixtures/${name}`)).arrayBuffer()));
   tasks.push(task); return task.promise;
@@ -309,6 +345,11 @@ async function run() {
   await snapshotBackground(pageView()!.canvas!, [40, 40, 40], "A normal SVG Gruvbox");
   await update({ recolorSettings: pixel }); await idle("normal pixel"); pixels(pixel, "A normal pixel Gruvbox");
   cases.push("A Original/SVG/pixel normal consumer pixels");
+  const initialLifetimes = window.__detailLifetimes.map((read) => read());
+  check(initialLifetimes.filter((entry) => !entry.disposed && entry.viewer && entry.observing && entry.listeners === 5).length === 1,
+    "StrictMode left duplicate/missing viewer/listener/observer ownership");
+  if (runtime === "development") check(initialLifetimes.some((entry) => entry.disposed), "development StrictMode did not replay the surface effect");
+  await highlighted("A initial search/text"); await resourceSample("A settled initial pixel");
 
   watchInsertions = true;
   await update({ scale: 2 }); await ready(long); let detail = await detailReady("B high zoom");
@@ -330,6 +371,41 @@ async function run() {
   await snapshotBackground(detail.canvas!, [255, 255, 255], "C cropped Original");
   await update({ recolorSettings: pixel }); await idle("C pixel detail"); pixels(pixel, "C reverse video image preservation");
   cases.push("C compositor SVG versus pixel plus cropped image retention");
+
+  if (backend === "gpu") {
+    const renderer = RecolorShaderRenderer.getInstance() as unknown as {
+      gl: WebGL2RenderingContext; canvas: HTMLCanvasElement;
+    };
+    const gl = renderer.gl;
+    const extension = gl.getExtension("WEBGL_lose_context");
+    check(extension, "actual WebGL context-loss extension unavailable; recovery remains unverified");
+    let lost = 0, restored = 0;
+    const onLost = () => { lost++; };
+    const onRestored = () => { restored++; };
+    renderer.canvas.addEventListener("webglcontextlost", onLost);
+    renderer.canvas.addEventListener("webglcontextrestored", onRestored);
+    try {
+      extension.loseContext();
+      await until(() => lost === 1 && gl.isContextLost(), "actual WebGL loss event did not arrive");
+      await update({ recolorSettings: alternate }); await idle("C lost GPU fallback");
+      metrics.push({ label: "C actual context lost", lost, restored, contextLost: gl.isContextLost(), cpuStarted: cpu.started });
+      pixels(alternate, "C lost GPU fallback");
+      await snapshotBackground(detail.canvas!, [16, 41, 63], "C lost GPU fallback");
+      check(cpu.started > 0, "C lost GPU was incorrectly accepted as successful output");
+      extension.restoreContext();
+      await until(() => restored === 1 && !gl.isContextLost(), "actual WebGL restoration event did not arrive");
+      const draws = cpu.gpuDraws, fallbacks = cpu.started;
+      await update({ recolorSettings: pixel }); await idle("C restored GPU");
+      metrics.push({ label: "C actual context restored", lost, restored, contextLost: gl.isContextLost(), draws: cpu.gpuDraws - draws, fallbacks: cpu.started - fallbacks });
+      pixels(pixel, "C restored GPU");
+      await snapshotBackground(detail.canvas!, [40, 40, 40], "C restored GPU");
+      check(cpu.gpuDraws > draws && cpu.started === fallbacks, "C restored context did not resume valid GPU output");
+      cases.push("C actual WebGL loss CPU fallback and restored GPU main/detail pixels");
+    } finally {
+      renderer.canvas.removeEventListener("webglcontextlost", onLost);
+      renderer.canvas.removeEventListener("webglcontextrestored", onRestored);
+    }
+  }
 
   for (const scale of [2.2, 1.8, 2]) {
     const old = detail.canvas!, source = observed().details.get(1)!.pristine;
@@ -362,6 +438,14 @@ async function run() {
     release(); detail = await detailReady("E held zoom replacement");
     check(detail.canvas !== obsolete && (commits.get(obsolete) ?? 0) === obsoleteCommits, "E cancelled detail received a late commit");
     pixels(alternate, "E replacement latest pixels");
+    await hold(pixel);
+    const retired = detail.canvas!, retiredCommits = commits.get(retired) ?? 0;
+    await update({ pageNumber: 2 }); await ready(long, 2);
+    await update({ pageNumber: 3 }); await ready(long, 3);
+    release(); await detailReady("E rapid held navigation");
+    check((commits.get(retired) ?? 0) === retiredCommits, "E retired high-zoom page received obsolete pixels");
+    pixels(pixel, "E rapid held navigation"); await highlighted("E rapid held navigation");
+    await update({ pageNumber: 1 }); await ready(long, 1); detail = await detailReady("E rapid navigation return");
     cases.push("E native MessageChannel CPU yields, transactional supersession, zoom cancellation");
   }
 
@@ -387,6 +471,7 @@ async function run() {
   check(!observed().map.has(1) && !observed().details.has(1), "F real PDF.js cache eviction retained page 1 resources");
   check(!oldSource.width && !oldSource.height, "F evicted detail retained independent backing");
   cases.push("F page navigation, cached return and real cache eviction");
+  await highlighted("F navigation and replaced canvas"); await resourceSample("F settled 12-page navigation");
 
   // Real UI commands commit navigation, spread and scrolling separately. A
   // batched jump from page 12 plus both layout changes lets PDF.js's interim
@@ -420,6 +505,15 @@ async function run() {
   if (backend === "cpu") await hold(configuration.recolorSettings === pixel ? alternate : pixel);
   await update({ pdf: null }); release(); await idle("I close");
   check(viewer().pdfDocument === null, "I close resurrected PDF"); released(sources, observation, "I close");
+  await resourceSample("I settled close before cycles");
+  for (let cycle = 0; cycle < 10; cycle++) {
+    await update({ pdf: cycle % 2 ? long : short, pageNumber: 1, recolorSettings: cycle % 2 ? pixel : alternate });
+    await ready(configuration.pdf!); await detailReady(`I bounded reopen ${cycle}`); pixels(configuration.recolorSettings, `I cycle ${cycle}`);
+    const previous = retained(), owner = observed();
+    await update({ pdf: null }); await idle(`I bounded close ${cycle}`); released(previous, owner, `I bounded close ${cycle}`);
+    check(!owner.queue.size && !owner.active() && owner.timer() === undefined, `I cycle ${cycle} retained pending work`);
+    if (cycle === 4 || cycle === 9) await resourceSample(`I settled close after ${cycle + 1} cycles`);
+  }
   await update({ pdf: short, recolorSettings: pixel }); await ready(short); await detailReady("I reopen"); pixels(pixel, "I reopen");
   sources = retained(); observation = observed();
   root.render(null); await settle(); release();
@@ -471,6 +565,11 @@ async function run() {
   released(sources, observation, "K returned App close");
   root.unmount(); mutation.disconnect(); await settle();
   await Promise.all(tasks.map((task) => task.destroy()));
+  const finalLifetimes = window.__detailLifetimes.map((read) => read());
+  check(finalLifetimes.every((entry) => entry.disposed && !entry.observing && !entry.listeners &&
+    !entry.queue && !entry.active && entry.timer === undefined),
+  "final cleanup retained a surface listener, observer, timer or recolor request");
+  metrics.push({ label: "K final effect ownership", lifetimes: finalLifetimes });
   check(!snapshots.size && !gates.size && !cpu.active && !cpu.buffers, "K final native resources pending");
   check(errors.length === 0, errors.join("; "));
   cases.push("J App acquisition and PDF replacement", "K App PDF-to-EPUB-to-PDF replacement, close and final cleanup");

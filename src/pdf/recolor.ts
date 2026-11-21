@@ -596,50 +596,86 @@ export class RecolorShaderRenderer {
         antialias: false,
         preserveDrawingBuffer: true,
       });
-      if (this.gl) this.initGl(this.gl);
+      if (this.gl) {
+        this.canvas.addEventListener("webglcontextlost", (event) => {
+          // Opt in to restoration. Lost handles cannot be reused after it.
+          event.preventDefault();
+          this.program = null;
+          this.texture = null;
+          this.vao = null;
+        });
+        this.canvas.addEventListener("webglcontextrestored", () => this.initializeGl());
+        this.initializeGl();
+      }
     } catch (err) {
       console.warn("WebGL2 initialization failed, will fallback to CPU recoloring:", err);
       this.gl = null;
     }
   }
 
+  private initializeGl(): void {
+    if (!this.gl || this.gl.isContextLost()) return;
+    try {
+      this.initGl(this.gl);
+    } catch (err) {
+      console.warn("WebGL2 initialization failed, will fallback to CPU recoloring:", err);
+    }
+  }
+
   private initGl(gl: WebGL2RenderingContext): void {
     const vs = createShader(gl, gl.VERTEX_SHADER, VERTEX_SHADER_SOURCE);
     const fs = createShader(gl, gl.FRAGMENT_SHADER, FRAGMENT_SHADER_SOURCE);
-    if (!vs || !fs) return;
-
-    const program = gl.createProgram();
-    if (!program) return;
-    gl.attachShader(program, vs);
-    gl.attachShader(program, fs);
-    gl.linkProgram(program);
-    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-      console.error("Program link error:", gl.getProgramInfoLog(program));
-      return;
+    let program: WebGLProgram | null = null;
+    let vao: WebGLVertexArrayObject | null = null;
+    let positionBuffer: WebGLBuffer | null = null;
+    let texture: WebGLTexture | null = null;
+    let initialized = false;
+    try {
+      if (!vs || !fs) return;
+      program = gl.createProgram();
+      if (!program) return;
+      gl.attachShader(program, vs);
+      gl.attachShader(program, fs);
+      gl.linkProgram(program);
+      if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+        console.error("Program link error:", gl.getProgramInfoLog(program));
+        return;
+      }
+      vao = gl.createVertexArray();
+      positionBuffer = gl.createBuffer();
+      texture = gl.createTexture();
+      if (!vao || !positionBuffer || !texture) return;
+      gl.bindVertexArray(vao);
+      gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+      gl.bufferData(
+        gl.ARRAY_BUFFER,
+        new Float32Array([-1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, 1]),
+        gl.STATIC_DRAW,
+      );
+      const posLoc = gl.getAttribLocation(program, "a_position");
+      gl.enableVertexAttribArray(posLoc);
+      gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0);
+      gl.bindTexture(gl.TEXTURE_2D, texture);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      if (gl.isContextLost()) return;
+      this.program = program;
+      this.vao = vao;
+      this.texture = texture;
+      initialized = true;
+    } finally {
+      // Linked shaders are retained by the program; the VAO owns its buffer.
+      if (vs) gl.deleteShader(vs);
+      if (fs) gl.deleteShader(fs);
+      if (!initialized) {
+        if (positionBuffer) gl.deleteBuffer(positionBuffer);
+        if (texture) gl.deleteTexture(texture);
+        if (vao) gl.deleteVertexArray(vao);
+        if (program) gl.deleteProgram(program);
+      }
     }
-
-    this.program = program;
-    this.vao = gl.createVertexArray();
-    gl.bindVertexArray(this.vao);
-
-    const positionBuffer = gl.createBuffer();
-    gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
-    gl.bufferData(
-      gl.ARRAY_BUFFER,
-      new Float32Array([-1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, 1]),
-      gl.STATIC_DRAW,
-    );
-
-    const posLoc = gl.getAttribLocation(program, "a_position");
-    gl.enableVertexAttribArray(posLoc);
-    gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0);
-
-    this.texture = gl.createTexture();
-    gl.bindTexture(gl.TEXTURE_2D, this.texture);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
   }
 
   render(
@@ -659,7 +695,7 @@ export class RecolorShaderRenderer {
     const dark = parseHexColor(settings.recolorDarkcolor);
     const light = parseHexColor(settings.recolorLightcolor);
 
-    if (this.gl && this.program && this.texture && this.canvas) {
+    if (this.gl && !this.gl.isContextLost() && this.program && this.texture && this.canvas) {
       try {
         const gl = this.gl;
         this.canvas.width = width;
@@ -701,7 +737,7 @@ export class RecolorShaderRenderer {
         gl.drawArrays(gl.TRIANGLES, 0, 6);
 
         const targetCtx = targetCanvas.getContext("2d");
-        if (targetCtx && isCurrent()) {
+        if (targetCtx && !gl.isContextLost() && isCurrent()) {
           targetCtx.drawImage(this.canvas, 0, 0);
           return true;
         }
