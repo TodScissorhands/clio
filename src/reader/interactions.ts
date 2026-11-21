@@ -190,8 +190,8 @@ export function resolvePdfNavigationAction(
   shiftKey: boolean,
   zoomState: boolean | PdfZoomOverflow,
 ): PdfNavigationAction | null {
-  if (key === "J" || (shiftKey && key.toLowerCase() === "j")) return { kind: "navigate", direction: 1 };
-  if (key === "K" || (shiftKey && key.toLowerCase() === "k")) return { kind: "navigate", direction: -1 };
+  if (shiftKey && key.toLowerCase() === "j") return { kind: "navigate", direction: 1 };
+  if (shiftKey && key.toLowerCase() === "k") return { kind: "navigate", direction: -1 };
 
   if (key === "PageDown") return { kind: "page-pan", direction: 1 };
   if (key === "PageUp") return { kind: "page-pan", direction: -1 };
@@ -229,8 +229,8 @@ export function resolveContinuousPdfNavigationAction(
   key: string,
   shiftKey: boolean,
 ): ContinuousPdfNavigationAction | null {
-  if (key === "J" || (shiftKey && key.toLowerCase() === "j")) return { kind: "navigate", direction: 1 };
-  if (key === "K" || (shiftKey && key.toLowerCase() === "k")) return { kind: "navigate", direction: -1 };
+  if (shiftKey && key.toLowerCase() === "j") return { kind: "navigate", direction: 1 };
+  if (shiftKey && key.toLowerCase() === "k") return { kind: "navigate", direction: -1 };
   if (key.startsWith("Arrow") || key === "PageUp" || key === "PageDown") return { kind: "native" };
   const direction: PdfPanDirection | null =
     key.toLowerCase() === "h" ? "left" :
@@ -266,7 +266,8 @@ export function resolvePdfControlCommand(
 
 type RepeatNavigationAction =
   | { kind: "command"; command: ReaderCommandId }
-  | { kind: "pdf-key"; key: string; shiftKey: boolean };
+  | { kind: "pdf-key"; key: string; shiftKey: boolean }
+  | { kind: "pdf-action"; action: PdfNavigationAction };
 
 export function performPdfNavigation(action: PdfNavigationAction, actions: ReaderKeyboardActions): void {
   switch (action.kind) {
@@ -367,6 +368,7 @@ export function useReaderKeyboard(state: ReaderKeyboardState, actions: ReaderKey
           return;
         }
         if (pending.action.kind === "command") current.actions.runCommand(pending.action.command);
+        else if (pending.action.kind === "pdf-action") performPdfNavigation(pending.action.action, current.actions);
         else performPdfKey(pending.action.key, pending.action.shiftKey, current.actions);
       });
     };
@@ -462,7 +464,7 @@ export function useReaderKeyboard(state: ReaderKeyboardState, actions: ReaderKey
         const key = event.key.toLowerCase();
         if (key === "n") {
           event.preventDefault();
-          runCommand(event.shiftKey || event.key === "N" ? "previous_chapter" : "next_chapter");
+          runCommand(event.shiftKey ? "previous_chapter" : "next_chapter");
           return;
         }
         const layoutMode = current.state.epubLayoutMode ?? "paged";
@@ -511,12 +513,13 @@ export function useReaderKeyboard(state: ReaderKeyboardState, actions: ReaderKey
       const controlCommand = resolvePdfControlCommand(event);
       const controlNavigation = controlCommand === "next_page" || controlCommand === "previous_page" ||
         controlCommand === "goto_beginning" || controlCommand === "goto_end";
-      const pdfKey = controlCommand === "next_page" ? "J" :
-        controlCommand === "previous_page" ? "K" :
-        controlCommand === "goto_beginning" ? "Home" :
-        controlCommand === "goto_end" ? "End" : event.key;
+      const controlAction: PdfNavigationAction | null =
+        controlCommand === "next_page" ? { kind: "navigate", direction: 1 } :
+        controlCommand === "previous_page" ? { kind: "navigate", direction: -1 } :
+        controlCommand === "goto_beginning" ? { kind: "document-edge", edge: "top" } :
+        controlCommand === "goto_end" ? { kind: "document-edge", edge: "bottom" } : null;
       if (current.state.continuousScrolling && (unmodified || controlNavigation)) {
-        const action = resolveContinuousPdfNavigationAction(pdfKey, event.shiftKey);
+        const action = controlAction ?? resolveContinuousPdfNavigationAction(event.key, event.shiftKey);
         if (action?.kind === "native") return;
         if (action?.kind === "scroll") {
           event.preventDefault();
@@ -541,15 +544,13 @@ export function useReaderKeyboard(state: ReaderKeyboardState, actions: ReaderKey
       }
 
       const zoomState = current.actions.getPdfZoomOverflow?.() ?? (current.actions.isPdfZoomedIn?.() ?? false);
-      const pdfNavigationAction = resolvePdfNavigationAction(pdfKey, event.shiftKey, zoomState);
+      const pdfNavigationAction = controlAction ?? resolvePdfNavigationAction(event.key, event.shiftKey, zoomState);
       if ((unmodified || controlNavigation) && pdfNavigationAction) {
         event.preventDefault();
         const code = event.code || event.key;
-        const repeatAction: RepeatNavigationAction = {
-          kind: "pdf-key",
-          key: pdfKey,
-          shiftKey: event.shiftKey,
-        };
+        const repeatAction: RepeatNavigationAction = controlAction
+          ? { kind: "pdf-action", action: controlAction }
+          : { kind: "pdf-key", key: event.key, shiftKey: event.shiftKey };
         const heldAction = heldNavigationKeysRef.current.get(code);
         if (event.repeat && !heldAction) return;
         if (heldAction) {
@@ -597,7 +598,7 @@ export function useReaderKeyboard(state: ReaderKeyboardState, actions: ReaderKey
         runCommand("fit_to_spread");
       } else if (unmodified && key === "n") {
         event.preventDefault();
-        runCommand(event.shiftKey || event.key === "N" ? "previous_item" : "next_item");
+        runCommand(event.shiftKey ? "previous_item" : "next_item");
       } else if (unmodified && (event.key === ":" || (event.code === "Semicolon" && event.shiftKey))) {
         event.preventDefault();
         setCommandQuery("");

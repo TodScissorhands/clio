@@ -47,6 +47,8 @@ Align Ctrl/Cmd+O/W and chrome `i`; retain format-specific navigation meanings. E
 
 Use Open/Close document, Search document, Next/Previous search match, Document theme and Application appearance consistently. Show platform-correct Ctrl/Cmd hints for shared commands. Do not unify `n`: PDF search matches and EPUB chapters retain their accepted meanings. Use Paged/Continuous for presentation, page for a PDF page or paginated EPUB location, screen for continuous EPUB viewport movement, and Text size (not Zoom) for EPUB typography. PDF view grouping and fit scale are distinct controls, not duplicates; retain both with their current state.
 
+Letter case identifies a shortcut, not modifier intent: reverse chapter/search navigation requires `shiftKey` (`Shift+N`), as does PDF page navigation via Shift+J/K. Caps Lock alone retains unshifted n/j/k behavior; intentional Shift shortcuts still work with Caps Lock enabled. Ctrl+PageDown/PageUp remain unconditional PDF page commands.
+
 ## EPUB reading preferences
 
 Replace the long all-options list with six small choosers, ordered Text size, Font, Line spacing, Alignment, Margins, Reading column, followed by Reset typography and layout to Publisher. Each entry summarizes its effective value; its choices include the existing Publisher/preset values only. Text size retains Smaller/Larger, its current percentage or Publisher, and existing limits. Back from a field returns to Reading preferences; Back there returns to commands. Root queries still reach qualified leaf choices directly.
@@ -61,7 +63,7 @@ Show loading, validation and search feedback only when relevant. Footer editors 
 
 ## PDF search
 
-Keep the existing index, explicit Enter-to-search, wrapped next/previous navigation and temporary highlight layer. Enter/Shift+Enter move forward/backward after results are ready; `n`/`N` continue from the reader. Escape dismisses input without discarding the query/results. Editing the query clears stale results; submitting an empty query clears search. Document close/replacement clears its search state.
+Keep the existing index, explicit Enter-to-search, wrapped next/previous navigation and temporary highlight layer. Enter/Shift+Enter move forward/backward after results are ready; `n`/`Shift+N` continue from the reader. Escape dismisses input without discarding the query/results. Editing the query clears stale results; submitting an empty query clears search. Document close/replacement clears its search state.
 
 Normalize PDF source and queries with NFKC, soft-hyphen omission, collapsed/trimmed whitespace and whole-string default-locale lowercase. Preserve original text-layer UTF-16 ranges, including combining sequences split across adjacent items and compatibility expansions; inserted geometry/EOL spaces have no highlight. Search follows PDF.js extraction order, including RTL, not a reconstructed visual reading order. This is normalization equivalence, not full Unicode case folding or accent-insensitive search.
 

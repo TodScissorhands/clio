@@ -265,7 +265,7 @@ async function run() {
       errorRatios.push({ dark, width, ...errorPresentation() });
       check(document.querySelector(".pdfViewer .textLayer")!.textContent!.includes("Feedback PDF"), "color error removed the retained document");
       await dismissError(); await key("Escape");
-      const previousPage = page(); await key("J");
+      const previousPage = page(); await key("J", { shiftKey: true, code: "KeyJ" });
       await until(() => page() === previousPage + 1, "reader was not operational after error dismissal");
       // Exercise the accepted 09B1 modal contract after feedback transitions.
       await key(":", { shiftKey: true, code: "Semicolon" });

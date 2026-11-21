@@ -258,10 +258,16 @@ describe("PDF keyboard navigation", () => {
     }
   });
 
-  test("uppercase J and K always navigate; Home and End navigate document edges regardless of zoom", () => {
+  test("Shift, not character case, selects J/K navigation regardless of zoom", () => {
     for (const zoomedIn of [false, true]) {
-      expect(resolvePdfNavigationAction("J", true, zoomedIn)).toEqual({ kind: "navigate", direction: 1 });
-      expect(resolvePdfNavigationAction("K", true, zoomedIn)).toEqual({ kind: "navigate", direction: -1 });
+      for (const [key, direction, pan] of [["j", 1, "down"], ["k", -1, "up"]] as const) {
+        for (const character of [key, key.toUpperCase()]) {
+          expect(resolvePdfNavigationAction(character, true, zoomedIn)).toEqual({ kind: "navigate", direction });
+          expect(resolvePdfNavigationAction(character, false, zoomedIn)).toEqual({ kind: "pan", direction: pan });
+          expect(resolveContinuousPdfNavigationAction(character, true)).toEqual({ kind: "navigate", direction });
+          expect(resolveContinuousPdfNavigationAction(character, false)).toEqual({ kind: "scroll", direction: pan });
+        }
+      }
       expect(resolvePdfNavigationAction("Home", false, zoomedIn)).toEqual({ kind: "document-edge", edge: "top" });
       expect(resolvePdfNavigationAction("End", false, zoomedIn)).toEqual({ kind: "document-edge", edge: "bottom" });
     }

@@ -252,3 +252,32 @@ All 15 recorded task-owned process IDs were absent at cleanup; the authoritative
 At original cleanup, `gzip -t` was reported to pass before the disposable source/runtime workspace and isolated XDG directories were removed. Recorded archive SHA-256: `91c8c1c4eb36ce8ac31c2902b6a1931b0d6b6c0db7f2910ccae92ff8f52db103`. Neither that integrity check nor the hash could be repeated with the archive unavailable.
 
 At the original Task 10B handoff, only `README.md` and this report were task-owned repository changes; protected-file hashes were reported unchanged, the index empty and `git diff --check` passing. No commit or push had been made at that historical point.
+
+## S4C — explicit Shift versus Caps Lock
+
+Baseline: `master` at `44ef1b1601b2b6625c2a61ab0209bc58add11db2`, initially clean. Deterministic baseline regressions failed before production edits: `key:"N", shiftKey:false` selected previous EPUB chapter/PDF search match, and uppercase J/K selected PDF page navigation instead of ordinary pan/scroll. Character case was incorrectly being used as evidence of Shift.
+
+`interactions.ts` now uses `shiftKey` for these directions in the existing router. Explicit Control navigation actions replace the synthetic uppercase J/K signal formerly used for Ctrl+PageDown/PageUp; document edges and legacy `Unidentified`/code fallback remain supported. Repeat ownership, editable/overlay exclusions, composition suppression and punctuation rules remain in place. Two existing actual-reader fixtures now send intentional Shift+J rather than an unshifted uppercase J when testing a page turn.
+
+### Evidence and native boundary
+
+Evidence directory: `/home/tod/.cache/clio-s4c/evidence/`. `baseline.log` and `baseline-routes.log` preserve failing source/resolver and production-hook WebKitGTK results. `focused-final-control.log` passes 46 tests; `migrated-fixtures.log` passes all three actual-reader feedback/status cases. Production-hook regressions exercise both formats/layouts, four Caps/Shift-shaped inputs, PDF pan/scroll versus navigation, Control navigation/fallback, repeat coalescing/release, input/textarea/search/palette exclusions and composition/229 suppression. These dispatched events prove routing, not native IME or Caps Lock delivery.
+
+Fresh final-source debug/no-bundle Tauri executable SHA-256: `134a8741b08753d3f450c91411dc9bc3496a0fb1510dc3c507c193840af5e6da`. Native runs use GTK 3.24.52, WebKitGTK 2.54.2, isolated Cage/headless-pixman/Xwayland `:2`, 1280×720, X11 backend, scale/DPI scale 1 and separate XDG directories. Native inputs use XTEST through xdotool, with actual Caps Lock toggles; no DOM keyboard dispatch or production instrumentation supplies native evidence. `native-source-final.log`, `native-final.json`, `native-analysis.json` and `final-*.png` retain requested input, XKB modifiers at delivery, accessible text/geometry, screenshots and actual durable position records. Native DOM `event.key` values were not instrumented; XKB states, not inferred DOM traces, are recorded.
+
+| Caps Lock | Shift | XKB modifiers | PDF search, both layouts | Paged EPUB from Chapter 2 |
+| --- | --- | --- | --- | --- |
+| Off | Off | 0 | Match/page 1 → 2 | Chapter 3 |
+| Off | On | 1 | Match/page 2 → 1 | Chapter 1 |
+| On | Off | 2 | Match/page 1 → 2 | Chapter 3 |
+| On | On | 3 | Match/page 2 → 1 | Chapter 1 |
+
+All 36 native modifier transitions pass their direction/pan checks. In both PDF layouts, unshifted j/k retain page 2 and change its saved offset down/up with Caps either way; intentional Shift+j/k reach pages 3/1. Ctrl+PageDown/PageUp also reach pages 3/1 with Caps enabled. EPUB tests include ordinary publication-text clicks before shortcuts. Initial Caps Lock off/Shift released state was restored in `finally`.
+
+Continuous EPUB modifier intent passes, but **chapter destination placement remains defective independently of Caps Lock**: forward navigation paints Chapter 2 passages 31–39 above Chapter 3's opening, and footer/durable first-visible CFI correctly remain in Chapter 2 (`/6/6!…`). Both Caps settings produce the same placement; Shift reaches Chapter 1 (`/6/2!…`). Paged forward navigation paints Chapter 3 (`/6/8!…`). No renderer/status/persistence change is made for this separate observation.
+
+The preliminary `native-matrix.*` run used an invalid xdotool `/` keysym and unfiltered offscreen palette clicks; its PDF search/layout results are not acceptance evidence. The calibrated pre-Control-fallback run is retained under `pre-control-fallback/`; final acceptance uses the freshly rebuilt executable and `native-source-final.log`/`native-final.json`.
+
+Verification history is retained rather than hidden: `full-bun.log` had 1,272 passes/two failures from the old unshifted-uppercase-J fixtures, subsequently migrated and focused-tested. `full-bun-final.log` had 1,258 passes/16 failures because native-display cleanup removed `:2` while the shared shell still selected it; later GTK suites could not initialize. That run is not acceptance. After restoring the session environment, the complete `DISPLAY=:1` gate passed **1,274 tests, zero failures/skips** (`full-bun-display1.log`). TypeScript, frontend build, all 24 Rust tests and whitespace checks passed independently. The known intermittent EPUB reflow assertion did not fail in the accepted run and was not changed.
+
+Physical-human input, native Wayland, other platforms/layouts, actual IME composition and assistive-technology acceptance remain unverified. Native repeat/focus-exclusion combinations were not exhaustively exercised; deterministic production-hook coverage establishes those unchanged routing contracts. This scoped correction does not accept broader historical EPUB input or chapter-placement defects.

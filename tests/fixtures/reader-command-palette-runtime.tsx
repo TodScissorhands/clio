@@ -33,10 +33,14 @@ let updateReader: (kind: ReaderKind) => void;
 let replaceQuery: (query: string) => void;
 let replaceIndex: (index: number) => void;
 let updateAppearance: (dark: boolean) => void;
+let updateContinuous: (continuous: boolean) => void;
+let updateOverlay: (overlay: ReaderOverlay) => void;
+const routed: string[] = [];
 
 function TestReader() {
   const [kind, setKind] = useState<ReaderKind>("pdf");
   const [dark, setDark] = useState(false);
+  const [continuous, setContinuous] = useState(false);
   const [overlay, setOverlay] = useState<ReaderOverlay>(null);
   const [mode, setMode] = useState<"commands" | "chapters" | "themes" | "preferences">("commands");
   const [query, setQuery] = useState("");
@@ -46,6 +50,8 @@ function TestReader() {
   replaceQuery = setQuery;
   replaceIndex = setIndex;
   updateAppearance = setDark;
+  updateContinuous = setContinuous;
+  updateOverlay = setOverlay;
   const commandSet = mode === "chapters" ? chapters : mode === "themes" ? themes
     : mode === "preferences" ? preferenceChoices
       : kind === "epub" ? searchableReaderCommands(EPUB_READER_COMMANDS, [themes, preferenceChoices], query) : undefined;
@@ -70,15 +76,23 @@ function TestReader() {
   useReaderKeyboard({
     readerKind: kind, overlay, commands, commandIndex: index,
     searchReady: false, matchCount: 0, jumpInput: "", pageCount: 120,
+    epubLayoutMode: continuous ? "continuous" : "paged", continuousScrolling: continuous,
   }, {
     closeOverlay, executePaletteCommand: execute,
-    moveMatch: () => {}, runSearch: () => {}, goToPage: () => {}, runCommand: () => {},
+    moveMatch: () => {}, runSearch: () => {}, goToPage: () => {},
+    runCommand: (command) => { routed.push(command); },
+    getPdfZoomOverflow: () => ({ horizontal: true, vertical: true }),
+    panPdf: (direction) => { routed.push(`pan:${direction}`); return true; },
+    scrollPdfContinuous: (direction) => { routed.push(`scroll:${direction}`); },
+    navigatePageWithBoundary: (direction) => { routed.push(direction > 0 ? "next_page" : "previous_page"); },
     setCommandQuery: setQuery, setCommandIndex: setIndex, setOverlay,
   });
   return <main className="clio-app" data-night-mode={String(dark)}>
     <input id="background-file" className="visually-hidden" type="file" aria-label="Open fixture" />
     <button id="background-button">Background action</button>
     <div id="reading-area" tabIndex={-1}>Reading area</div>
+    <input id="ordinary-input" aria-label="Ordinary input" />
+    <textarea id="ordinary-textarea" aria-label="Ordinary textarea" />
     <output id="destination">{destination}</output>
     {overlay === "commands" && <ReaderCommandPalette
       commands={commands} commandIndex={index} query={query}
@@ -176,12 +190,96 @@ async function resize(width: number, height: number) {
   await settle();
 }
 
+async function checkModifierRouting() {
+  const results: object[] = [];
+  const failures: string[] = [];
+  const reading = () => document.getElementById("reading-area")!.focus();
+  const dispatch = (type: string, init: KeyboardEventInit) => {
+    document.activeElement!.dispatchEvent(new KeyboardEvent(type, { bubbles: true, cancelable: true, ...init }));
+  };
+  const expectRoute = async (init: KeyboardEventInit, expected: string[]) => {
+    routed.length = 0;
+    dispatch("keydown", init);
+    dispatch("keyup", init);
+    await settle();
+    if (JSON.stringify(routed) !== JSON.stringify(expected)) {
+      failures.push(`modifier route ${JSON.stringify(init)}: expected ${expected}, received ${routed}`);
+    }
+  };
+  for (const kind of ["epub", "pdf"] as const) {
+    updateReader(kind);
+    for (const continuous of [false, true]) {
+      updateContinuous(continuous);
+      await settle();
+      reading();
+      for (const caps of [false, true]) {
+        for (const shiftKey of [false, true]) {
+          const key = caps !== shiftKey ? "N" : "n";
+          const command = kind === "epub"
+            ? shiftKey ? "previous_chapter" : "next_chapter"
+            : shiftKey ? "previous_item" : "next_item";
+          await expectRoute({ key, code: "KeyN", shiftKey }, [command]);
+          results.push({ kind, continuous, caps, shiftKey, key, command });
+          if (kind === "pdf") {
+            for (const [letter, direction, command] of [["j", "down", "next_page"], ["k", "up", "previous_page"]]) {
+              await expectRoute({ key: caps !== shiftKey ? letter!.toUpperCase() : letter!, code: `Key${letter!.toUpperCase()}`, shiftKey },
+                [shiftKey ? command! : `${continuous ? "scroll" : "pan"}:${direction}`]);
+            }
+          }
+        }
+      }
+      if (kind === "pdf") {
+        for (const [key, command] of [["PageDown", "next_page"], ["PageUp", "previous_page"], ["Home", "goto_beginning"], ["End", "goto_end"]]) {
+          await expectRoute({ key, code: key, ctrlKey: true }, [command!]);
+          await expectRoute({ key: "Unidentified", code: key, ctrlKey: true }, [command!]);
+        }
+      }
+      await expectRoute({ key: "N", code: "KeyN", isComposing: true }, []);
+      await expectRoute({ key: "N", code: "KeyN", keyCode: 229 }, []);
+      for (const id of ["ordinary-input", "ordinary-textarea"]) {
+        document.getElementById(id)!.focus();
+        for (const key of ["N", "J", "K"]) await expectRoute({ key }, []);
+      }
+      for (const overlay of ["search", "commands"] as const) {
+        updateOverlay(overlay);
+        await settle();
+        for (const key of ["N", "J", "K"]) await expectRoute({ key }, []);
+        updateOverlay(null);
+        await settle();
+      }
+      reading();
+      // Queue repeated intentional navigation, then release before the frame.
+      if (kind === "epub" && continuous) continue;
+      const repeatInputs: KeyboardEventInit[] = [{ key: "j", code: "KeyJ", shiftKey: true }];
+      if (kind === "pdf") repeatInputs.push({ key: "PageDown", code: "PageDown", ctrlKey: true });
+      for (const init of repeatInputs) {
+        routed.length = 0;
+        dispatch("keydown", init);
+        for (let n = 0; n < 5; n++) dispatch("keydown", { ...init, repeat: true });
+        await settle();
+        check(routed.length === 2 && routed.every((command) => command === "next_page"),
+          `repeat must coalesce and retain navigation intent: ${routed}`);
+        dispatch("keydown", { ...init, repeat: true });
+        dispatch("keyup", init);
+        await settle();
+        check(routed.length === 2, "keyup did not cancel queued navigation");
+        dispatch("keydown", { ...init, repeat: true });
+        await settle();
+        check(routed.length === 2, "released repeat restarted navigation");
+      }
+    }
+  }
+  check(failures.length === 0, failures.join("\n"));
+  return results;
+}
+
 async function run() {
   for (let attempt = 0; !document.getElementById("reading-area"); attempt++) {
     check(attempt < 120, "React reader fixture did not mount");
     await settle();
   }
   document.getElementById("reading-area")!.focus();
+  const modifierResults = await checkModifierRouting();
   const results: object[] = [];
   for (const [width, height] of [[1000, 700], [420, 600], [1440, 800]]) {
     await resize(width!, height!);
@@ -365,7 +463,7 @@ async function run() {
       check(document.activeElement?.id === "reading-area", "repeated close left stale focus");
     }
   }
-  bridge({ passed: true, results });
+  bridge({ passed: true, results, modifierResults });
 }
 void run().catch((error: unknown) => bridge({
   passed: false, error: String(error), stack: error instanceof Error ? error.stack : undefined,

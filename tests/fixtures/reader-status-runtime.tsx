@@ -823,7 +823,7 @@ async function run() {
   await invalid("invalid.pdf", "status.pdf — Clio", "pdf");
   await invalid("invalid.epub", "status.pdf — Clio", "pdf");
   coverage.push("failed-replacements-both-formats");
-  focusReader(); await key("J");
+  focusReader(); await key("J", { shiftKey: true, code: "KeyJ" });
   await until(() => document.querySelector(".status-page")?.textContent?.includes("Page 2 / 3"), "PDF physical-page navigation regressed");
   await command("theme_sepia");
   check(document.activeElement === document.querySelector(".command-filter"), "PDF theme selection lost filter focus");

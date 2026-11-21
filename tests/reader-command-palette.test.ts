@@ -57,6 +57,8 @@ test.skipIf(!probe || probe.exitCode !== 0)("shared palette focus, setting descr
     if (exitCode !== 0) throw new Error(`WebKit palette regression failed:\n${stdout}\n${stderr}`);
     const result = JSON.parse(stdout);
     expect(result.passed).toBe(true);
+    expect(result.modifierResults).toHaveLength(16);
+    console.info("WebKit modifier routing results:", JSON.stringify(result.modifierResults));
     expect(result.results.map((entry: { width: number; dark: boolean }) => [entry.width, entry.dark])).toEqual([
       [1000, false], [1000, true], [420, false], [420, true], [1440, false], [1440, true],
     ]);
