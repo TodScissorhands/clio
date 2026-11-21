@@ -70,3 +70,130 @@ Proposed commit scope: `fix(pdf): flush and order reading-position saves`. No co
 | Isolated native Tauri debug/no-bundle build | PASS |
 
 The focused EPUB failure was not hidden or changed; both status modes passed in the subsequent required full gate. That inconsistency remains an observed test/reflow risk, not a diagnosed or corrected S3B defect. Required native suites and real-book fixtures were available and executed. Task-owned native processes and temporary control instrumentation were removed.
+
+## S4D: updater purity and appearance persistence
+
+Audited from clean `master` at `eb2dee2647f0bb245c8799434a3bb7928f66c75f`.
+The production correction is confined to `src/reader/PdfReader.tsx`; PDF
+geometry, acquisition, restoration, rendering and retirement algorithms are
+unchanged.
+
+### Inventory and classification
+
+| Calculation or boundary | Observation | Disposition |
+| --- | --- | --- |
+| Theme selection; recolor, hue, reverse-video and lightness toggles; custom hex submission | Six functional-updater sites called `saveRecolorSettings`, which synchronously writes localStorage. Development replay and batched intermediate calculations therefore performed external writes. | Confirmed impurity; move persistence to changed, committed appearance state. |
+| Viewport resize | The previously cited impure `setViewerSize` callback is absent at this baseline. Capture already runs in ResizeObserver/RAF before asynchronous spread geometry and `setViewerSize(nextSize)`. The initial-size updater only compares and returns sizes. | No resize correction. Preserve pre-layout capture and existing generation/cleanup checks. |
+| Page-element version, continuous-mode toggle, zoom-basis updater and search-result concatenation | Calculate new values without DOM access, storage, IPC, scheduling or resource acquisition. | Pure; unchanged. |
+| Lazy recolor initialization | Reads and validates unknown localStorage data; two reads in development StrictMode, one in production. Unavailable storage retains the existing fallback behavior. | Read-only initialization; do not turn mount/replay into a preference write. |
+| Reader/surface/position/keyboard latest-value refs | Render publishes current callbacks, values or path snapshots. Resource ownership is separately held by loading-task/geometry owners and effect-scoped renderer work. | No supported-flow failure reproduced. Speculative render values escaping through mutable refs remain a theoretical concurrent-render risk, not evidence for moving every assignment. |
+| `matchesByPageRef` inside `useMemo` | Replaces a private structural-sharing cache; constructs local maps/arrays and performs no external operation. | No demonstrated defect; unchanged. |
+| Recolor math and shader instance | SVG matrix/theme calculations are local math. Canvas/WebGL acquisition through `RecolorShaderRenderer.getInstance()` occurs in effect-owned recolor jobs, not React rendering/updater calculation. | Preserve existing cooperative cancellation and pristine/detail ownership. |
+| Position, search, keyboard and title hooks | Storage/IPC, DOM changes, timers, listeners and async work run in event, committed-effect or explicitly owned lifecycle boundaries. Position cleanup still cancels work without flushing detached DOM or clearing pending restoration during replay. | Existing ownership and S3B/S4A contracts retained. |
+
+### Reproduction and smallest correction
+
+The new actual-App/PDF.js WebKitGTK fixture intercepts real Storage methods and
+observes committed settings in a layout effect. Disposable Vite transforms count
+updater evaluations, anchor operations, viewer creation/disposal and event-bus
+listeners; no production diagnostic API is added. React's runtime and JSX
+development mode are explicitly paired so the production control really uses
+production React.
+
+| Nine-command appearance batch | Development StrictMode | Production |
+| --- | ---: | ---: |
+| Updater evaluations, before and after | 18 | 9 |
+| Actual storage writes before | 18 | 9 |
+| Actual storage writes after | 1 | 1 |
+
+Before correction, all 36 development / 18 production writes across the complete
+probe occurred during updater calculation and disagreed with the previously
+committed appearance. Final preferences were nevertheless correct: no durable
+final-state corruption, stale retired-reader write, duplicate live viewer or
+resize-anchor failure was reproduced. Do not describe those risks as confirmed
+user-visible failures.
+
+The six updaters now only return settings. One effect saves changed, committed
+settings, with a ref initialized to the loaded state to suppress mount/replay
+writes and deduplicate an already handled state. It adds no timer, async task or
+second persistence store. Batched commands save only the final committed value;
+uncommitted updates have no effect to persist. The complete probe now performs
+10 writes in each runtime, all outside calculation and equal to committed
+settings. Mount/remount, invalid input, discarded-batch retirement and geometry
+changes produce no appearance writes.
+
+### Geometry and lifecycle observations
+
+Before/after resize evidence is identical in both runtimes: four native GTK
+resizes retain page 2's heading; nine captures occur outside updater evaluation;
+ten anchor applications differ from their captured page-top target by at most
+`0.800003` CSS pixels. Measured viewport widths are 800 initially, then 900,
+1200, 760 and 1000. The stored restored record remains `{page: 2, offset: 0.35}`
+through the resize sequence. The probe records actual dimensions; a one-pixel
+outer-window rounding difference is not an anchor-loss oracle.
+
+Development effect setup/cleanup totals are 6/6 versus production's 3/3.
+Both create and dispose exactly three actual PDF.js viewers over the probe,
+retain only one live viewer/five event-bus listeners while reading, and finish
+with zero listeners. Coverage includes rapid themes/toggles, both custom colors
+and invalid input, continuous resizing, spread/single, fit-width/fit-page/manual
+zoom, PDF replacement, PDF-to-EPUB replacement, queued-resize close and remount.
+Existing progressive-opening, position, pristine, detail-rendering, search,
+S4C and EPUB-C1.1 suites remain required and unmodified.
+
+Focused verification: `bun test tests/pdf-state-purity-runtime.test.ts
+tests/reader-appearance.test.ts` executes 86 passing tests.
+
+### Fresh native candidate and limits
+
+The fresh debug/no-bundle Tauri candidate has SHA-256
+`3680113ba76c4be37b1a01996a6ec976da8ace64f77f32d55f7f2372c8bbb6ee`.
+An isolated scale-1 Sway/pixman/Xwayland display runs actual WebKitGTK 2.54.2.
+X11/XTEST drives commands, text entry, selection/copy, scrolling and navigation;
+the native file picker's Open action uses AT-SPI.
+
+Twenty observations cover rapid theme changes, invalid/valid hex colors, all
+advanced toggles, recolor off/on, copy and content-focused palette entry,
+760/900/1000/1200px resizing, spread/single, Shift navigation, a Caps_Lock-toggle
+and pan sequence, saved-page reopening, PDF A-to-B, late page 995, PDF-to-EPUB,
+late-page reopening and rapid resize/close. Actual SQLite localStorage retains
+Custom `#AABBCC` / `#123456`, enabled, with all three advanced flags true.
+Screenshots show the expected background RGB `(170,187,204)` and readable ink.
+
+The actual canonical JSON retains page 995 offset `0.25` through fit/mode/resize
+reflow, then saves `0.024984384759525295` after intentional scrolling and retains
+that value through replacement/reopening. At the retained fractional position
+the fixture's bottom-of-page text can lie below the viewport: its laid-out
+range is not proof of painted text. The reopened page-995 screenshot does paint
+the addressed page's text. No physical scroll-clamping correction is claimed.
+
+Native probe recovery did not change the reader: invalid-hex text is painted
+but its AT-SPI notification has no exposed text; the EPUB fixture says
+“Chapter One”, and that painted footer is not exposed through AT-SPI. Original
+probe failures are retained. Ctrl+W after focusing the EPUB child window did not
+close it; the trusted footer-palette command did. The existing EPUB keyboard
+delivery limitation remains, and no new per-key native modifier diagnostic or
+publication security exception was introduced.
+
+Evidence: `/home/tod/.cache/clio-s4d/20261121-105247/` contains original partial
+probes, complete before/after JSON, focused output, fresh-candidate build/hash,
+native screenshots/AX geometry, SQLite pixel observations and canonical JSON.
+The task-owned native application, session buses and compositor are stopped.
+
+### Complete verification
+
+With both pinned real books available and `DISPLAY=:1` verified before and after:
+
+| Gate | Result |
+| --- | --- |
+| Complete Bun suite | 1,276 passed, 0 failed, 0 skipped; 8,597 expectations across 27 files, 619.01 seconds |
+| `bunx tsc --noEmit` | Passed |
+| `bun run build` | Passed; existing large-chunk warning remains |
+| `cargo test --manifest-path src-tauri/Cargo.toml` | 24 passed, 0 failed, 0 ignored |
+
+The earlier EPUB preference/reflow assertion remains enabled; no unrelated EPUB
+assertion was changed or suppressed. The initial whitespace gate caught an
+extra EOF blank in this newly appended audit; this documentation update removes
+it. Original gate output remains under `gates/`; the final whitespace check is
+recorded separately. No commit or dependency change was made, and `report.txt`
+was neither created nor modified.

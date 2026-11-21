@@ -1,0 +1,7 @@
+<!doctype html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Clio</title></head><body><div id="root"></div>
+<script>
+window.addEventListener("error", event => window.webkit.messageHandlers.test.postMessage(JSON.stringify({ passed: false, error: event.message, stack: event.error?.stack })));
+window.addEventListener("unhandledrejection", event => window.webkit.messageHandlers.test.postMessage(JSON.stringify({ passed: false, error: String(event.reason) })));
+</script>
+<script type="module" src="./pdf-state-purity-runtime.tsx"></script></body></html>

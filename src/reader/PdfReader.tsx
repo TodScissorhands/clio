@@ -112,6 +112,13 @@ export function PdfReader({
   const [commandIndex, setCommandIndex] = useState(0);
   const [paletteMode, setPaletteMode] = useState<"commands" | "themes" | "advanced-appearance">("commands");
   const [recolorSettings, setRecolorSettings] = useState<PdfRecolorSettings>(() => loadRecolorSettings());
+  const committedRecolorSettingsRef = useRef(recolorSettings);
+  useEffect(() => {
+    // Mount and StrictMode replay must not persist defaults or loaded settings.
+    if (committedRecolorSettingsRef.current === recolorSettings) return;
+    saveRecolorSettings(recolorSettings);
+    committedRecolorSettingsRef.current = recolorSettings;
+  }, [recolorSettings]);
   const [customColorTarget, setCustomColorTarget] = useState<"light" | "dark" | null>(null);
   const [colorInput, setColorInput] = useState("");
   const colorInputRef = useRef<HTMLInputElement>(null);
@@ -1033,11 +1040,7 @@ export function PdfReader({
   const runReaderCommand = useCallback((command: ReaderCommandId) => {
     const theme = commandTheme(command);
     if (theme) {
-      setRecolorSettings((current) => {
-        const next = applyPdfTheme(current, theme);
-        saveRecolorSettings(next);
-        return next;
-      });
+      setRecolorSettings((current) => applyPdfTheme(current, theme));
       return;
     }
     switch (command) {
@@ -1113,32 +1116,16 @@ export function PdfReader({
         })();
         break;
       case "toggle_recolor":
-        setRecolorSettings((current) => {
-          const next = { ...current, recolor: !current.recolor };
-          saveRecolorSettings(next);
-          return next;
-        });
+        setRecolorSettings((current) => ({ ...current, recolor: !current.recolor }));
         break;
       case "recolor_toggle_keephue":
-        setRecolorSettings((current) => {
-          const next = { ...current, recolorKeephue: !current.recolorKeephue };
-          saveRecolorSettings(next);
-          return next;
-        });
+        setRecolorSettings((current) => ({ ...current, recolorKeephue: !current.recolorKeephue }));
         break;
       case "recolor_toggle_reverse_video":
-        setRecolorSettings((current) => {
-          const next = { ...current, recolorReverseVideo: !current.recolorReverseVideo };
-          saveRecolorSettings(next);
-          return next;
-        });
+        setRecolorSettings((current) => ({ ...current, recolorReverseVideo: !current.recolorReverseVideo }));
         break;
       case "recolor_toggle_adjust_lightness":
-        setRecolorSettings((current) => {
-          const next = { ...current, recolorAdjustLightness: !current.recolorAdjustLightness };
-          saveRecolorSettings(next);
-          return next;
-        });
+        setRecolorSettings((current) => ({ ...current, recolorAdjustLightness: !current.recolorAdjustLightness }));
         break;
       case "recolor_set_lightcolor":
         setCustomColorTarget("light");
@@ -1331,16 +1318,12 @@ export function PdfReader({
                     event.preventDefault();
                     if (isValidHexColor(colorInput)) {
                       const normalized = normalizeHexColor(colorInput);
-                      setRecolorSettings((current) => {
-                        const next = {
-                          ...current,
-                          recolor: true,
-                          activePreset: "custom" as const,
-                          [customColorTarget === "light" ? "recolorLightcolor" : "recolorDarkcolor"]: normalized,
-                        };
-                        saveRecolorSettings(next);
-                        return next;
-                      });
+                      setRecolorSettings((current) => ({
+                        ...current,
+                        recolor: true,
+                        activePreset: "custom" as const,
+                        [customColorTarget === "light" ? "recolorLightcolor" : "recolorDarkcolor"]: normalized,
+                      }));
                       closeOverlay();
                     } else {
                       setError("Invalid hex color. Enter 3 or 6 hex characters (e.g. #14161B).");
