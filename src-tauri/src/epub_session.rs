@@ -137,6 +137,9 @@ pub fn commit_epub_session(app: AppHandle, window: WebviewWindow, sessions: Stat
     }
     let reader = app.get_webview_window(&format!("epub-{session_id}")).ok_or("Missing reader window")?;
     reader.show().map_err(|e| e.to_string())?;
+    // `focused(false)` defers both window activation and WebView widget focus.
+    // Activating the native window alone leaves GTK without a keyboard target.
+    reader.as_ref().set_focus().map_err(|e| e.to_string())?;
     reader.set_focus().map_err(|e| e.to_string())
 }
 

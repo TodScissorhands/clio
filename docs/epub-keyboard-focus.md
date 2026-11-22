@@ -9,6 +9,12 @@ Reviewed against `origin/master` at `ebbb079` on 2026-11-08. Task 09C1 and Task 
 - **09C-A3:** [Issue #5](https://github.com/TodScissorhands/clio/issues/5) records destination URLs reaching Tauri's URL-only callback, but Wry 0.57.1 handles `NavigationAction` before a later `with_webview()` policy handler. WebKit's general asynchronous-policy API and Task 10B's observed signal therefore do not establish a usable Clio interception path, live source attribution or generation-safe routing. A3 shipped no production change.
 - **Current decision:** in-content EPUB hyperlinks are deferred under Issue #5, not a 09D blocker. Ordinary reading keyboard/focus reliability remains unresolved; 09C is not fully accepted. The [roadmap](ROADMAP.md#09c-acceptance-and-deferred-hyperlinks) owns priorities and the unchanged wheel policy. This report does not start another prototype, renderer migration or 09E implementation.
 
+### Foliate window startup
+
+The Foliate reader is prepared with native window and WebView focus deferred. Session commit must focus the WebView widget as well as activate its window: Tauri's `WebviewWindow::set_focus()` activates only the window, whereas `Webview::set_focus()` establishes the native keyboard target. Commit performs both through the supported APIs, without a timer, navigation input or publication-document focus override.
+
+This corrects the separate startup activation boundary, not the historical content-focused keyboard or hyperlink limitations below. First-input acceptance must observe the actual router and palette, not infer document focus from native window activation. Keep physical-input results and automated repetitions distinct.
+
 ### Historical evidence availability
 
 The recorded `/tmp/clio-09C1-evidence.tar.gz` and `/tmp/clio-10b-native-evidence.tar.gz` archives, `/tmp/clio-h03a-9zkfbh9n/H03A-audit.md` and `/tmp/clio-h03b1-p9oz0a25/H03B1-report.md` are absent at their documented paths. A scoped search of Clio project/worktree and temporary evidence names found no Task 10B replacement archive. The historical contents, hashes and native measurements below have not been revalidated from raw artifacts in this reconciliation. They are not available downloads or currently reproducible archive-based checks; replay instructions require recovering and verifying the original archive first.
