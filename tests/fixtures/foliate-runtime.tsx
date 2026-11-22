@@ -29,6 +29,101 @@ async function until(predicate: () => unknown, label: string) {
   failureObservation = readingObservation();
   throw Error(`Timed out: ${label}`);
 }
+const realBooks = ["gutenberg-11.epub", "gutenberg-1342.epub",
+  ...(new URLSearchParams(location.search).has("moby") ? ["standardebooks-moby-dick.epub"] : [])];
+
+async function footerProgress(view: View) {
+  for (let i = 0; i < 1500; i++) {
+    const cfi = view.lastLocation?.cfi;
+    const result = cfi ? await view.getCFIProgress(cfi) : null;
+    await frame();
+    if (result && cfi === view.lastLocation?.cfi &&
+      document.querySelector(".epub-status__progress")?.textContent?.trim() === `${Math.round(result.fraction * 100)}% ·`) {
+      check(document.querySelector(".epub-status__chapter")?.textContent?.trim(), "Progress lost chapter label");
+      return result.fraction;
+    }
+  }
+  throw Error("Footer did not settle at the current CFI progress");
+}
+
+async function publicationProgress(view: View, name: string) {
+  const linear = view.book.sections.flatMap((section, index) => section.linear === "no" ? [] : [index]);
+  const edge = async (index: number, end: boolean) => {
+    const doc = await view.book.sections[index].createDocument();
+    const range = doc.createRange();
+    const walker = doc.createTreeWalker(doc.body ?? doc.documentElement, NodeFilter.SHOW_TEXT);
+    let node = walker.nextNode();
+    check(node, `${name}: endpoint section has no text`);
+    if (end) for (let next = walker.nextNode(); next; next = walker.nextNode()) {
+      if (next.nodeValue?.trim()) node = next;
+    }
+    range.selectNodeContents(node);
+    if (end) range.setStart(node, Math.max(0, node.nodeValue!.trimEnd().length - 1));
+    range.collapse(true);
+    return view.getCFI(index, range);
+  };
+  const start = await edge(linear[0], false);
+  const end = await edge(linear.at(-1)!, true);
+  check((await view.getCFIProgress(start))!.fraction < .001, `${name}: beginning is not zero`);
+  check((await view.getCFIProgress(end))!.fraction > .999, `${name}: final linear CFI is not complete`);
+  await view.goTo(start);
+  const beginning = await footerProgress(view);
+  check(beginning < .01, `${name}: beginning footer not near zero`);
+  const middle = linear[Math.floor(linear.length / 2)];
+  await view.goTo(middle);
+  const chapter = await footerProgress(view);
+  check(chapter > beginning, `${name}: chapter navigation did not advance whole-book progress`);
+  const cfi = view.lastLocation!.cfi;
+  const baseline = (await view.getCFIProgress(cfi))!.fraction;
+  const layouts = [];
+  for (const mode of ["continuous", "paged"] as const) {
+    applyFoliatePreferences(view, { ...DEFAULT_EPUB_PREFERENCES, fontScale: 140, fontFamily: "sans", lineHeight: 1.85 }, mode);
+    for (let i = 0; i < 8; i++) await frame();
+    const fraction = await footerProgress(view);
+    check(Math.abs(fraction - baseline) <= .01, `${name}/${mode}: geometry-only progress jump ${baseline} -> ${fraction}`);
+    check(Math.abs((await view.getCFIProgress(cfi))!.fraction - baseline) < .000001, `${name}/${mode}: same-CFI progress changed`);
+    layouts.push({ mode, fraction });
+  }
+  const viewports = [];
+  for (const [width, height] of [[420, 600], [1440, 800], [1000, 700]]) {
+    bridge({ resize: [width, height], scale: devicePixelRatio });
+    await until(() => innerWidth === width && innerHeight === height, `${name}: viewport resize`);
+    for (let i = 0; i < 8; i++) await frame();
+    const fraction = await footerProgress(view);
+    check(Math.abs(fraction - baseline) <= .01, `${name}: resize-only progress jump ${baseline} -> ${fraction}`);
+    const footer = document.querySelector<HTMLElement>(".epub-status")!;
+    const progress = footer.querySelector<HTMLElement>(".epub-status__progress")!;
+    check(footer.getBoundingClientRect().height === 24 && footer.scrollWidth <= footer.clientWidth + 1 &&
+      progress.getBoundingClientRect().width > 0, `${name}: responsive footer lost progress or overflowed`);
+    viewports.push({ width, height, fraction });
+  }
+  await view.goTo(end);
+  const ending = await footerProgress(view);
+  check(ending > .97, `${name}: final viewport not near book end: ${ending}`);
+  // Delay an actual start-CFI calculation while a newer navigation completes.
+  const original = view.getCFIProgress.bind(view);
+  const gate = Promise.withResolvers<void>();
+  let delayed = false;
+  view.getCFIProgress = async target => {
+    const result = await original(target);
+    if (!delayed) { delayed = true; await gate.promise; }
+    return result;
+  };
+  try {
+    await view.goTo(start);
+    await until(() => delayed, `${name}: pending progress calculation`);
+    await view.goTo(end);
+    await footerProgress(view);
+    gate.resolve();
+    for (let i = 0; i < 8; i++) await frame();
+    check(Math.abs(await footerProgress(view) - ending) < .01, `${name}: stale start calculation overwrote end`);
+  } finally { gate.resolve(); view.getCFIProgress = original; }
+  await view.goTo(cfi);
+  const restored = await footerProgress(view);
+  check(Math.abs(restored - baseline) <= .01, `${name}: CFI restoration changed progress`);
+  cases.push(`${name}: linear endpoints, chapters, paged/continuous, typography, three viewports, stale result and CFI restoration`);
+  return { cfi: view.lastLocation!.cfi, fraction: restored, beginning, chapter, ending, layouts, viewports };
+}
 function currentView() { return document.querySelector<View>('.foliate-publication[aria-busy="false"] > foliate-view'); }
 function locationDocument(view = currentView()) {
   if (!view?.lastLocation?.cfi) return;
@@ -129,7 +224,7 @@ async function positionCompatibility() {
   const visible = paintedPassage;
   const compatibility = [];
   try {
-    for (const name of ["gutenberg-11.epub", "gutenberg-1342.epub"]) {
+    for (const name of realBooks) {
       const buffer = await (await fetch(`/__fixtures/${name}`)).arrayBuffer();
       const legacy = ePub(buffer);
       await legacy.ready;
@@ -169,7 +264,16 @@ async function positionCompatibility() {
       const current = await show(buffer, name);
       await until(() => visible(current, tagged.cfi), `Tagged Foliate passage restoration in ${name}: ${tagged.cfi}`);
       preserved(tagged); await close(); preserved(tagged);
-      compatibility.push({ name, sectionIndex, legacyCompatible: compatible, passageResolved: true, taggedRestored: true, modes: ["paged", "continuous", "paged"] });
+      const progressView = await show(buffer, name);
+      const progress = await publicationProgress(progressView, name);
+      await close();
+      records.set(path, { cfi: progress.cfi, cfiModel: "foliate-html-v1" }); writes.length = 0;
+      const reopenedProgress = await footerProgress(await show(buffer, name));
+      check(Math.abs(reopenedProgress - progress.fraction) <= .01, `${name}: reopened reading progress changed`);
+      await close();
+      cases.push(`${name}: persisted CFI reopened at ${Math.round(reopenedProgress * 100)}%`);
+      compatibility.push({ name, sectionIndex, legacyCompatible: compatible, passageResolved: true, taggedRestored: true,
+        modes: ["paged", "continuous", "paged"], progress, reopenedProgress });
       legacy.destroy();
     }
     const buffer = await (await fetch("/__fixtures/acquisition-a.epub")).arrayBuffer();
@@ -320,7 +424,7 @@ async function run() {
   cases.push("six-field preferences, font/size/spacing/theme, retained filter focus, reset preserves theme, Escape host focus");
   const compatibility = [];
   const sources = new URLSearchParams(location.search).has("real")
-    ? ["gutenberg-11.epub", "gutenberg-1342.epub"] : ["acquisition-a.epub", "acquisition-b.epub"];
+    ? realBooks : ["acquisition-a.epub", "acquisition-b.epub"];
   for (const name of sources) {
     const buffer = await (await fetch(`/__fixtures/${name}`)).arrayBuffer();
     const legacy = ePub(buffer);

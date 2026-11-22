@@ -156,7 +156,6 @@ async function applied(size: string) {
 async function resize(width: number, height: number) {
   bridge({ resize: [width, height], scale: devicePixelRatio });
   await until(() => innerWidth === width && innerHeight === height, "resize dimensions did not settle");
-  await until(() => document.querySelector('.epub-status__detail') || !document.querySelector('.epub-status')?.textContent?.includes("Page"), "reflow did not settle");
 }
 
 async function run() {
@@ -191,7 +190,7 @@ async function run() {
   await dismiss();
   coverage.push("six-field-immediate-application-back-and-reset");
   for (const continuous of [false, true]) {
-    if (continuous) { await command("continuous_layout"); await until(() => !document.querySelector('.epub-status__detail'), "continuous layout did not settle"); }
+    if (continuous) { await command("continuous_layout"); await until(() => view.renderer.getAttribute("flow") === "scrolled", "continuous layout did not settle"); }
     await ready();
     const original = metrics();
     const documentBefore = first().doc;

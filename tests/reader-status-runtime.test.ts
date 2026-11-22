@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import type { Server, Subprocess } from "bun";
 import react from "@vitejs/plugin-react";
 import { build } from "vite";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -94,7 +94,12 @@ test.skipIf(!probe || probe.exitCode !== 0).each(["complete", "epub-only"] as co
     const [stdout, stderr, exitCode] = await Promise.all([
       new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited,
     ]);
-    if (exitCode !== 0) throw new Error(`WebKit reader status regression failed:\n${stdout}\n${stderr}`);
+    if (exitCode !== 0) {
+      const evidence = await mkdtemp(join(tmpdir(), "clio-reader-status-failure-"));
+      await writeFile(join(evidence, "result.json"), stdout);
+      await writeFile(join(evidence, "stderr.log"), stderr);
+      throw new Error(`WebKit reader status regression failed; complete evidence: ${evidence}\n${stdout}\n${stderr}`);
+    }
     const result = JSON.parse(stdout);
     expect(result.passed).toBe(true);
     expect(result.cases.map((entry: { width: number; height: number; dark: boolean }) => [entry.width, entry.height, entry.dark])).toEqual([

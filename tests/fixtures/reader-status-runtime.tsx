@@ -66,7 +66,7 @@ window.__readerStatusView = (value) => {
   if (view !== value) {
     openingSnapshots.push({
       label: document.querySelector(".epub-status__chapter")?.textContent ?? "",
-      detail: document.querySelector(".epub-status__detail")?.textContent ?? "",
+      detail: document.querySelector(".epub-status__progress")?.textContent ?? "",
     });
   }
   view = value; book = value.book; serial += 1;
@@ -85,7 +85,7 @@ window.__readerStatusGate = async (kind, resource) => {
 };
 const bar = () => document.querySelector<HTMLElement>(".epub-status");
 const label = () => bar()?.querySelector<HTMLElement>(".epub-status__chapter")?.textContent ?? "";
-const detail = () => bar()?.querySelector<HTMLElement>(".epub-status__detail")?.textContent ?? "";
+const detail = () => bar()?.querySelector<HTMLElement>(".epub-status__progress")?.textContent ?? "";
 const location = (): Snapshot | undefined => view?.lastLocation ? {
   start: { cfi: view.lastLocation.cfi, index: view.resolveCFI(view.lastLocation.cfi).index, href: "",
     displayed: { page: (view.renderer.page ?? NaN) + 1, total: view.renderer.pages ?? NaN } },
@@ -157,14 +157,27 @@ async function direct(name: string, displayName = name, path: string | null = nu
   await app.open({ kind: name.endsWith("pdf") ? "pdf" : "epub", bytes: new Uint8Array(await bytes(name)), name: displayName, path });
 }
 async function readyEpub(paged = true) {
+  let progressView = view;
+  let progressCfi = progressView?.lastLocation?.cfi;
+  let progress = progressCfi ? await progressView.getCFIProgress(progressCfi) : null;
   await until(() => {
     if (!bar() || !location()?.start || !contents().length || serial < minimumSerial || document.title !== `${requestedName} — Clio`) return false;
     const current = location()!;
     if (!contents().some((content) => content.index === current.start.index)) return false;
     if (label() !== expectedLabel(current)) return false;
-    const { page, total } = current.start.displayed;
-    return paged ? detail().includes(`Page ${page} / ${total} in section`) : !detail();
-  }, "EPUB status did not reach fresh layout");
+    if (view !== progressView || current.start.cfi !== progressCfi) {
+      const candidateView = progressView = view;
+      const candidateCfi = progressCfi = current.start.cfi;
+      progress = null;
+      void candidateView.getCFIProgress(candidateCfi).then(result => {
+        if (progressView === candidateView && progressCfi === candidateCfi) progress = result;
+      });
+    }
+    // One readiness snapshot: a separate percentage wait adds another native
+    // event-loop checkpoint between navigation and the next layout command.
+    return progress && Number.isFinite(progress.fraction) &&
+      detail().trim() === `${Math.round(progress.fraction * 100)}% ·`;
+  }, "EPUB location and current-CFI percentage did not reach fresh layout");
   assertStatus(paged);
 }
 async function readyPdf(name = "status.pdf") {
@@ -177,7 +190,7 @@ async function close() {
 function expectedLabel(snapshot: Snapshot) {
   const index = snapshot.start.index;
   if (requestedName === "destinations.epub") return `Chapter ${String(index + 1).padStart(2, "0")}`;
-  if (requestedName === "reversal.epub") return ["Chapter 1", "Nonlinear notes", "Chapter 2", "Chapter 3"][index]!;
+  if (requestedName === "reversal.epub") return ["Chapter 1", "Section 2", "Chapter 2", "Chapter 3"][index]!;
   if (!book.toc?.length) return `Section ${index + 1}`;
   // Fixture-specific oracle: real destinations and live heading positions,
   // independent of Foliate's TOCProgress and Clio's status adapter.
@@ -200,11 +213,8 @@ function assertStatus(paged: boolean, noToc = false) {
   const current = location()!; check(current?.start, "real first-visible location missing");
   const expected = noToc ? `Section ${current.start.index + 1}` : expectedLabel(current);
   check(label() === expected, `wrong first-visible label: expected ${expected}, received ${label()}`);
-  if (paged) {
-    const { page, total } = current.start.displayed;
-    check(Number.isInteger(page) && page >= 1 && total >= page, "real Foliate renderer returned unusable paged fields");
-    check(detail().includes(`Page ${page} / ${total} in section`), `status counts differ from current layout: ${detail()} versus ${page}/${total}`);
-  } else check(!detail() && !bar()!.textContent!.includes("%"), "continuous layout invented a page or percentage");
+  check(/\d+%/.test(detail()), "publication percentage missing");
+  check(view.renderer.getAttribute("flow") === (paged ? "paginated" : "scrolled"), "requested reading mode did not apply");
 }
 async function display(target: string, paged = true) {
   const destination = view.resolveNavigation(target);
@@ -284,14 +294,12 @@ function geometry() {
   check(footer.scrollWidth <= footer.clientWidth + 1 && document.documentElement.scrollWidth <= innerWidth, "status causes horizontal overflow");
   check(footer.getAttribute("aria-label") === "EPUB reading status" && footer.getAttribute("aria-live") === "off" && footer.getAttribute("role") !== "status", "status must have a non-live accessible name");
   const primary = footer.querySelector<HTMLElement>(".epub-status__chapter")!;
-  const secondary = footer.querySelector<HTMLElement>(".epub-status__detail")!;
+  const secondary = footer.querySelector<HTMLElement>(".epub-status__progress")!;
   check(primary.title === label() && primary.closest('[aria-hidden="true"]'), "visible label lacks its full title or duplicates accessibility text");
-  check(secondary.closest('[aria-hidden="true"]'), "visible pagination must not duplicate accessible description");
+  check(secondary.closest('[aria-hidden="true"]'), "visible progress must not duplicate accessible description");
   const hidden = footer.querySelector<HTMLElement>(".visually-hidden")!;
-  check(hidden?.textContent?.includes(label()), "full accessible chapter description missing");
-  const current = location()!.start.displayed;
-  check(hidden.textContent!.includes(`First visible page ${current.page} of ${current.total} in this section`), "accessible local pagination missing");
-  check((getComputedStyle(secondary).display === "none") === (innerWidth <= 600), "narrow secondary-count policy regressed");
+  check(hidden?.textContent?.includes(label()) && hidden.textContent.includes("% of book"), "accessible chapter and whole-book progress missing");
+  check(getComputedStyle(secondary).display !== "none" && secondary.getBoundingClientRect().width > 0, "narrow footer lost primary progress");
   for (const element of [primary, secondary]) {
     if (getComputedStyle(element).display === "none") continue;
     const rect = element.getBoundingClientRect();
@@ -475,6 +483,18 @@ async function destinationProbe() {
 async function chapterReversalProbe() {
   const path = "/reversal.epub";
   await direct("reversal.epub", "reversal.epub", path); await readyEpub();
+  await view.goTo(1); await readyEpub();
+  check(book.sections[1].linear === "no", "nonlinear fixture no longer has notes");
+  const notes = contents().find(content => content.index === 1)!.doc;
+  const range = notes.createRange();
+  range.selectNodeContents(notes.body); range.collapse(true);
+  const notesStart = view.getCFI(1, range);
+  range.selectNodeContents(notes.body); range.collapse(false);
+  const notesEnd = view.getCFI(1, range);
+  const beforeNotes = (await view.getCFIProgress(notesStart))!.fraction;
+  const afterNotes = (await view.getCFIProgress(notesEnd))!.fraction;
+  check(beforeNotes === afterNotes, "nonlinear notes advanced publication progress");
+  check(detail().trim() === `${Math.round(beforeNotes * 100)}% ·`, "nonlinear footer did not report its linear boundary");
   for (const paged of [true, false]) {
     if (!paged) { await command("Continuous layout"); await readyEpub(false); }
     // Retain the original 420×676 reader repro alongside the design geometries.
@@ -1025,9 +1045,9 @@ async function run() {
 
   await display("EPUB/section-2.xhtml");
   await open("no-toc.epub");
-  await until(() => document.title === "no-toc.epub — Clio" && /^Section \d+$/.test(label()) && /Page/.test(detail()), "empty TOC did not render Section fallback");
+  await until(() => document.title === "no-toc.epub — Clio" && /^Section \d+$/.test(label()) && /%/.test(detail()), "empty TOC did not render Section fallback");
   for (const target of ["EPUB/section-0.xhtml", "EPUB/section-2.xhtml", "EPUB/section-4.xhtml"]) {
-    await display(target); await until(() => label() === `Section ${location()!.start.index + 1}` && /Page/.test(detail()), "empty TOC navigation did not update section"); assertStatus(true, true);
+    await display(target); await until(() => label() === `Section ${location()!.start.index + 1}` && /%/.test(detail()), "empty TOC navigation did not update section"); assertStatus(true, true);
   }
   coverage.push("empty-toc-and-section-fallback");
 

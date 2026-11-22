@@ -13,6 +13,8 @@ test.each(["complete", "positions"] as const)("Foliate %s real EPUB acquisition,
   if (realDirectory) for (const name of realBooks) {
     if (!await Bun.file(join(realDirectory, name)).exists()) throw Error(`Missing real EPUB fixture: ${name}`);
   }
+  const moby = !!realDirectory && await Bun.file(join(realDirectory, "standardebooks-moby-dick.epub")).exists();
+  if (moby) realBooks.push("standardebooks-moby-dick.epub");
   const directory = await mkdtemp(join(tmpdir(), "clio-foliate-runtime-"));
   const built = await build({
     configFile: false, root: join(import.meta.dir, ".."), plugins: [{
@@ -51,7 +53,11 @@ test.each(["complete", "positions"] as const)("Foliate %s real EPUB acquisition,
   } });
   const generated = Bun.spawnSync(["python3", join(import.meta.dir, "fixtures/create-foliate-security-document.py"), directory], { env: { ...process.env, CLIO_SECURITY_ORIGIN: server.url.origin } });
   if (generated.exitCode) { server.stop(true); throw Error(new TextDecoder().decode(generated.stderr)); }
-  const child = Bun.spawn(["python3", join(import.meta.dir, "fixtures/run-palette-webkit.py"), server.url.href + (mode === "positions" ? "?positions=1&real=1" : realDirectory ? "?real=1" : "")], { env: { ...process.env, GDK_BACKEND: "x11" }, stdout: "pipe", stderr: "pipe" });
+  const query = new URLSearchParams();
+  if (mode === "positions") query.set("positions", "1");
+  if (realDirectory) query.set("real", "1");
+  if (moby) query.set("moby", "1");
+  const child = Bun.spawn(["python3", join(import.meta.dir, "fixtures/run-palette-webkit.py"), `${server.url.href}?${query}`], { env: { ...process.env, GDK_BACKEND: "x11" }, stdout: "pipe", stderr: "pipe" });
   try {
     const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
     if (code) throw Error(stdout + stderr);

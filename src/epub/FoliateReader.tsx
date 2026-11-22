@@ -32,7 +32,7 @@ export function FoliateReader({ sessionId, canonicalPath, prepared, onClose, onO
   const [location, setLocation] = useState("");
   const [nativeNightMode, setNativeNightMode] = useState(() => window.matchMedia("(prefers-color-scheme: dark)").matches);
   const effectiveNightMode = nightMode ?? nativeNightMode;
-  const [sectionPages, setSectionPages] = useState<{ page: number; total: number } | null>(null);
+  const [progress, setProgress] = useState<number | null>(null);
   const [preferences, setPreferences] = useState(loadEpubPreferences);
   const [mode, setMode] = useState<"paged" | "continuous">("paged");
   const [overlay, setOverlay] = useState<ReaderOverlay>(null);
@@ -238,6 +238,8 @@ export function FoliateReader({ sessionId, canonicalPath, prepared, onClose, onO
   useEffect(() => {
     let retired = false;
     let restoring = true;
+    let progressRequest = 0;
+    setProgress(null);
     permitSave.current = false;
     scrollStart.current = null;
     let owned: FoliateSession | undefined;
@@ -310,10 +312,13 @@ export function FoliateReader({ sessionId, canonicalPath, prepared, onClose, onO
         const live = view.renderer.getContents();
         for (const { doc } of live) registerDocument(doc);
         setLocation(statusLabel(current.cfi));
-        const page = view.renderer.page ?? NaN;
-        const total = view.renderer.pages ?? NaN;
-        setSectionPages(view.renderer.getAttribute("flow") !== "scrolled" && Number.isInteger(page) && Number.isInteger(total) && page >= 0 && page < total
-          ? { page: page + 1, total } : null);
+        const request = ++progressRequest;
+        const currentView = view;
+        void currentView.getCFIProgress(current.cfi).catch(() => null).then(result => {
+          if (retired || request !== progressRequest || viewRef.current !== currentView) return;
+          const fraction = result?.fraction;
+          setProgress(typeof fraction === "number" && Number.isFinite(fraction) && fraction >= 0 && fraction <= 1 ? fraction : null);
+        });
         const reason = (event as CustomEvent<{ reason: string | null }> | undefined)?.detail.reason;
         const navigated = event && !restoring && (reason === "navigation" || reason === "page" || reason === "snap"
           || reason === "scroll" || reason === null || (scrollStart.current && current.cfi !== scrollStart.current));
@@ -427,9 +432,9 @@ export function FoliateReader({ sessionId, canonicalPath, prepared, onClose, onO
         <button className="status-commands" type="button" aria-label="Next search match" onClick={() => moveMatch(1)}>Next</button>
         <button className="status-commands" type="button" onClick={closeOverlay}>Close search</button>
       </form> : <span className="status-document">
-        <span className="visually-hidden">{location || "EPUB"}{mode === "paged" && sectionPages ? `. First visible page ${sectionPages.page} of ${sectionPages.total} in this section.` : ""}</span>
-        <span className="epub-status__chapter" aria-hidden="true" title={location}>{location || "EPUB"}</span>
-        {mode === "paged" && sectionPages && <span className="epub-status__detail" aria-hidden="true"> · Page {sectionPages.page} / {sectionPages.total} in section</span>}</span>}
+        <span className="visually-hidden">{progress !== null ? `${Math.round(progress * 100)}% of book. ` : ""}{location || "EPUB"}</span>
+        {progress !== null && <span className="epub-status__progress" aria-hidden="true">{Math.round(progress * 100)}% · </span>}
+        <span className="epub-status__chapter" aria-hidden="true" title={location}>{location || "EPUB"}</span></span>}
       {(overlay === "search" || matches.length > 0) && <span className="search-status" role="status" aria-live="polite" title={snippet}>{activeMatch + 1}/{matches.length}{searching ? " — searching" : ""}</span>}
       {message && <span className="status-feedback" role="status">{message}</span>}
       {overlay === null && <button className="status-commands" aria-label="Open reader commands (:)" onClick={() => openMenu("root")}>Commands :</button>}

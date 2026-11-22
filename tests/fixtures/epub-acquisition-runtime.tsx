@@ -265,6 +265,10 @@ async function foliateLifecycle(a: Uint8Array, b: Uint8Array, invalid: Uint8Arra
     const resourceResult = await bounded(lateResource, "retired archive resource completion");
     check(resourceResult.status === "fulfilled" && !resourceResult.value, "retired book published a late archive resource");
     searchHold.release.resolve(); await checkpoint();
+    const progress = await replacement.getCFIProgress(replacement.lastLocation!.cfi);
+    check(progress, "replacement has no CFI progress");
+    await until(() => document.querySelector(".epub-status__progress")?.textContent?.trim() ===
+      `${Math.round(progress.fraction * 100)}% ·`, "replacement progress did not settle before retirement snapshot");
     const status = document.querySelector(".epub-status")?.textContent;
     searching.dispatchEvent(new CustomEvent("link", { detail: { href: "EPUB/chapter-3.xhtml" } }));
     const retiredKey = new KeyboardEvent("keydown", { key: ":", code: "Semicolon", shiftKey: true, bubbles: true, cancelable: true });

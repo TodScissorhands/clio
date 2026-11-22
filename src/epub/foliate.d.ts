@@ -28,6 +28,7 @@ declare module "foliate-js/view.js" {
     goTo(target: string | number): Promise<{ index: number; anchor?: (doc: Document) => Range | Element } | undefined>;
     getCFI(index: number, range?: Range): string;
     resolveCFI(cfi: string): { index: number; anchor: (doc: Document) => Range };
+    getCFIProgress(cfi: string): Promise<{ fraction: number } | null>;
     next(distance?: number): Promise<void>;
     prev(distance?: number): Promise<void>;
     search(options: { query: string }): SearchIterator;
