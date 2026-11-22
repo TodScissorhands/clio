@@ -672,6 +672,84 @@ async function chapterReversalProbe() {
   }
   await command("Paged layout"); await readyEpub(); await close();
 }
+async function keyboardMotionProbe() {
+  const viewport = view.renderer.shadowRoot!.querySelector<HTMLElement>("#container")!;
+  const matchMedia = window.matchMedia;
+  let reduced = false;
+  window.matchMedia = query => query === "(prefers-reduced-motion: reduce)"
+    ? { matches: reduced } as MediaQueryList : matchMedia.call(window, query);
+  const moves: object[] = [];
+  try {
+    for (const [value, distance, reduce] of [
+      ["ArrowDown", 40, false], ["PageDown", viewport.clientHeight, false],
+      ["ArrowDown", 40, true], ["PageDown", viewport.clientHeight, true],
+    ] as const) {
+      reduced = reduce;
+      focusReader();
+      const focused = document.activeElement;
+      const before = viewport.scrollTop;
+      const anchor = viewport.firstElementChild!;
+      const top = anchor.getBoundingClientRect().top;
+      const positions: number[] = [];
+      const renderer = view.renderer;
+      // Also prove that reduced motion temporarily suppresses an existing opt-in.
+      if (reduce) renderer.setAttribute("animated", "saved");
+      const previousAttribute = renderer.getAttribute("animated");
+      const next = view.next;
+      let calls = 0, animated = false, finished = false;
+      let completion: Promise<void> | undefined;
+      view.next = amount => {
+        calls++;
+        animated = renderer.hasAttribute("animated");
+        completion = next.call(view, amount).finally(() => { finished = true; });
+        return completion;
+      };
+      const target = focused!;
+      try {
+        target.dispatchEvent(new KeyboardEvent("keydown",
+          { key: value, code: value, bubbles: true, cancelable: true }));
+        for (let frame = 0; frame < 5; frame++) {
+          await settle();
+          positions.push(top - anchor.getBoundingClientRect().top);
+          if (!reduce && !finished) target.dispatchEvent(new KeyboardEvent("keydown",
+            { key: value, code: value, bubbles: true, cancelable: true, repeat: true }));
+        }
+        target.dispatchEvent(new KeyboardEvent("keyup", { key: value, code: value, bubbles: true }));
+        await completion;
+        await settle();
+        const delta = viewport.scrollTop - before;
+        check(calls === 1, `keyboard repeat queued extra movements: ${calls}`);
+        check(Math.abs(delta - distance) <= 2, `${value} travelled ${delta}, expected ${distance}`);
+        check(animated === !reduce, "keyboard motion ignored reduced-motion preference");
+        if (!reduce) check(positions.some(position => position > 1 && position < delta - 1),
+          `smooth movement had no painted intermediate frame: ${positions}`);
+        else check(positions.every(position => Math.abs(position - delta) <= 2), "reduced motion still animated");
+        check(renderer.getAttribute("animated") === previousAttribute, "keyboard motion leaked its animation opt-in");
+        check(document.activeElement === focused, "keyboard movement stole focus");
+        const quiet = Promise.withResolvers<void>();
+        setTimeout(quiet.resolve, 400);
+        await quiet.promise;
+        check(Math.abs(viewport.scrollTop - before - distance) <= 2, "released keyboard movement kept travelling");
+        moves.push({ value, reduced: reduce, delta, positions, calls });
+      } finally {
+        view.next = next;
+        renderer.removeAttribute("animated");
+      }
+    }
+    const saved = location()!.start.cfi;
+    await until(() => window.__readerStatusPositions!.get("/status-scroll-fixture.epub")?.cfi === saved,
+      "smooth keyboard destination was not persisted");
+    await close();
+    await direct("status.epub", "status.epub", "/status-scroll-fixture.epub"); await readyEpub();
+    await until(() => cfiVisible(saved), "reopen lost the smooth keyboard destination");
+    await command("Continuous layout"); await readyEpub(false);
+    check(document.activeElement?.getAttribute("aria-label") === "EPUB reading area", "layout restore lost reader focus");
+    scrolling.keyboard = moves;
+  } finally {
+    window.matchMedia = matchMedia;
+  }
+}
+
 async function run() {
   await until(() => app && document.querySelector(".document-viewport"), "real App did not mount");
   check(document.title === "Clio", "closed App title is not Clio");
@@ -755,6 +833,8 @@ async function run() {
 
   await direct("status.epub", "status.epub", "/status-scroll-fixture.epub"); await readyEpub();
   await display("EPUB/section-0.xhtml"); await command("Continuous layout"); await readyEpub(false);
+  await keyboardMotionProbe();
+  await display("EPUB/section-0.xhtml", false);
   const renderer = view.renderer;
   const container = renderer.shadowRoot?.querySelector<HTMLElement>("#container");
   check(container, "Foliate's open shadow root has no native scroll container");
@@ -770,6 +850,7 @@ async function run() {
     renderer.getAttribute("flow") === "scrolled" && style.overflowY === "auto",
     "fixture is not horizontal-writing continuous scroll");
   check(viewport.scrollHeight > viewport.clientHeight, "native viewport has no scrollable content");
+  check(style.getPropertyValue("scrollbar-width") === "thin", "Foliate's actual scroll owner did not receive thin scrollbar styling");
   const firstVisibleIndex = () => view.resolveCFI(view.lastLocation!.cfi).index;
   const reportedSection = () => (view.lastLocation as { section?: { current: number } } | null)?.section?.current ?? null;
   let scrollEvents = 0;
@@ -881,6 +962,16 @@ async function run() {
     Object.assign(scrolling.backward as object, { target, topQuarter: visiblePassage(0, .25),
       centre: visiblePassage(.45, .55), auditedReference: { before: 4997, after: 4402, delta: -595 } });
     sample("backward-status");
+    // Cross the same real spine boundary with the keyboard, not raw scrollBy.
+    focusReader();
+    await key("PageDown");
+    await until(() => firstVisibleIndex() === 1 && visiblePassage()?.index === 1,
+      "smooth keyboard movement did not settle across the section boundary");
+    await readyEpub(false);
+    await key("PageUp");
+    await until(() => firstVisibleIndex() === 0 && visiblePassage()?.index === 0,
+      "smooth keyboard reverse did not restore the previous section");
+    await readyEpub(false);
     backwardAnchor = location()!.start.cfi;
     await until(() => window.__readerStatusPositions!.get("/status-scroll-fixture.epub")?.cfi === backwardAnchor,
       "backward continuous first-visible CFI was not persisted");

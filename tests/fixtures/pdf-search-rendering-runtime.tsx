@@ -126,20 +126,40 @@ async function pixels(element: HTMLElement) {
   host.webkit.messageHandlers.test.postMessage(JSON.stringify({ snapshot: id, width: innerWidth, height: innerHeight, points }));
   return result.promise;
 }
+function markerPaper(element: Element) {
+  const marker = getComputedStyle(element, "::before");
+  const fill = marker.backgroundColor.match(/[\d.]+/g)!.map(Number);
+  const paper = getComputedStyle(element.closest(".page")!).backgroundColor.match(/[\d.]+/g)!.map(Number);
+  return paper.slice(0, 3).map((channel, index) => {
+    const backdrop = channel / 255, source = fill[index]! / 255;
+    const curve = backdrop <= .25 ? ((16 * backdrop - 12) * backdrop + 4) * backdrop : Math.sqrt(backdrop);
+    const blended = marker.mixBlendMode === "multiply" ? backdrop * source
+      : source <= .5 ? backdrop - (1 - 2 * source) * backdrop * (1 - backdrop)
+      : backdrop + (2 * source - 1) * (curve - backdrop);
+    return Math.round((backdrop * (1 - fill[3]!) + blended * fill[3]!) * 255);
+  });
+}
 async function appearance() {
   const selected = document.querySelector<HTMLElement>(".pdfjs-search-highlight.is-active")!;
   const inactive = marks().find((mark) => !mark.classList.contains("is-active"))!;
   const strong = getComputedStyle(selected, "::before"), soft = getComputedStyle(inactive, "::before");
   const activeBoundary = getComputedStyle(selected, "::after"), inactiveBoundary = getComputedStyle(inactive, "::after");
-  check(strong.backgroundColor === "rgba(255, 179, 0, 0.48)" && soft.backgroundColor === "rgba(255, 193, 7, 0.32)", `Not amber translucent markers: ${strong.backgroundColor}/${soft.backgroundColor}`);
-  check(activeBoundary.outlineStyle === "solid" && activeBoundary.outlineWidth === "2px" && inactiveBoundary.outlineStyle === "dashed", "Active/inactive boundary lost");
+  const activeAlpha = Number(strong.backgroundColor.match(/[\d.]+/g)![3]);
+  const inactiveAlpha = Number(soft.backgroundColor.match(/[\d.]+/g)![3]);
+  check(activeAlpha > inactiveAlpha && inactiveAlpha > 0 && activeAlpha <= .4, "Search fills are not restrained and distinct");
+  check(activeBoundary.outlineStyle === "none" && inactiveBoundary.outlineStyle === "none" &&
+    activeBoundary.height === "1px" && inactiveBoundary.backgroundColor === "rgba(0, 0, 0, 0)", "Borderless active-only underline lost");
   check(getComputedStyle(selected.parentElement!.parentElement!).pointerEvents === "none", "Highlights intercept text input");
+  const viewport = document.querySelector<HTMLElement>(".document-viewport")!;
+  check(getComputedStyle(viewport).getPropertyValue("scrollbar-width") === "thin" &&
+    getComputedStyle(viewport).overflowY === "auto", "PDF lost its thin native scroll owner");
   const samples = await pixels(selected);
-  check(samples.some(([r, g, b]) => Math.abs(r! - 255) < 4 && Math.abs(g! - 219) < 4 && Math.abs(b! - 133) < 4), "Compositor does not paint the marker over white paper");
+  const paper = markerPaper(selected);
+  check(samples.some(sample => paper.every((channel, index) => Math.abs(sample[index]! - channel) < 4)), "Compositor does not paint the marker over white paper");
   // At fit-page, subpixel glyphs need not contain a fully black source pixel.
   // Require visible ink separation from the observed amber paper, not an
   // assumed rasterization of a solid black glyph at this scale.
-  check(samples.some(([r, g, b]) => 255 - r! >= 90 && 219 - g! >= 90 && 133 - b! >= 90),
+  check(samples.some(sample => paper.every((channel, index) => channel - sample[index]! >= 90)),
     "Compositor marker obscures the glyph ink");
 }
 async function gateExtraction() {
@@ -308,12 +328,13 @@ async function run() {
   selection.removeAllRanges(); selection.addRange(range);
   check(selection.toString().replace(/\s+/g, " ").trim() === "split phrase", `Native text selection changed: ${selection}`);
   selection.removeAllRanges(); visible("multiline whole result");
+  const markerFill = getComputedStyle(document.querySelector(".pdfjs-search-highlight.is-active")!, "::before").backgroundColor;
   for (const theme of ["theme_dark", "theme_light", "theme_original"] as const) {
     await key("Escape"); await command(theme); visible(theme);
     const selected = group.isConnected ? group.firstElementChild! : document.querySelector(".pdfjs-search-highlight.is-active")!;
-    check(getComputedStyle(selected, "::before").backgroundColor === "rgba(255, 179, 0, 0.48)", "Recolor changed overlay pixels");
-    check(getComputedStyle(selected, "::after").outlineColor === (theme === "theme_dark" ? "rgb(255, 255, 255)" : "rgb(0, 0, 0)"), "Page-theme boundary contrast lost");
-    const background = theme === "theme_dark" ? [56, 41, 17] : [255, 219, 133];
+    check(getComputedStyle(selected, "::before").backgroundColor === markerFill, "Recolor changed overlay pixels");
+    check(getComputedStyle(selected, "::after").backgroundColor === (theme === "theme_dark" ? "rgb(255, 255, 255)" : "rgb(0, 0, 0)"), "Page-theme underline contrast lost");
+    const background = markerPaper(selected);
     check((await pixels(selected as HTMLElement)).some((sample) => background.every((channel, index) => Math.abs(sample[index]! - channel) < 4)), "Page recoloring also recolored the search marker");
     await key("i"); visible("application theme");
   }

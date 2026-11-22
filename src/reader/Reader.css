@@ -19,6 +19,17 @@
   scrollbar-width: thin;
 }
 
+.document-viewport::-webkit-scrollbar,
+.document-viewport::-webkit-scrollbar:hover {
+  width: 6px;
+  height: 6px;
+}
+
+.document-viewport::-webkit-scrollbar-thumb {
+  background: #aeb7c2;
+  border-radius: 3px;
+}
+
 .document-viewport:has(.continuous-presentation) {
   scrollbar-gutter: stable;
   overflow-y: scroll;
@@ -137,24 +148,22 @@
   border-radius: inherit;
 }
 
-/* Blend marker ink with the page; keep its contrasting boundary opaque. */
+/* Blend marker ink with the page; only the active match has an opaque accent. */
 .pdfjs-search-highlight::before {
   z-index: 2;
-  background: rgb(255 193 7 / 32%);
+  background: rgb(255 193 7 / 24%);
   mix-blend-mode: var(--pdf-search-blend, multiply);
 }
 
-.pdfjs-search-highlight::after {
-  z-index: 3;
-  outline: 1px dashed var(--pdf-search-boundary, #000);
-}
-
 .pdfjs-search-highlight.is-active::before {
-  background: rgb(255 179 0 / 48%);
+  background: rgb(255 179 0 / 40%);
 }
 
 .pdfjs-search-highlight.is-active::after {
-  outline: 2px solid var(--pdf-search-boundary, #000);
+  z-index: 3;
+  inset-block-start: auto;
+  height: 1px;
+  background: var(--pdf-search-boundary, #000);
 }
 
 

@@ -117,14 +117,17 @@ function searchPresentation(foreground?: string) {
   check(active && inactive, "real search did not render active/inactive match rectangles");
   const selected = getComputedStyle(active, "::after"), ordinary = getComputedStyle(inactive, "::after");
   const background = getComputedStyle(document.querySelector(".pdfViewer .page")!).backgroundColor;
-  check(selected.outlineStyle === "solid" && ordinary.outlineStyle === "dashed" &&
-    parseFloat(selected.outlineWidth) > parseFloat(ordinary.outlineWidth) && parseFloat(ordinary.outlineWidth) > 0,
-    `active search match lacks structural distinction: ${selected.outline} / ${ordinary.outline}`);
-  const ratio = contrast(selected.outlineColor, background);
-  check(ratio >= 3 && contrast(ordinary.outlineColor, background) >= 3, "search match boundaries disappear against the page theme");
+  check(selected.outlineStyle === "none" && ordinary.outlineStyle === "none",
+    `search matches have perimeter outlines: ${selected.outline} / ${ordinary.outline}`);
+  check(selected.height === "1px" && selected.backgroundColor !== "rgba(0, 0, 0, 0)" &&
+    ordinary.backgroundColor === "rgba(0, 0, 0, 0)", "search match lacks an active-only thin underline");
+  const ratio = contrast(selected.backgroundColor, background);
+  check(ratio >= 3, "active search underline disappears against the page theme");
   const marker = getComputedStyle(active, "::before");
   const fill = marker.backgroundColor.match(/[\d.]+/g)!.map(Number);
-  check(fill.length === 4 && fill[3]! > 0 && fill[3]! < 1, "search fill is not translucent");
+  const inactiveFill = getComputedStyle(inactive, "::before").backgroundColor.match(/[\d.]+/g)!.map(Number);
+  check(fill.length === 4 && fill[3]! > inactiveFill[3]! && inactiveFill[3]! > 0 && fill[3]! <= .4,
+    "search fills are not restrained, translucent and distinct");
   if (foreground) {
     // CSS Compositing and Blending: assess the rendered ink and paper, including
     // the marker's blend operation, rather than assuming normal alpha painting.
@@ -144,7 +147,7 @@ function searchPresentation(foreground?: string) {
     const paper = background.match(/[\d.]+/g)!.slice(0, 3).map(Number);
     check(contrast(composite(ink), composite(paper)) >= 4.5, "match fill degrades controlled stock text contrast");
   }
-  return { ratio, active: selected.outline, inactive: ordinary.outline, fill: marker.backgroundColor };
+  return { ratio, underline: selected.backgroundColor, fill: marker.backgroundColor, inactiveFill };
 }
 function errorPresentation() {
   const banner = document.querySelector<HTMLElement>(".error-banner")!;

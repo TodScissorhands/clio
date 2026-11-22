@@ -55,6 +55,8 @@ Replace the long all-options list with six small choosers, ordered Text size, Fo
 
 Keep Paged/Continuous in the root view commands and Document theme in its own chooser; do not duplicate either under Reading preferences. Reset affects only typography/column geometry, not theme or Paged/Continuous. Suppressed overrides retain their saved choice but state Publisher retained and the reason, never a false Current mark. No new preferences, font downloads, sliders or persistent settings surface.
 
+Continuous EPUB keyboard line/screen movement uses Foliate's short smooth motion, with at most one movement in flight; repeat input during a move is dropped rather than queued. Reduced-motion preference disables that animation. Wheel/touchpad scrolling, paginated turns and Foliate's section-boundary behavior remain native.
+
 ## Reader status
 
 Keep the external 24px footer and trailing Commands : control. PDF shows Page current / total, plus the effective recolor theme only when enabled. EPUB shows the first-visible chapter/section label, with Page current / total in section only when the paginated layout supplies it. Continuous EPUB must not invent page counts, percentages or estimated reading time. Keep the filename in the window title, not duplicated in the footer; zoom/view/preference detail belongs in command states.
@@ -67,13 +69,15 @@ Keep the existing index, explicit Enter-to-search, wrapped next/previous navigat
 
 Normalize PDF source and queries with NFKC, soft-hyphen omission, collapsed/trimmed whitespace and whole-string default-locale lowercase. Preserve original text-layer UTF-16 ranges, including combining sequences split across adjacent items and compatibility expansions; inserted geometry/EOL spaces have no highlight. Search follows PDF.js extraction order, including RTL, not a reconstructed visual reading order. This is normalization equivalence, not full Unicode case folding or accent-insensitive search.
 
-Replace near-transparent fills with a clearly visible controlled fill and solid active outline; other matches use a lighter fill and dashed boundary. Preserve readable text, selection and copying; highlights never intercept input or get recolored with page pixels. The count and different boundary styles distinguish active from other matches without color alone.
+Use borderless, translucent glyph-aligned fills: inactive matches are lighter than the active match. Only the active match has a thin underline with at least 3:1 contrast against controlled page backgrounds. Preserve readable text, selection and copying; highlights never intercept input or get recolored with page pixels. The count and active-only underline distinguish active from other matches without color alone.
 
 On search or explicit next/previous, reveal the whole active match with nearby text, aiming near 40% of the usable viewport height and clamping at page edges. Reveal horizontally too when zoomed. Recompute geometry after zoom, resize, spread/layout changes and rerenders, including detail canvases; keep the active match visible across these transitions without repeatedly snapping back during ordinary scrolling. Ignore stale render callbacks. No animation, results panel or OCR in 09E.
 
 ## Responsive and accessible
 
 At 420×600, 1000×700 and 1440×800 CSS px, the footer remains single-line and its 24px reader space remains reserved during overlays. Chapter text can shrink; hide secondary location/theme details first at ≤600px. Preserve editor input, feedback and Commands : when applicable; controls never overlap text or scrolling. The existing full-screen palette scrolls internally, wraps long labels and keeps shortcut/state text legible; its compact hint must not displace the active option. Check increased UI text scale and keyboard-only operation without adding another layout system.
+
+Reader scrollbars remain native: prefer thin CSS scrollbars on the PDF viewport and Foliate's exported scrolled-container part, with fixed normal/hover thickness where supported. Do not create another scroll owner or custom auto-hide subsystem. Overlay visibility/auto-hide and scrollbar styling vary by WebKitGTK/platform; hover enlargement is suppressed only where native CSS styling is honored. In the tested WebKitGTK 2.54.2/GTK 3.24.52 environment, overlay thumbs still enlarge on hover despite these CSS rules; native thumb dragging remains functional in both readers.
 
 Target 4.5:1 controlled-text contrast and 3:1 control/focus/highlight boundaries. Never rewrite publisher/custom palettes to enforce a ratio. Use text/structure, not color alone, for active settings and search matches. Keep EPUB status non-live; announce errors/initial loading once, not scrolling. Status updates never move focus.
 

@@ -25,6 +25,7 @@ export function FoliateReader({ sessionId, canonicalPath, prepared, onClose, onO
   const host = useRef<HTMLDivElement>(null);
   const searchInput = useRef<HTMLInputElement>(null);
   const viewRef = useRef<View | null>(null);
+  const keyboardMovement = useRef<View | null>(null);
   const [book, setBook] = useState<Book | null>(null);
   const [mounted, setMounted] = useState<FoliateSession | null>(null);
   const [message, setMessage] = useState("Opening publication…");
@@ -71,6 +72,23 @@ export function FoliateReader({ sessionId, canonicalPath, prepared, onClose, onO
     if (viewRef.current === view && view.lastLocation?.cfi !== before) {
       permitSave.current = true;
       queuePosition(view);
+    }
+  };
+  const scrollContinuous = async (direction: number, amount: "line" | "page") => {
+    const view = viewRef.current;
+    if (!view || mode !== "continuous" || keyboardMovement.current === view) return;
+    keyboardMovement.current = view;
+    const renderer = view.renderer;
+    const animated = renderer.getAttribute("animated");
+    renderer.toggleAttribute("animated", !window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+    try {
+      // Foliate owns distances, animation completion and adjacent-section turns.
+      // Drop repeat input while moving; never queue another destination.
+      await turnPage(direction, amount === "line" ? 40 : undefined);
+    } finally {
+      if (animated === null) renderer.removeAttribute("animated");
+      else renderer.setAttribute("animated", animated);
+      if (keyboardMovement.current === view) keyboardMovement.current = null;
     }
   };
 
@@ -205,9 +223,8 @@ export function FoliateReader({ sessionId, canonicalPath, prepared, onClose, onO
   };
   const register = useReaderKeyboard({ readerKind: "epub", overlay, commands, searchReady: !searching, matchCount: matches.length, jumpInput: "", pageCount: 0, commandIndex, epubLayoutMode: mode }, {
     closeOverlay, moveMatch, runSearch: () => void runSearch(), goToPage: () => {}, executePaletteCommand: execute,
-    runCommand, scrollContinuous: (direction, amount) => {
-      void turnPage(direction, amount === "line" ? 40 : undefined);
-    }, setCommandQuery: setQuery, setCommandIndex, setOverlay,
+    runCommand, scrollContinuous: (direction, amount) => { void scrollContinuous(direction, amount); },
+    setCommandQuery: setQuery, setCommandIndex, setOverlay,
   });
   registerRef.current = register;
   useLayoutEffect(() => {
