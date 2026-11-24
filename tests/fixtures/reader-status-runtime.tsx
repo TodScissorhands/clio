@@ -731,9 +731,13 @@ async function keyboardMotionProbe() {
     ? { matches: reduced } as MediaQueryList : matchMedia.call(window, query);
   const moves: object[] = [];
   try {
-    for (const [value, distance, reduce] of [
-      ["ArrowDown", 40, false], ["PageDown", viewport.clientHeight, false],
-      ["ArrowDown", 40, true], ["PageDown", viewport.clientHeight, true],
+    for (const [value, distance, reduce, repeat] of [
+      ["ArrowDown", 40, false, false], ["PageDown", viewport.clientHeight, false, false],
+      ["ArrowDown", 40, true, false], ["PageDown", viewport.clientHeight, true, false],
+      ["j", 40, false, false], ["k", -40, false, false],
+      ["j", 160, false, true], ["ArrowUp", -160, false, true],
+      ["ArrowDown", 160, true, true], ["k", -160, true, true],
+      ["PageUp", -viewport.clientHeight, false, true],
     ] as const) {
       reduced = reduce;
       focusReader();
@@ -746,10 +750,11 @@ async function keyboardMotionProbe() {
       // Also prove that reduced motion temporarily suppresses an existing opt-in.
       if (reduce) renderer.setAttribute("animated", "saved");
       const previousAttribute = renderer.getAttribute("animated");
-      const next = view.next;
+      const method = distance > 0 ? "next" : "prev";
+      const next = view[method];
       let calls = 0, animated = false, finished = false;
       let completion: Promise<void> | undefined;
-      view.next = amount => {
+      view[method] = amount => {
         calls++;
         animated = renderer.hasAttribute("animated");
         completion = next.call(view, amount).finally(() => { finished = true; });
@@ -758,7 +763,7 @@ async function keyboardMotionProbe() {
       const target = focused!;
       try {
         target.dispatchEvent(new KeyboardEvent("keydown",
-          { key: value, code: value, bubbles: true, cancelable: true }));
+          { key: value, code: value, bubbles: true, cancelable: true, repeat }));
         for (let frame = 0; frame < 5; frame++) {
           await settle();
           positions.push(top - anchor.getBoundingClientRect().top);
@@ -772,7 +777,8 @@ async function keyboardMotionProbe() {
         check(calls === 1, `keyboard repeat queued extra movements: ${calls}`);
         check(Math.abs(delta - distance) <= 2, `${value} travelled ${delta}, expected ${distance}`);
         check(animated === !reduce, "keyboard motion ignored reduced-motion preference");
-        if (!reduce) check(positions.some(position => position > 1 && position < delta - 1),
+        if (!reduce) check(positions.some(position => position * Math.sign(distance) > 1 &&
+          position * Math.sign(distance) < Math.abs(delta) - 1),
           `smooth movement had no painted intermediate frame: ${positions}`);
         else check(positions.every(position => Math.abs(position - delta) <= 2), "reduced motion still animated");
         check(renderer.getAttribute("animated") === previousAttribute, "keyboard motion leaked its animation opt-in");
@@ -781,9 +787,9 @@ async function keyboardMotionProbe() {
         setTimeout(quiet.resolve, 400);
         await quiet.promise;
         check(Math.abs(viewport.scrollTop - before - distance) <= 2, "released keyboard movement kept travelling");
-        moves.push({ value, reduced: reduce, delta, positions, calls });
+        moves.push({ value, repeat, reduced: reduce, delta, positions, calls });
       } finally {
-        view.next = next;
+        view[method] = next;
         renderer.removeAttribute("animated");
       }
     }

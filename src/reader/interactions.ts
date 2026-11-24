@@ -159,7 +159,7 @@ type ReaderKeyboardActions = {
   reportInvalidPage?: (message: string) => void;
   executePaletteCommand: (command: ReaderCommand) => void;
   runCommand: (command: ReaderCommandId) => void;
-  scrollContinuous?: (direction: -1 | 1, amount: "page" | "line") => void;
+  scrollContinuous?: (direction: -1 | 1, amount: "page" | "line", repeat: boolean) => void;
   scrollPdfContinuous?: (direction: PdfPanDirection) => void;
   isPdfZoomedIn?: () => boolean;
   getPdfZoomOverflow?: () => PdfZoomOverflow;
@@ -478,7 +478,7 @@ export function useReaderKeyboard(state: ReaderKeyboardState, actions: ReaderKey
           if (!direction) return;
           event.preventDefault();
           const amount = event.key === "PageDown" || event.key === "PageUp" ? "page" : "line";
-          scrollContinuous?.(direction, amount);
+          scrollContinuous?.(direction, amount, event.repeat);
           return;
         }
         const navigationCommand =

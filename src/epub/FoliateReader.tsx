@@ -74,7 +74,7 @@ export function FoliateReader({ sessionId, canonicalPath, prepared, onClose, onO
       queuePosition(view);
     }
   };
-  const scrollContinuous = async (direction: number, amount: "line" | "page") => {
+  const scrollContinuous = async (direction: number, amount: "line" | "page", repeat: boolean) => {
     const view = viewRef.current;
     if (!view || mode !== "continuous" || keyboardMovement.current === view) return;
     keyboardMovement.current = view;
@@ -84,7 +84,8 @@ export function FoliateReader({ sessionId, canonicalPath, prepared, onClose, onO
     try {
       // Foliate owns distances, animation completion and adjacent-section turns.
       // Drop repeat input while moving; never queue another destination.
-      await turnPage(direction, amount === "line" ? 40 : undefined);
+      // Keep taps fine; accepted native repeats cover four lines per animation.
+      await turnPage(direction, amount === "line" ? (repeat ? 160 : 40) : undefined);
     } finally {
       if (animated === null) renderer.removeAttribute("animated");
       else renderer.setAttribute("animated", animated);
@@ -223,7 +224,7 @@ export function FoliateReader({ sessionId, canonicalPath, prepared, onClose, onO
   };
   const register = useReaderKeyboard({ readerKind: "epub", overlay, commands, searchReady: !searching, matchCount: matches.length, jumpInput: "", pageCount: 0, commandIndex, epubLayoutMode: mode }, {
     closeOverlay, moveMatch, runSearch: () => void runSearch(), goToPage: () => {}, executePaletteCommand: execute,
-    runCommand, scrollContinuous: (direction, amount) => { void scrollContinuous(direction, amount); },
+    runCommand, scrollContinuous: (direction, amount, repeat) => { void scrollContinuous(direction, amount, repeat); },
     setCommandQuery: setQuery, setCommandIndex, setOverlay,
   });
   registerRef.current = register;
