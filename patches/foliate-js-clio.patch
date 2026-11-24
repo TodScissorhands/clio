@@ -176,6 +176,9 @@
 +                && Math.abs(this.containerPosition - anchoredPosition) < 1) return
 +            this.#afterScroll('scroll')
          }
+@@ -1972,1 +1993,1 @@
+-        if (result?.range && !result.range.collapsed) this.#anchor = result.range
++        if (result?.range && !result.range.collapsed && !this.#anchorIsVisible(result.range)) this.#anchor = result.range
 @@ -2430,1 +2451,2 @@
 -    render() {
 +    #hasReflowAnchor = false
@@ -271,7 +274,7 @@
 +            this.#anchoredPosition = this.containerPosition
 @@ -3982,2 +4020,4 @@
 -        else if (reason !== 'container-scroll' || !this.#anchorIsVisible(range))
-+        else if (reason !== 'container-scroll' || !this.#anchorIsVisible(range)) {
++        else if ((reason !== 'container-scroll' && reason !== 'scroll') || !this.#anchorIsVisible(range)) {
              this.#anchor = range
 +            this.#hasReflowAnchor = false
 +        }

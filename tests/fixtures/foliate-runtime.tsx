@@ -97,6 +97,33 @@ async function publicationProgress(view: View, name: string) {
       progress.getBoundingClientRect().width > 0, `${name}: responsive footer lost progress or overflowed`);
     viewports.push({ width, height, fraction });
   }
+  const passageDoc = view.renderer.getContents().find(content => content.index === middle)!.doc;
+  const paragraphs = [...passageDoc.querySelectorAll("p")].filter(node => (node.textContent?.trim().length ?? 0) > 80);
+  check(paragraphs.length, `${name}: no representative prose passage`);
+  const paragraph = paragraphs[Math.floor(paragraphs.length / 2)];
+  const walker = passageDoc.createTreeWalker(paragraph, NodeFilter.SHOW_TEXT);
+  let node = walker.nextNode();
+  while (node && !node.textContent?.trim()) node = walker.nextNode();
+  check(node, `${name}: representative paragraph has no text`);
+  const passage = passageDoc.createRange();
+  passage.selectNodeContents(node); passage.collapse(true);
+  const passageCfi = view.getCFI(middle, passage);
+  await view.goTo(passageCfi);
+  await footerProgress(view);
+  check(paintedPassage(view, passageCfi), `${name}: representative passage did not paint before reversal`);
+  const addressedFraction = (await view.getCFIProgress(passageCfi))!.fraction;
+  const paintedLayouts = [];
+  for (let cycle = 0; cycle < 2; cycle++) {
+    for (const mode of ["continuous", "paged"] as const) {
+      applyFoliatePreferences(view, { ...DEFAULT_EPUB_PREFERENCES, fontScale: 140, fontFamily: "sans", lineHeight: 1.85 }, mode);
+      for (let i = 0; i < 8; i++) await frame();
+      const fraction = await footerProgress(view);
+      check(paintedPassage(view, passageCfi), `${name}/${mode}/${cycle}: reversal lost painted paragraph`);
+      check(Math.abs((await view.getCFIProgress(passageCfi))!.fraction - addressedFraction) < .000001,
+        `${name}/${mode}/${cycle}: addressed passage progress changed`);
+      paintedLayouts.push({ cycle, mode, fraction, painted: true });
+    }
+  }
   await view.goTo(end);
   const ending = await footerProgress(view);
   check(ending > .97, `${name}: final viewport not near book end: ${ending}`);
@@ -121,8 +148,10 @@ async function publicationProgress(view: View, name: string) {
   await view.goTo(cfi);
   const restored = await footerProgress(view);
   check(Math.abs(restored - baseline) <= .01, `${name}: CFI restoration changed progress`);
-  cases.push(`${name}: linear endpoints, chapters, paged/continuous, typography, three viewports, stale result and CFI restoration`);
-  return { cfi: view.lastLocation!.cfi, fraction: restored, beginning, chapter, ending, layouts, viewports };
+  check(paintedPassage(view, cfi), `${name}: restored progress passage did not paint`);
+  cases.push(`${name}: linear endpoints, chapters, paged/continuous painted passage reversals, typography, three viewports, stale result and CFI restoration`);
+  return { cfi: view.lastLocation!.cfi, fraction: restored, beginning, chapter, ending, layouts, viewports,
+    passageCfi, paintedLayouts };
 }
 function currentView() { return document.querySelector<View>('.foliate-publication[aria-busy="false"] > foliate-view'); }
 function locationDocument(view = currentView()) {
@@ -136,8 +165,11 @@ function paintedPassage(view: View, cfi: string) {
   if (!doc) return false;
   const range = anchor(doc).cloneRange();
   if (range.startContainer.nodeType === Node.ELEMENT_NODE) {
-    const node = range.startContainer.childNodes[range.startOffset] ?? range.startContainer;
-    const text = node.nodeType === Node.TEXT_NODE ? node : doc.createTreeWalker(node, NodeFilter.SHOW_TEXT).nextNode();
+    const walker = doc.createTreeWalker(range.startContainer, NodeFilter.SHOW_TEXT);
+    let text = walker.nextNode();
+    // Element CFIs can begin with indentation (e.g. Standard Ebooks hgroup).
+    // Measure the first addressed printable character, not whitespace.
+    while (text && (!text.textContent?.trim() || range.comparePoint(text, 0) < 0)) text = walker.nextNode();
     if (!text) return false;
     range.setStart(text, 0);
   }
@@ -268,8 +300,10 @@ async function positionCompatibility() {
       const progress = await publicationProgress(progressView, name);
       await close();
       records.set(path, { cfi: progress.cfi, cfiModel: "foliate-html-v1" }); writes.length = 0;
-      const reopenedProgress = await footerProgress(await show(buffer, name));
+      const reopenedView = await show(buffer, name);
+      const reopenedProgress = await footerProgress(reopenedView);
       check(Math.abs(reopenedProgress - progress.fraction) <= .01, `${name}: reopened reading progress changed`);
+      check(paintedPassage(reopenedView, progress.cfi), `${name}: reopened progress passage did not paint`);
       await close();
       cases.push(`${name}: persisted CFI reopened at ${Math.round(reopenedProgress * 100)}%`);
       compatibility.push({ name, sectionIndex, legacyCompatible: compatible, passageResolved: true, taggedRestored: true,

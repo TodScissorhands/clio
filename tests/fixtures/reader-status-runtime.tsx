@@ -33,6 +33,7 @@ const settle = () => {
   requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
   return promise;
 };
+let readinessSettles = 0;
 async function until(predicate: () => unknown, message: string) {
   const deadline = performance.now() + 15_000;
   for (;;) {
@@ -178,6 +179,7 @@ async function readyEpub(paged = true) {
     return progress && Number.isFinite(progress.fraction) &&
       detail().trim() === `${Math.round(progress.fraction * 100)}% ·`;
   }, "EPUB location and current-CFI percentage did not reach fresh layout");
+  for (let frame = 0; frame < readinessSettles; frame++) await settle();
   assertStatus(paged);
 }
 async function readyPdf(name = "status.pdf") {
@@ -532,7 +534,7 @@ async function chapterReversalProbe() {
           revision++;
           if (event.type === "stabilized") stabilized = true;
           events.push({ at: performance.now(), type: event.type,
-            reason: (event as CustomEvent).detail?.reason, ...sample(2) });
+            reason: (event as CustomEvent).detail?.reason, addressedPainted: cfiVisible(addressed), ...sample(2) });
         };
         renderer.addEventListener("relocate", observe);
         renderer.addEventListener("stabilized", observe);
@@ -540,9 +542,10 @@ async function chapterReversalProbe() {
         const before = sample(2);
         let previous = "";
         let equalFrames = 0;
+        let immediate: ReturnType<typeof sample> | undefined;
         try {
           await command(nextPaged ? "Paged layout" : "Continuous layout");
-          const immediate = sample(2);
+          immediate = sample(2);
           await until(() => {
             const state = sample(2);
             const tuple = JSON.stringify({ revision, ...state });
@@ -566,8 +569,18 @@ async function chapterReversalProbe() {
             addressedPainted: cfiVisible(addressed), before, immediate, ...settled, events });
           check(cfiVisible(addressed), `${name}: chapter mode reversal lost addressed passage`);
         } catch (error) {
+          const top = renderer.shadowRoot!.querySelector<HTMLElement>("#top")!;
+          const style = getComputedStyle(top);
           reversals.push({ name: `${name}-failure`, paged, width, height, addressed,
-            addressedPainted: cfiVisible(addressed), ...sample(2), events });
+            addressedPainted: cfiVisible(addressed), before, immediate, ...sample(2), events,
+            rendererBounds: renderer.getBoundingClientRect().toJSON(), topBounds: top.getBoundingClientRect().toJSON(),
+            grid: { columns: style.gridTemplateColumns, rows: style.gridTemplateRows, inline: top.getAttribute("style") },
+            rendererAttributes: Object.fromEntries(renderer.getAttributeNames().map(name => [name, renderer.getAttribute(name)])),
+            windowSize: { width: innerWidth, height: innerHeight, scale: devicePixelRatio },
+            hosts: [view, view.parentElement!, view.parentElement!.parentElement!].map(element => ({
+              tag: element.tagName, class: element.className, bounds: element.getBoundingClientRect().toJSON(),
+              style: element.getAttribute("style"), zoom: getComputedStyle(element).zoom,
+            })) });
           throw error;
         } finally {
           renderer.removeEventListener("relocate", observe);
@@ -575,9 +588,15 @@ async function chapterReversalProbe() {
           renderer.removeEventListener("scroll", observe);
         }
       };
-      const roundTrip = async (name: string, addressed = view.lastLocation!.cfi) => {
+      const roundTrip = async (name: string, addressed = view.lastLocation!.cfi, checkpoints = 0) => {
         for (let cycle = 0; cycle < 2; cycle++) {
           await transition(`${name}-switch-${cycle}`, !paged, addressed);
+          for (let frame = 0; frame < checkpoints; frame++) await settle();
+          if (checkpoints) {
+            reversals.push({ name: `${name}-checkpoints-${cycle}`, paged, width, height,
+              addressed, addressedPainted: cfiVisible(addressed), ...sample(2) });
+            check(cfiVisible(addressed), `${name}: frame settlement lost addressed passage`);
+          }
           await transition(`${name}-return-${cycle}`, paged, addressed);
         }
         const reopening = window.__readerStatusPositions!.get(path)!.cfi;
@@ -678,16 +697,28 @@ async function chapterReversalProbe() {
       await turning;
       await roundTrip("chapter-opening");
       const middle = "EPUB/reversal-2.xhtml#p20";
-      await view.goTo(middle); await readyEpub(paged);
-      await until(() => window.__readerStatusPositions!.get(path)?.cfi === view.lastLocation!.cfi,
-        "middle-passage navigation did not save");
-      const doc = contents().find(content => content.index === 2)!.doc;
-      const target = doc.createRange();
-      target.selectNodeContents(doc.getElementById("p20")!);
-      target.collapse(true);
-      // Navigation addressed p20, not the earlier p19 suffix that shares its
-      // paginated page. Reflow may change that page-start CFI legitimately.
-      await roundTrip("long-middle-passage", view.getCFI(2, target));
+      const schedules = paged && width === 1440
+        ? [{ name: "original", ready: 0, checkpoints: 0 },
+          { name: "historical", ready: 2, checkpoints: 0 },
+          { name: "settled", ready: 0, checkpoints: 4 }]
+        : [{ name: "original", ready: 0, checkpoints: 0 }];
+      for (const schedule of schedules) {
+        readinessSettles = schedule.ready;
+        try {
+          await view.goTo(middle); await readyEpub(paged);
+          await until(() => window.__readerStatusPositions!.get(path)?.cfi === view.lastLocation!.cfi,
+            "middle-passage navigation did not save");
+          const doc = contents().find(content => content.index === 2)!.doc;
+          const target = doc.createRange();
+          target.selectNodeContents(doc.getElementById("p20")!);
+          target.collapse(true);
+          // Navigation addressed p20, not the earlier p19 suffix that shares its
+          // paginated page. Reflow may change that page-start CFI legitimately.
+          const addressed = view.getCFI(2, target);
+          check(cfiVisible(addressed), "middle-passage navigation did not paint p20");
+          await roundTrip(`long-middle-passage-${schedule.name}`, addressed, schedule.checkpoints);
+        } finally { readinessSettles = 0; }
+      }
     }
   }
   await command("Paged layout"); await readyEpub(); await close();
