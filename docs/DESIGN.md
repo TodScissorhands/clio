@@ -55,7 +55,7 @@ Replace the long all-options list with six small choosers, ordered Text size, Fo
 
 Keep Paged/Continuous in the root view commands and Document theme in its own chooser; do not duplicate either under Reading preferences. Reset affects only typography/column geometry, not theme or Paged/Continuous. Suppressed overrides retain their saved choice but state Publisher retained and the reason, never a false Current mark. No new preferences, font downloads, sliders or persistent settings surface.
 
-Continuous EPUB keyboard line/screen movement uses Foliate's short smooth motion, with at most one movement in flight; repeat input during a move is dropped rather than queued. Reduced-motion preference disables that animation. Wheel/touchpad scrolling, paginated turns and Foliate's section-boundary behavior remain native.
+Continuous EPUB keyboard line/screen movement uses Foliate's short smooth motion, with at most one movement in flight; repeat input during a move is dropped rather than queued. Line keys move 40 CSS pixels initially and 160 on accepted native repeats; screen commands retain their viewport-sized distance. Reduced-motion preference disables that animation. Wheel/touchpad scrolling, paginated turns and Foliate's section-boundary behavior remain native.
 
 ## Reader status
 
@@ -87,10 +87,10 @@ Preserve selection, copying, publication link semantics, editable content and ke
 
 ## 09D review and 09E boundary
 
-09D is approved. 09E-A implements the command hierarchy, guidance, terminology and six EPUB preference choosers specified above; PDF search refinements remain 09E-B. Neither implementation accepts unresolved 09C native EPUB keyboard behavior.
+09D is approved. 09E-A implements the command hierarchy, guidance, terminology and six EPUB preference choosers specified above; PDF search refinements are implemented in 09E-B. Neither implementation accepts unresolved 09C native EPUB keyboard behavior.
 
 - **Unchanged:** document-first surface, full-screen shared palette, footer dimensions, theme separation/presets, renderer ownership and accepted keyboard/wheel semantics. No toolbar, sidebar, new framework or component rewrite.
-- **Design evidence:** inspection and browser smoke of the pre-09E App identified missing chapter Back navigation and one long preference list. PDF active fill remains 3% and its count disappears on Escape while matches remain; those separate issues belong to 09E-B. Browser observations do not establish native WebKitGTK input or assistive-technology acceptance.
+- **Design evidence:** inspection and browser smoke of the pre-09E App identified missing chapter Back navigation and one long preference list. In that baseline, PDF active fill was 3% and its count disappeared on Escape while matches remained; 09E-B addressed those separate issues. Browser observations do not establish native WebKitGTK input or assistive-technology acceptance.
 - **09E-A:** explicit Back rows, a compact keyboard hint, searchable qualified setting choices and six effective-value preference fields reuse the existing full-screen palette, single command router, footer and renderer lifecycle boundaries. Choices apply immediately; Back clears local filtering; Escape returns directly to the host reader. Typography/layout reset leaves theme and Paged/Continuous unchanged.
-- **09E-B:** retain relevant PDF search status and strengthen/reposition highlights according to the approved specification above. No PDF search changes are included in 09E-A.
-- **Deferred:** EPUB publication-wide search, bookmarks, annotations and navigation history belong to later roadmap work. In-content EPUB hyperlinks remain the known limitation in [Issue #5](https://github.com/TodScissorhands/clio/issues/5), not a 09D blocker. Ordinary EPUB keyboard/focus reliability remains an unresolved essential-reading requirement; the footer button is not its fix. No new renderer prototype or wheel gesture is authorized here.
+- **09E-B:** persistent PDF search status, borderless fills with an active underline, and full-match reveal are implemented according to the specification above. These PDF changes were separate from 09E-A.
+- **Deferred:** Bookmarks, annotations and navigation history remain later roadmap work. EPUB publication-wide text search is implemented through Foliate with CFI navigation, match count/excerpt and temporary highlights. In-content EPUB hyperlinks remain the known limitation in [Issue #5](https://github.com/TodScissorhands/clio/issues/5), not a 09D blocker. Ordinary EPUB keyboard/focus reliability remains an unresolved essential-reading requirement; the footer button is not its fix. No new renderer prototype or wheel gesture is authorized here.

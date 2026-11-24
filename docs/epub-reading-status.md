@@ -1,4 +1,8 @@
-# Task 09C2 — EPUB reading status and shared document identity
+# Historical Task 09C2 — EPUB reading status and shared document identity
+
+Current implementation (`7b510c3`, with the accepted `600ccbf` p20 anchor correction): Foliate supplies whole-book percentage and first-visible chapter/section in both layouts. Percentage is CFI text progress weighted by linear section sizes; estimated book-wide pages remain deferred. Canonical-path persistence still stores position only. The separate approximately 0.025px viewport-width oscillation remains unresolved; see the [progress and sizing record](ROADMAP.md#whole-book-progress-regression-boundary).
+
+The Task 09C2 and CI-01 sections below retain their original epub.js-era implementation, test results and limitations as historical evidence. Their in-section page/count descriptions are not the current Foliate footer contract.
 
 ## Result
 

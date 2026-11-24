@@ -5,7 +5,7 @@ Clio is a keyboard-first PDF and EPUB reader built with Tauri, React, PDF.js and
 ## Reading
 
 - Open a document: `Ctrl/Cmd+O`; close: `Ctrl/Cmd+W`. EPUB also retains `o` to open.
-- Search: `Ctrl+F` or `/`; matching text is highlighted on the PDF text layer. `Enter` and `Shift+Enter` move between individual matches and wrap at either end. `Esc` closes search. Image-only pages without extractable text are not searchable.
+- Search either format: `Ctrl+F` or `/`. PDF searches extractable page text; EPUB searches publication text through Foliate with CFI-based navigation, highlights, a match count and active excerpt. `Enter` and `Shift+Enter` move between matches and wrap; `Esc` closes search. Image-only PDF pages without extractable text are not searchable.
 - PDF page navigation: `Ctrl+PageDown` / `Ctrl+PageUp` and `J` / `K` explicitly move to the next/previous logical page group, regardless of zoom. Groups are single pages or spreads, including the narrow-window single-page fallback, and clamp at document boundaries.
 - `PageDown` / `PageUp` retain viewport paging followed by page navigation at a boundary. Arrows and `h/j/k/l` retain their context-sensitive movement. `Home` / `End` and `Ctrl+Home` / `Ctrl+End` use the existing beginning/end commands. `g` opens page jump. `Shift+PageUp` / `Shift+PageDown` keep their ordinary page-key behavior, not ten-page jumps.
 - PDF zoom: bare `+` / `-` or `Ctrl++` / `Ctrl+-` change manual zoom in 5% multiplicative steps, preserving the fit basis, limits, and viewport-center anchor. `Ctrl+=` is also zoom-in, including `Ctrl+Shift+=` when Shift produces `+`; `Ctrl+NumpadAdd` / `Ctrl+NumpadSubtract` are supported. Bare `=` fits width, `w` fits a page, and `F` fits a spread. Reader shortcuts do not take over typing or overlays.
@@ -76,11 +76,15 @@ Text-size percentages use each section's original body size. An explicit size se
 
 EPUB Original removes reader color overrides; transparent Original pages use a white backdrop independent of application chrome. Themes do not invert images or enable publication scripts. See [the interface specification](docs/DESIGN.md) for appearance semantics.
 
+Continuous EPUB keyboard scrolling uses smooth Foliate motion: `j/k` and ArrowDown/ArrowUp move 40 CSS pixels on an initial press and 160 on accepted native repeats. One movement runs at a time; input during that movement is dropped. PageDown/PageUp retain screen-sized movement, and reduced motion disables animation.
+
 ## EPUB wheel input
 
 Continuous mode retains native scrolling. A paged wheel prototype was rejected: WebKitGTK retargeted events lose pressed-button state, and synchronous embedded CSS state can lag queued input. The candidate could turn a page during a primary-button hold before text selection existed. No paged wheel policy, Ctrl+Wheel font gesture, focus workaround or sandbox change ships. See [native wheel evidence and limitations](docs/epub-wheel-input.md).
 
 ## EPUB reading positions
+
+The EPUB footer shows whole-book percentage and the first-visible chapter/section in both layouts. Percentage uses Foliate CFI text progress weighted by linear section sizes; estimated book-wide page totals remain deferred.
 
 Native EPUBs save an EPUB CFI in the same app-data `reading-positions.json` file used for PDFs, keyed by canonical file path. Different paths have independent positions; moving or renaming a file gives it a new identity.
 
@@ -94,7 +98,7 @@ Embedded keyboard registrations belong to the current Foliate reader's live publ
 
 The shared command router remains the sole keyboard/repeat owner. Publication scripts are removed and blocked by CSP; publication frames remain separate from the privileged shell's native capability set. The legacy epub.js keyboard/link limitations are documented in the [historical investigation](docs/epub-keyboard-focus.md); they are not current Foliate implementation instructions.
 
-Scoped native Foliate acceptance passed XTEST-driven content-focused shortcuts, pointer and keyboard internal links, copying, editable/search input, focus recovery and one-action navigation after reopening on WebKitGTK 2.54.2. Physical human keyboard/pointer, IME and native Wayland acceptance remain unverified; automated input is not physical-input evidence.
+Earlier scoped Foliate acceptance passed XTEST-driven content-focused shortcuts, internal links, copying, editable/search input and reopening in its recorded WebKitGTK 2.54.2 fixtures. The later native WebView startup-focus correction (`575ec81`) separately records native Wayland acceptance: 20/20 cold, 20/20 warm, 3/3 fresh-footer and 3/3 focus-return trials. This establishes startup activation in that scope; broader EPUB focus and hyperlink issues remain open. These results do not establish universal physical-input, IME, accessibility or cross-platform acceptance. See [startup scope and historical limitations](docs/epub-keyboard-focus.md#foliate-window-startup).
 
 Run `bun test tests/epub-keyboard-lifecycle-runtime.test.ts` for the Foliate/WebKit production registration regression, including replacement, reflow and repeated reopen cleanup. These runtime checks require Linux Python GObject/WebKitGTK 4.1 bindings and an X display. CFI compatibility/preservation has a focused mode: `CLIO_FOLIATE_REAL_BOOKS=/path/to/books bun test tests/foliate-runtime.test.ts -t 'Foliate positions'`, using the existing Gutenberg 11 and 1342 EPUB fixtures.
 
@@ -115,7 +119,7 @@ This removes one native-thread blocking source, not PDF.js/Foliate or JavaScript
 
 Search caches normalized text and source-offset mappings per PDF page for the lifetime of the in-memory document. First search still extracts every page; later queries reuse that index. To benchmark a generated 400-page PDF or an existing PDF, run `bun scripts/benchmark-pdf-search.ts [path/to/file.pdf]`.
 
-PDF matches use a high-contrast black/white boundary chosen from the effective document background. The active match has a thicker solid outline; other matches use a thinner dashed outline, with restrained translucent fills. This does not change search geometry, navigation or recoloring pixels. Stock/uniform backgrounds are checked; scanned/image-heavy pages and arbitrary custom palettes remain content-dependent.
+PDF matches use borderless translucent amber fills, with a stronger fill and thin underline for the active match. The underline uses black or white selected against the effective document background. Highlights preserve text selection and copying and do not recolor page pixels. Stock/uniform backgrounds are checked; scanned/image-heavy pages and arbitrary custom palettes remain content-dependent.
 
 ## Foliate dependency
 

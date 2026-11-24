@@ -1,8 +1,8 @@
-# Task 09C1 — EPUB keyboard focus: blocked on the tested WebKitGTK boundary
+# EPUB keyboard focus — current startup scope and historical investigations
 
 ## Reconciliation status
 
-Reviewed against `origin/master` at `ebbb079` on 2026-11-08. Task 09C1 and Task 10B below are historical reports; their measurements, cleanup statements and proposed next steps are not current acceptance or authorization to repeat the probes.
+Historical reconciliation against `origin/master` at `ebbb079` on 2026-11-08. Task 09C1, Task 10B and S4C below are historical reports; their measurements, cleanup statements and proposed next steps are not current acceptance or authorization to repeat the probes.
 
 - **09C-A1:** [merged PR #2](https://github.com/TodScissorhands/clio/pull/2) corrected acquisition retirement and a pre-existing fractional-page visibility defect that could save the preceding chapter's CFI. Task 10B's successful fixture reopen remains a scoped observation, not proof that all chapter positions were correct. See [the final native acceptance](epub-trusted-surface-prototype.md#final-native-acceptance-and-review-handoff).
 - **09C-A2:** [draft PR #4](https://github.com/TodScissorhands/clio/pull/4) records the trusted shell's opaque-origin stop: nested `contentDocument` was null and access threw `SecurityError` in both `srcdoc` and `write` trials. No trusted-surface implementation shipped; neither publication scripting nor relaxing isolation is authorized.
@@ -13,7 +13,7 @@ Reviewed against `origin/master` at `ebbb079` on 2026-11-08. Task 09C1 and Task 
 
 The Foliate reader is prepared with native window and WebView focus deferred. Session commit must focus the WebView widget as well as activate its window: Tauri's `WebviewWindow::set_focus()` activates only the window, whereas `Webview::set_focus()` establishes the native keyboard target. Commit performs both through the supported APIs, without a timer, navigation input or publication-document focus override.
 
-This corrects the separate startup activation boundary, not the historical content-focused keyboard or hyperlink limitations below. First-input acceptance must observe the actual router and palette, not infer document focus from native window activation. Keep physical-input results and automated repetitions distinct.
+Commit `575ec81` records scoped native Wayland startup acceptance: 20/20 cold, 20/20 warm, 3/3 fresh-footer and 3/3 focus-return trials. This corrects startup activation; it does not establish resolution of all content-focused keyboard or hyperlink issues. First-input acceptance concerns actual keyboard delivery to the router/palette, not window activation alone. Preserve the distinction between physical-input evidence and automated repetitions. The epub.js-era mechanisms and results below remain historical; current Foliate lifecycle and consolidated fixture acceptance are documented in [README](../README.md#epub-iframe-keyboard-lifecycle) and [Foliate integration acceptance](foliate-integration-acceptance.md).
 
 ### Historical evidence availability
 
