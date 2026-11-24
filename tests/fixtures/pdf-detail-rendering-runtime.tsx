@@ -1,3 +1,4 @@
+import { indexFilter, indexClose } from "./index-driver";
 import { StrictMode, useRef } from "react";
 import type { CSSProperties } from "react";
 import { createRoot } from "react-dom/client";
@@ -318,6 +319,8 @@ async function key(key: string, init: KeyboardEventInit = {}) {
 }
 async function command(id: ReaderCommandId) {
   await key(":", { shiftKey: true, code: "Semicolon" });
+  await until(() => document.querySelector(".command-palette"), "Index did not open");
+  await indexFilter();
   await until(() => document.querySelector(".command-filter"), "App palette did not open");
   const input = document.querySelector<HTMLInputElement>(".command-filter")!;
   Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, id);
@@ -325,7 +328,7 @@ async function command(id: ReaderCommandId) {
   const label = [...READER_COMMANDS, ...pdfAdvancedAppearanceCommands()].find((entry) => entry.id === id)!.label;
   const option = [...document.querySelectorAll<HTMLElement>('.command-list [role="option"]')].find((entry) => entry.querySelector(".command-label")?.textContent === label);
   check(option, `App command unavailable: ${id}`); option.click();
-  if (id === "toggle_recolor" || id.startsWith("recolor_toggle_")) await key("Escape");
+  if (id === "toggle_recolor" || id.startsWith("recolor_toggle_")) await indexClose();
   await until(() => !document.querySelector(".command-palette"), `App command did not execute: ${id}`);
 }
 async function openFile(name: string) {

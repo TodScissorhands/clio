@@ -152,6 +152,7 @@ type ReaderKeyboardState = {
 };
 
 type ReaderKeyboardActions = {
+  paletteKey?: (event: KeyboardEvent) => void;
   closeOverlay: () => void;
   moveMatch: (direction: number) => void;
   runSearch: () => void;
@@ -384,6 +385,10 @@ export function useReaderKeyboard(state: ReaderKeyboardState, actions: ReaderKey
       const modifier = event.ctrlKey || event.metaKey;
       const unmodified = !modifier && !event.altKey;
 
+      if (overlay === "commands" && current.actions.paletteKey) {
+        current.actions.paletteKey(event);
+        return;
+      }
       if (event.key === "Escape" && overlay) {
         event.preventDefault();
         closeOverlay();

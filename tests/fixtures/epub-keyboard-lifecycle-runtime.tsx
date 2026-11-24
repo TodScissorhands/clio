@@ -1,3 +1,4 @@
+import { indexFilter, indexClose } from "./index-driver";
 import { createRoot } from "react-dom/client";
 import App from "../../src/App";
 import type { ReaderCommandId } from "../../src/reader/interactions";
@@ -163,6 +164,8 @@ async function appReady(previous?: FoliateView) {
 }
 async function command(id: ReaderCommandId) {
   hostKey(":", { code: "Semicolon", shiftKey: true });
+  await until(() => document.querySelector(".command-palette"), "Index did not open");
+  await indexFilter();
   await until(() => document.querySelector(".command-filter"), "host key did not open production palette");
   const filter = document.querySelector<HTMLInputElement>(".command-filter")!;
   Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(filter, id);
@@ -182,10 +185,11 @@ async function appCases(bytes: Uint8Array) {
   embedded.defaultView!.dispatchEvent(new KeyboardEvent("keydown", { key: ":", code: "Semicolon", shiftKey: true }));
   embedded.defaultView!.dispatchEvent(new KeyboardEvent("keyup", { key: ":", code: "Semicolon", shiftKey: true }));
   await settle();
-  iframeDispatchDelivered = !!document.querySelector(".command-filter");
+  iframeDispatchDelivered = !!document.querySelector(".command-palette");
+  await indexFilter();
   check(iframeDispatchDelivered, "live publication event did not reach the shared router");
   check(current.view.book.sections.length === 64, "fixture does not contain 64 real sections");
-  hostKey("Escape");
+  await indexClose();
   await until(() => !document.querySelector(".command-palette"), "iframe command palette did not close");
   const before = { index: current.view.renderer.primaryIndex, page: current.view.renderer.page };
   const atBeforePage = () => current.view.renderer.primaryIndex === before.index && current.view.renderer.page === before.page;
@@ -228,8 +232,10 @@ async function appCases(bytes: Uint8Array) {
     await openFile(bytes);
     current = await appReady();
     hostKey(":", { code: "Semicolon", shiftKey: true });
+    await until(() => document.querySelector(".command-palette"), "Index did not open");
+    await indexFilter();
     await until(() => document.querySelector(".command-filter"), "reopened reader lost consumer-visible keyboard commands");
-    document.querySelector(".command-filter")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await indexClose();
     await until(() => !document.querySelector(".command-palette"), "reopened palette did not close");
     production.assertDocuments(appDocuments(current.view), `app-reopen-${repeat}`);
   }

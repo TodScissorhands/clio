@@ -1,3 +1,4 @@
+import { indexFilter, indexClose, indexBack } from "./index-driver";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "../../src/App";
@@ -94,7 +95,7 @@ function stateText(id: ReaderCommandId) {
   return row(id).querySelector(".command-state-text")?.textContent?.trim() ?? "";
 }
 function isCurrent(id: ReaderCommandId) {
-  return !!row(id).querySelector('.command-state [aria-hidden="true"]');
+  return row(id).hasAttribute("data-applied");
 }
 function state(id: ReaderCommandId, active: boolean, ...meaning: RegExp[]) {
   const option = row(id);
@@ -112,18 +113,21 @@ function noStockCurrent() {
 async function openPalette(query = "") {
   if (!document.querySelector(".command-filter")) {
     await key(":", { shiftKey: true, code: "Semicolon" });
+    await until(() => document.querySelector(".command-palette"), "Index did not open");
+    await indexFilter();
     await until(() => document.querySelector(".command-filter"), "command palette did not open");
   }
   if (filter().value !== query) await value(filter(), query);
   check(document.activeElement === filter(), "palette filter lost its single-focus model");
 }
 async function closePalette() {
-  await key("Escape");
+  await indexClose();
   await until(() => !document.querySelector(".command-palette"), "palette did not dismiss");
   const label = foliateView() ? "EPUB reading area" : "PDF reading area";
   check(document.activeElement?.getAttribute("aria-label") === label, `palette did not restore ${label} focus`);
 }
 async function execute(id: ReaderCommandId, pointer = false) {
+  if (id === "back_to_commands") { await indexBack(); return; }
   const currentChooser = filter()?.getAttribute("aria-label");
   const sameChooser = currentChooser === "Filter document themes" && id.startsWith("theme_") ||
     currentChooser === "Filter advanced PDF appearance" && (id === "toggle_recolor" || id.startsWith("recolor_")) ||
@@ -186,7 +190,7 @@ async function excludedStatusWords(words: string[]) {
   await value(filter(), "");
 }
 function selectedVisible() {
-  const selected = document.getElementById(filter().getAttribute("aria-activedescendant")!)!;
+  const selected = document.getElementById((filter() ?? document.querySelector(".command-list")!).getAttribute("aria-activedescendant")!)!;
   check(selected?.getAttribute("aria-selected") === "true", "combobox does not identify its selected command");
   check(rows().filter((candidate) => candidate.getAttribute("aria-selected") === "true").length === 1, "keyboard selection is not singular");
   const list = document.querySelector<HTMLElement>(".command-list")!;
@@ -248,13 +252,8 @@ function paletteLayout() {
       describedSettings += 1;
       check(option.getAttribute("aria-describedby") === description.id && !labelledBy.includes(description.id),
         "setting is not exposed separately from the accessible command name");
-      const descriptionBounds = description.getBoundingClientRect();
-      const labelBounds = label.getBoundingClientRect();
-      check(descriptionBounds.top >= rect.top - 1 && descriptionBounds.bottom <= rect.bottom + 1 &&
-        (descriptionBounds.top >= labelBounds.bottom - 1 || descriptionBounds.bottom <= labelBounds.top + 1 ||
-         descriptionBounds.left >= labelBounds.right - 1 || descriptionBounds.right <= labelBounds.left + 1),
-        "setting description escapes its row or overlaps its label");
-      check(description.scrollWidth <= description.clientWidth + 1, "setting description is truncated");
+      check(description.textContent?.trim() && getComputedStyle(description).clipPath === "inset(50%)",
+        "full setting description must remain accessible without visible subtext");
       check(settingContrast(option) >= 4.5, "setting description does not meet small-text contrast");
     } else {
       check(!option.hasAttribute("aria-describedby"), "one-shot command has a spurious setting description");
@@ -281,7 +280,7 @@ async function modalAndSelection(originalPage: string) {
   // Batched real key events exercise the inherited clamp and active-row scrolling.
   for (let index = 0; index < rows().length + 2; index += 1) dispatchKey("ArrowDown");
   await settle();
-  check(selectedVisible() === rows().at(-1), "ArrowDown did not clamp and reveal the last command");
+  check(selectedVisible() === rows()[2], "ArrowDown did not wrap and reveal the resulting command");
   await value(input, "page view");
   check(rows().length === 1, "single-view label alias failed");
   selectedVisible();
@@ -321,8 +320,40 @@ interface RuntimeCase {
   wrappedLabels: number;
   epubRows: number;
 }
+async function indexRoot(format: "pdf" | "epub", width: number, height: number) {
+  if (document.querySelector(".command-palette")) await indexClose();
+  await key(":", { shiftKey: true, code: "Semicolon" });
+  await settle();
+  check(document.activeElement?.classList.contains("command-list"), "Index root does not focus Normal mode");
+  const labels = rows().map(row => row.querySelector(".command-label")!.textContent);
+  check(JSON.stringify(labels) === JSON.stringify(format === "epub"
+    ? ["open", "search", "chapter", "layout", "theme", "typography"]
+    : ["open", "search", "page", "page layout", "theme", "fit width"]), "Index contextual six-command root changed");
+  await key(":"); await value(filter(), "th"); await key("Enter");
+  check(filter().value === "th", "ambiguous command executed unexpectedly");
+  await value(filter(), "theme gru"); await key("Tab");
+  check(filter().value === "theme gruvbox", "command completion did not expand unique theme alias");
+  await key("Escape");
+  if (format === "epub") {
+    await key("j"); await key("j"); await key("j");
+    const selected = selectedVisible();
+    const before = selected.querySelector(".command-shortcut")!.textContent;
+    await key("Enter");
+    check(selectedVisible() === selected && selected.querySelector(".command-shortcut")!.textContent !== before,
+      "EPUB layout toggle did not preserve selection and update its live value");
+    await key("Enter");
+    check(selected.querySelector(".command-shortcut")!.textContent === before, "EPUB layout toggle failed to reverse");
+    await settledEpub();
+  }
+  const snapshotWindow = window as unknown as { __snapshotDone: boolean };
+  snapshotWindow.__snapshotDone = false;
+  bridge({ snapshot: `${format}-root-${width}-${height}-${night() ? "dark" : "light"}.png` });
+  await until(() => snapshotWindow.__snapshotDone, "native root screenshot did not complete");
+  await indexClose();
+}
 async function pdfCase(width: number, height: number, dark: boolean, firstCase: boolean): Promise<RuntimeCase> {
   await resize(width, height);
+  await indexRoot("pdf", width, height);
   await execute("single_page_view");
   await execute("fit_to_page");
   const originalPage = document.querySelector(".status-page")!.textContent!;
@@ -378,9 +409,9 @@ async function pdfCase(width: number, height: number, dark: boolean, firstCase: 
 
   const appearanceLeaves = [...themeCommands("pdf", "original"), ...pdfAdvancedAppearanceCommands()]
     .filter((command) => command.id !== "back_to_commands");
-  check(!rows().some((option) => appearanceLeaves.some((command) =>
+  check(rows().some((option) => appearanceLeaves.some((command) =>
     option.querySelector(".command-label")?.textContent === command.label)),
-    "empty PDF root is flooded with theme or advanced actions");
+    "empty filter lost advanced catalog access");
   await value(filter(), "back_to_commands");
   check(rows().length === 0, "root leaf search includes a Back row");
   await value(filter(), "");
@@ -617,6 +648,7 @@ async function settledEpub() {
 async function epubCase(width: number, height: number) {
   await resize(width, height);
   await settledEpub();
+  await indexRoot("epub", width, height);
   await openPalette();
   const layout = paletteLayout();
   for (const id of ["open_document", "previous_chapter", "next_chapter", "next_page", "previous_page", "go_to_chapter", "close_document"] as const) {
@@ -627,8 +659,8 @@ async function epubCase(width: number, height: number) {
   check(row("paged_layout").getAttribute("aria-selected") === "false", "EPUB selection incorrectly follows the current layout");
   check(/PageDown/.test(row("next_page").querySelector(".command-shortcut")!.textContent!) &&
     /PageUp/.test(row("previous_page").querySelector(".command-shortcut")!.textContent!), "EPUB page commands omit their unconditional navigation shortcuts");
-  check(!rows().some((option) => option.querySelector(".command-label")?.textContent === "Gruvbox Dark"),
-    "empty EPUB root is flooded with theme choices");
+  check(rows().some((option) => option.querySelector(".command-label")?.textContent === "Document theme: Gruvbox Dark"),
+    "empty EPUB filter lost theme choices");
   await execute("document_appearance", true);
   state("theme_original", true, /current/i);
   state("theme_gruvbox_dark", false, /not\s+current/i);
@@ -638,25 +670,24 @@ async function epubCase(width: number, height: number) {
   await execute("back_to_commands");
   await execute("epub_reading_preferences");
   const fields = ["Text size", "Font", "Line spacing", "Alignment", "Margins", "Reading column"];
-  check(rows().length === fields.length + 2, "preferences did not consolidate into six fields, Back and Reset");
+  check(rows().length === fields.length + 1, "preferences did not consolidate into six fields and Reset");
   for (const field of fields) {
     await value(filter(), field);
     const target = rows().find((option) => option.querySelector(".command-label")?.textContent === `${field}…`)!;
     check(target && /Publisher/.test(target.querySelector(".command-state")?.textContent ?? ""), `${field} omits its effective value`);
     target.click(); await settle();
     check(filter().value === "" && document.activeElement === filter() &&
-      rows()[0]?.textContent?.includes("Back to Reading preferences"), `${field} entry did not reset selection and focus`);
-    check(selectedVisible() === rows()[0], `${field} did not select its Back row`);
-    check(rows().slice(1).every((option) => option.querySelector(".command-label")?.textContent?.startsWith(`${field}:`)),
+      !!document.querySelector('[aria-label="Return to parent chooser"]'), `${field} entry did not reset selection and focus`);
+    check(selectedVisible() === rows()[0], `${field} did not select its first choice`);
+    check(rows().every((option) => option.querySelector(".command-label")?.textContent?.startsWith(`${field}:`)),
       `${field} chooser contains unrelated options`);
     if (field === "Text size") {
       state("epub_size_publisher", true, /current/i);
       state("epub_text_larger", false, /publisher/i);
     }
     if (field === "Font") state("epub_set_font_family", true, /current/i);
-    await value(filter(), "Back to Reading preferences");
-    await key("Enter");
-    check(filter().value === "" && selectedVisible() === rows()[0] &&
+    await indexBack();
+    check(filter().value === field && selectedVisible() === rows()[0] &&
       filter().placeholder === "Filter reading preferences", `${field} Back did not return to its parent`);
   }
   await value(filter(), "Text size");
@@ -701,10 +732,10 @@ async function epubCase(width: number, height: number) {
   check(!document.querySelector(".command-state") && rows().every((option) => !option.hasAttribute("aria-describedby")),
     "EPUB layout descriptions leaked into chapter destinations");
   check(document.activeElement === filter(), "chapter destination mode lost inherited filter focus");
-  check(rows()[0]?.textContent?.includes("Back to commands") && selectedVisible() === rows()[0],
-    "chapter chooser omits its selected Back row");
-  rows()[0]!.click(); await settle();
-  check(filter().placeholder === "Filter commands" && filter().value === "" && selectedVisible() === rows()[0],
+  check(!!document.querySelector('[aria-label="Return to parent chooser"]') && selectedVisible() === rows()[0],
+    "chapter chooser omits parent access or initial selection");
+  await indexBack();
+  check(filter().placeholder === "Filter commands" && filter().value === "go_to_chapter" && selectedVisible() === rows()[0],
     "chapter Back did not restore the unfiltered command root");
   await execute("go_to_chapter");
   await key("Tab"); await key("Tab", { shiftKey: true });

@@ -1,3 +1,4 @@
+import { indexFilter, indexBack, indexClose } from "./index-driver";
 import { StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { isTauri } from "@tauri-apps/api/core";
@@ -212,6 +213,13 @@ function button(label: string) {
   check(found, `Missing button ${label}`); found.click();
 }
 async function option(label: string) {
+  if (label.startsWith("Back to")) { await indexBack(); return; }
+  await indexFilter();
+  const input = document.querySelector<HTMLInputElement>(".command-filter");
+  if (input) {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, label);
+    input.dispatchEvent(new Event("input", { bubbles: true })); await frame();
+  }
   await until(() => Array.from(document.querySelectorAll('[role="option"]')).some(el => el.textContent?.includes(label)), `Palette option ${label}`);
   Array.from(document.querySelectorAll<HTMLElement>('[role="option"]')).find(el => el.textContent?.includes(label))!.click();
   await frame();
@@ -452,7 +460,7 @@ async function run() {
   await option("Reset typography and layout to Publisher");
   check(JSON.parse(localStorage.getItem("clio:epub-reading-preferences")!).theme === "sepia", "Typography reset discarded document theme");
   await option("Back to commands");
-  document.defaultView!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  await indexClose();
   await until(() => !document.querySelector('[role="combobox"]'), "Escape closes preference overlay");
   check(document.activeElement?.getAttribute("aria-label") === "EPUB reading area", "Escape did not return to host reader");
   cases.push("six-field preferences, font/size/spacing/theme, retained filter focus, reset preserves theme, Escape host focus");

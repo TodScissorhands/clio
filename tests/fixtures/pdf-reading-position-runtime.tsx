@@ -1,3 +1,4 @@
+import { indexFilter } from "./index-driver";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "../../src/App";
@@ -41,6 +42,7 @@ async function key(key: string) {
 async function command(query: string) {
   document.querySelector<HTMLElement>(".document-viewport")!.focus();
   await key(":");
+  await indexFilter();
   const input = document.querySelector<HTMLInputElement>(".command-filter");
   check(input, "palette missing");
   Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, query);

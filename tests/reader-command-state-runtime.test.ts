@@ -55,7 +55,7 @@ test.skipIf(!probe || probe.exitCode !== 0).each([
         return asset === undefined ? new Response(null, { status: 404 }) : new Response(asset, { headers: { "content-type": type } });
       },
     });
-    child = Bun.spawn([python!, join(import.meta.dir, "fixtures/run-palette-webkit.py"), `http://127.0.0.1:${server.port}/${appearanceOnly ? "?appearance=1" : ""}`], {
+    child = Bun.spawn([python!, join(import.meta.dir, "fixtures/run-palette-webkit.py"), `http://127.0.0.1:${server.port}/${appearanceOnly ? "?appearance=1" : ""}`, "110"], {
       env: { ...process.env, GDK_BACKEND: "x11" }, stdout: "pipe", stderr: "pipe",
     });
     const [stdout, stderr, exitCode] = await Promise.all([

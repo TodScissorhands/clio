@@ -88,7 +88,7 @@ test.skipIf(!probe || probe.exitCode !== 0).each(["complete", "epub-only"] as co
         return asset === undefined ? new Response(null, { status: 404 }) : new Response(asset, { headers: { "content-type": type } });
       },
     });
-    child = Bun.spawn([python!, join(import.meta.dir, "fixtures/run-palette-webkit.py"), `http://127.0.0.1:${server.port}/` + (mode === "epub-only" ? "?epubOnly=1" : ""), "180"], {
+    child = Bun.spawn([python!, join(import.meta.dir, "fixtures/run-palette-webkit.py"), `http://127.0.0.1:${server.port}/` + (mode === "epub-only" ? "?epubOnly=1" : ""), "220"], {
       env: { ...process.env, GDK_BACKEND: "x11", GDK_SCALE: "1", GDK_DPI_SCALE: "1" }, stdout: "pipe", stderr: "pipe",
     });
     const [stdout, stderr, exitCode] = await Promise.all([

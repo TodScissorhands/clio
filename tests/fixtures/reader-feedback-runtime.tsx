@@ -1,3 +1,4 @@
+import { indexFilter, indexClose } from "./index-driver";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "../../src/App";
@@ -53,13 +54,15 @@ async function openFile(name: string) {
 }
 async function command(query: string) {
   await key(":", { shiftKey: true, code: "Semicolon" });
+  await until(() => document.querySelector(".command-palette"), "Index did not open");
+  await indexFilter();
   await until(() => document.querySelector(".command-filter"), "palette did not open");
   await value(document.querySelector<HTMLInputElement>(".command-filter")!, query);
   check(document.querySelectorAll('[role="option"]').length === 1, `command query must identify one action: ${query}`);
   await key("Enter");
   if (query.startsWith("theme_")) {
     check(document.activeElement === document.querySelector(".command-filter"), "theme selection lost filter focus");
-    await key("Escape");
+    await indexClose();
     check(readerFocused(), "theme chooser Escape did not restore reader focus");
   }
 }
@@ -178,8 +181,10 @@ async function run() {
   statusLayout();
   check(document.querySelector(".status-page")!.textContent!.includes("Ctrl+O"), "empty reader lost opening feedback");
   document.querySelector<HTMLButtonElement>(".status-commands")!.click();
+  await until(() => document.querySelector(".command-palette"), "Index missing");
+  await indexFilter();
   await until(() => document.activeElement?.classList.contains("command-filter"), "closed reader commands entry did not focus the palette");
-  await key("Escape"); check(readerFocused(), "closed reader commands Escape did not restore focus");
+  await indexClose(); check(readerFocused(), "closed reader commands Escape did not restore focus");
   await openFile("feedback.pdf");
   await until(() => document.querySelector(".loading-indicator"), "real PDF loading state was not observed");
   for (const dark of [false, true]) {
@@ -272,11 +277,12 @@ async function run() {
       await until(() => page() === previousPage + 1, "reader was not operational after error dismissal");
       // Exercise the accepted 09B1 modal contract after feedback transitions.
       await key(":", { shiftKey: true, code: "Semicolon" });
+      await indexFilter();
       const filter = document.querySelector<HTMLInputElement>(".command-filter")!;
       await key("Tab"); await key("Tab", { shiftKey: true });
       check(document.activeElement === filter && filter.getAttribute("role") === "combobox", "09B1 filter focus model regressed");
       check(!!document.querySelector('input[type="file"]')!.closest("[inert]"), "09B1 background containment regressed");
-      await key("Escape"); check(readerFocused(), "palette Escape restoration regressed");
+      await indexClose(); check(readerFocused(), "palette Escape restoration regressed");
       cases.push({ width: innerWidth, height: innerHeight, dark: document.querySelector<HTMLElement>(".clio-app")!.dataset.nightMode === "true", searchLayout });
     }
     await openFile("invalid.pdf");

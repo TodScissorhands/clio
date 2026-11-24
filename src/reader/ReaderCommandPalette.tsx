@@ -1,9 +1,15 @@
+import type { IndexMode } from "./clioIndex";
 import { useId, useLayoutEffect, useRef } from "react";
 import { clampCommandIndex } from "./interactions";
 import type { ReaderCommand } from "./interactions";
 import type { ReaderCommandStates } from "./commandState";
 
 type ReaderCommandPaletteProps = {
+  mode?: IndexMode;
+  screen?: string;
+  onBack?: () => void;
+  onDismiss?: () => void;
+  onVisibleRows?: (rows: number) => void;
   commands: ReaderCommand[];
   commandStates?: ReaderCommandStates;
   commandIndex: number;
@@ -17,6 +23,7 @@ type ReaderCommandPaletteProps = {
 };
 
 export function ReaderCommandPalette({
+  mode = "filter", screen = "root", onBack, onDismiss, onVisibleRows,
   commands,
   commandStates,
   commandIndex,
@@ -34,9 +41,10 @@ export function ReaderCommandPalette({
   const pointerSelectionRef = useRef(false);
   const chooserRef = useRef(placeholder);
   const listId = useId();
-  const hintId = `${listId}-hint`;
-  const activeIndex = clampCommandIndex(commandIndex, commands.length);
-  const activeId = commands.length ? `${listId}-option-${activeIndex}` : undefined;
+  const scrollPositions = useRef(new Map<string, number>());
+  const boundedIndex = clampCommandIndex(commandIndex, commands.length);
+  const activeIndex = commands[boundedIndex]?.disabled ? Math.max(0, commands.findIndex(command => !command.disabled)) : boundedIndex;
+  const activeId = commands[activeIndex] && !commands[activeIndex].disabled ? `${listId}-option-${activeIndex}` : undefined;
 
   useLayoutEffect(() => {
     if (commandIndex !== activeIndex) onCommandIndexChange(activeIndex);
@@ -44,8 +52,7 @@ export function ReaderCommandPalette({
 
   useLayoutEffect(() => {
     const dialog = dialogRef.current;
-    const input = inputRef.current;
-    if (!dialog || !input) return;
+    if (!dialog) return;
     // Inert sibling branches, not ancestors: the palette can live inside either reader.
     const background: { element: HTMLElement; inert: boolean }[] = [];
     for (let branch: HTMLElement = dialog; branch.parentElement; branch = branch.parentElement) {
@@ -58,19 +65,27 @@ export function ReaderCommandPalette({
       if (branch.parentElement === document.body) break;
     }
     const keepFilterFocus = (event: FocusEvent) => {
-      if (event.target !== input) input.focus({ preventScroll: true });
+      if (!dialog.contains(event.target as Node)) (inputRef.current ?? listRef.current)?.focus({ preventScroll: true });
     };
     document.addEventListener("focusin", keepFilterFocus, true);
-    input.focus({ preventScroll: true });
     return () => {
       document.removeEventListener("focusin", keepFilterFocus, true);
       for (const { element, inert } of background) element.inert = inert;
     };
   }, []);
 
+  useLayoutEffect(() => { (inputRef.current ?? listRef.current)?.focus({ preventScroll: true }); }, [mode, screen]);
+
   useLayoutEffect(() => {
     const list = listRef.current;
     if (!list) return;
+    list.scrollTop = scrollPositions.current.get(screen) ?? 0;
+  }, [screen]);
+
+  useLayoutEffect(() => {
+    const list = listRef.current;
+    if (!list) return;
+    onVisibleRows?.(Math.max(1, Math.floor(list.clientHeight / 32)));
     if (chooserRef.current !== placeholder) {
       chooserRef.current = placeholder;
       pointerSelectionRef.current = false;
@@ -83,8 +98,8 @@ export function ReaderCommandPalette({
       const bottom = top + list.clientHeight;
       // An oversized wrapped row cannot fit; avoid oscillating between its edges.
       if (row.height > list.clientHeight) {
-        if (row.top > top) list.scrollTop += row.top - top;
-        else if (row.bottom < bottom) list.scrollTop += row.bottom - bottom;
+        if (row.top > top + 1) list.scrollTop += Math.ceil(row.top - top);
+        else if (row.bottom < bottom - 1) list.scrollTop += Math.floor(row.bottom - bottom);
       } else if (row.top < top) list.scrollTop -= Math.ceil(top - row.top);
       else if (row.bottom > bottom) list.scrollTop += Math.ceil(row.bottom - bottom);
     };
@@ -102,6 +117,7 @@ export function ReaderCommandPalette({
   }, [activeIndex, commands, placeholder]);
 
   return (
+    <div className="command-dismiss" onPointerDown={(event) => { if (event.target === event.currentTarget) { event.preventDefault(); event.stopPropagation(); } }} onClick={(event) => { if (event.target === event.currentTarget) { event.preventDefault(); event.stopPropagation(); onDismiss?.(); } }}>
     <div
       ref={dialogRef}
       className="command-palette"
@@ -109,20 +125,24 @@ export function ReaderCommandPalette({
       aria-modal="true"
       aria-label={ariaLabel}
       onKeyDownCapture={(event) => {
-        if (event.key === "Tab") {
+        if (event.key === "Tab" && mode !== "command") {
           event.preventDefault();
-          inputRef.current?.focus({ preventScroll: true });
-        } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+          const target = document.activeElement === (inputRef.current ?? listRef.current)
+            ? dialogRef.current?.querySelector<HTMLButtonElement>("button") : inputRef.current ?? listRef.current;
+          (target ?? inputRef.current ?? listRef.current)?.focus({ preventScroll: true });
+        } else if (["ArrowDown", "ArrowUp"].includes(event.key) || mode === "normal" && ["j", "k", "g", "G", "d", "u"].includes(event.key)) {
           pointerSelectionRef.current = false;
         }
       }}
     >
-      <input
+      <div className="command-prompt">
+      {onBack && <button type="button" aria-label="Return to parent chooser" onClick={onBack}>‹</button>}
+      <span className="command-prefix" aria-hidden="true">{mode === "filter" ? "/" : ":"}</span>
+      {mode === "normal" ? <span className="command-context">{screen === "root" || screen === "commands" ? "Clio Index" : ariaLabel}</span> : <input
         ref={inputRef}
         className="command-filter"
         role="combobox"
         aria-label={placeholder}
-        aria-describedby={hintId}
         aria-autocomplete="list"
         aria-expanded="true"
         aria-controls={listId}
@@ -134,9 +154,9 @@ export function ReaderCommandPalette({
           onQueryChange(event.currentTarget.value);
           onCommandIndexChange(0);
         }}
-      />
-      <p id={hintId} className="command-hint">↑↓ Select · Enter Run · Escape Back to reader</p>
-      <div ref={listRef} id={listId} className="command-list" role="listbox" aria-label={ariaLabel}>
+      />}
+      </div>
+      <div ref={listRef} id={listId} className="command-list" onScroll={event => { scrollPositions.current.set(screen, event.currentTarget.scrollTop); }} role="listbox" tabIndex={mode === "normal" ? 0 : -1} aria-activedescendant={mode === "normal" ? activeId : undefined} aria-label={ariaLabel}>
         {commands.map((command, index) => {
           const state = command.state ?? commandStates?.[command.id];
           const rowId = `${listId}-option-${index}`;
@@ -144,18 +164,19 @@ export function ReaderCommandPalette({
           key={command.key ?? command.id}
           id={rowId}
           role="option"
-          aria-selected={activeIndex === index}
+          aria-selected={activeIndex === index && !command.disabled}
           aria-disabled={command.disabled || undefined}
           aria-labelledby={`${rowId}-label ${rowId}-shortcut`}
           aria-describedby={state ? `${rowId}-state` : undefined}
           className="command-row"
-          style={command.depth ? { paddingLeft: 6 + command.depth * 14 } : undefined}
+          data-applied={state?.active || undefined}
+          style={command.depth ? { paddingLeft: 22 + Math.min(command.depth, 4) * 10 } : undefined}
           onMouseMove={(event) => {
             // Scrolling/reflow can put another row under a stationary pointer.
             // Only actual pointer movement should override keyboard selection.
             if (!event.movementX && !event.movementY) return;
             pointerSelectionRef.current = true;
-            onCommandIndexChange(index);
+            if (!command.disabled) onCommandIndexChange(index);
           }}
           onMouseDown={(event) => event.preventDefault()}
           onClick={() => {
@@ -166,16 +187,14 @@ export function ReaderCommandPalette({
         >
           <span className="command-content">
             <span id={`${rowId}-label`} className="command-label">{command.label ?? command.id}</span>
-            {state && <span id={`${rowId}-state`} className="command-state">
-              {state.active && <span className="command-state-mark" aria-hidden="true">✓</span>}
-              <span className="command-state-text">{state.text}</span>
-            </span>}
+            {state && <span id={`${rowId}-state`} className="command-state">{state.active ? "Applied. " : ""}<span className="command-state-text">{state.text}</span></span>}
           </span>
-          <span id={`${rowId}-shortcut`} className="command-shortcut">{command.shortcut}</span>
+          <span id={`${rowId}-shortcut`} className="command-shortcut">{state && !/^(Current|Not current)/.test(state.text) ? state.text.split(" — ")[0] : command.shortcut}</span>
         </div>;
         })}
       </div>
       {!commands.length && <p className="command-empty" role="status">{emptyMessage}</p>}
+    </div>
     </div>
   );
 }

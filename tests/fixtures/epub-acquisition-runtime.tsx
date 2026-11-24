@@ -1,3 +1,4 @@
+import { indexFilter } from "./index-driver";
 import { createRoot } from "react-dom/client";
 import { StrictMode } from "react";
 import { View } from "foliate-js/view.js";
@@ -181,6 +182,7 @@ async function foliateLifecycle(a: Uint8Array, b: Uint8Array, invalid: Uint8Arra
   const menu = async (label: string) => {
     await until(() => document.querySelector('button[aria-label="Open reader commands (:)"]'), "reader commands");
     (document.querySelector('button[aria-label="Open reader commands (:)"]') as HTMLElement).click();
+    await indexFilter();
     await until(() => [...document.querySelectorAll('[role="option"]')].some(el => el.textContent?.trim().startsWith(label)), label);
     ([...document.querySelectorAll('[role="option"]')].find(el => el.textContent?.trim().startsWith(label)) as HTMLElement).click();
     await frame();

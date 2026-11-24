@@ -1,3 +1,4 @@
+import { commandLineMatches, useClioIndex } from "./clioIndex";
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { preparePdfDocument, pdfErrorMessage } from "../pdf/engine";
 import type { PdfDocument, PdfLoadingTask, PdfPageGeometry, PdfReaderOpenRequest } from "../pdf/engine";
@@ -108,9 +109,10 @@ export function PdfReader({
   const [jumpError, setJumpError] = useState("");
   const jumpFeedbackId = useId();
   const jumpRangeId = useId();
+  const index = useClioIndex();
   const [commandQuery, setCommandQuery] = useState("");
   const [commandIndex, setCommandIndex] = useState(0);
-  const [paletteMode, setPaletteMode] = useState<"commands" | "themes" | "advanced-appearance">("commands");
+  const [paletteMode, setPaletteMode] = useState<"commands" | "themes" | "advanced-appearance" | "page-layout">("commands");
   const [recolorSettings, setRecolorSettings] = useState<PdfRecolorSettings>(() => loadRecolorSettings());
   const committedRecolorSettingsRef = useRef(recolorSettings);
   useEffect(() => {
@@ -216,11 +218,25 @@ export function PdfReader({
   const themeLabel = DOCUMENT_THEMES.find((theme) => theme.id === appearance.effective)?.label ?? "Custom";
   const themes = themeCommands("pdf", appearance.effective, appearance.saved, "Saved — recoloring off");
   const advancedAppearance = pdfAdvancedAppearanceCommands();
-  const visibleCommands = filterReaderCommands(commandQuery, document !== null && !loading, "pdf",
-    paletteMode === "themes" ? themes : paletteMode === "advanced-appearance" ? advancedAppearance
-      : searchableReaderCommands(READER_COMMANDS, [themes, advancedAppearance], commandQuery));
   const effectiveViewMode: ViewMode = viewMode === "spread" &&
     viewerSize.width >= MIN_SPREAD_PAGE_WIDTH * 2 + SPREAD_GAP ? "spread" : "single";
+  const pageLayout = READER_COMMANDS.filter(command => ["single_page_view", "two_page_spread", "toggle_continuous_scrolling"].includes(command.id));
+  const defaultCommands = [
+    { ...READER_COMMANDS.find(c => c.id === "open_document")!, label: "open" },
+    { ...READER_COMMANDS.find(c => c.id === "search")!, label: "search" },
+    { ...READER_COMMANDS.find(c => c.id === "goto_page_with_page_number")!, label: "page" },
+    { id: "single_page_view" as const, key: "index-page-layout", label: "page layout", shortcut: "", state: { active: false, text: `${effectiveViewMode === "spread" ? "Spread" : "Single"}${continuousScrolling ? " · Continuous" : ""}` } },
+    { ...READER_COMMANDS.find(c => c.id === "document_appearance")!, label: "theme", state: { active: false, text: themeLabel } },
+    { ...READER_COMMANDS.find(c => c.id === "fit_to_page_width")!, label: "fit width" },
+  ];
+  const catalog = (index.mode === "command" ? searchableReaderCommands([...READER_COMMANDS, defaultCommands[3]!], [themes, advancedAppearance], "*") : paletteMode === "themes" ? themes : paletteMode === "advanced-appearance" ? advancedAppearance
+    : paletteMode === "page-layout" ? pageLayout
+    : index.mode === "normal" ? defaultCommands
+    : searchableReaderCommands([...READER_COMMANDS, defaultCommands[3]!], [themes, advancedAppearance], "*"));
+  const availableCommands = filterReaderCommands("", document !== null && !loading, "pdf", catalog)
+    .filter(c => c.id !== "back_to_commands" && (index.mode !== "filter" || c.key !== "index-page-layout"));
+  const visibleCommands = index.mode === "command" ? commandLineMatches(commandQuery, availableCommands)
+    : filterReaderCommands(commandQuery, document !== null && !loading, "pdf", availableCommands);
   const commandStates = useMemo(() => getPdfCommandStates({
     viewMode, effectiveViewMode, zoomMode: zoomState.mode, continuousScrolling, nightMode, recolorSettings,
   }), [viewMode, effectiveViewMode, zoomState.mode, continuousScrolling, nightMode, recolorSettings]);
@@ -1144,13 +1160,15 @@ export function PdfReader({
 
   const executePaletteCommand = useCallback((command: ReaderCommand) => {
     if (command.disabled) return;
-    if (command.id === "document_appearance" || command.id === "pdf_advanced_appearance" || command.id === "back_to_commands") {
-      setPaletteMode(command.id === "document_appearance" ? "themes" : command.id === "pdf_advanced_appearance" ? "advanced-appearance" : "commands");
+    if (command.key === "index-page-layout" || command.id === "document_appearance" || command.id === "pdf_advanced_appearance" || command.id === "back_to_commands") {
+      index.clearSequence();
+      index.history.current.push({ screen: paletteMode, query: commandQuery, index: Math.max(0, visibleCommands.indexOf(command)), mode: index.mode });
+      setPaletteMode(command.key === "index-page-layout" ? "page-layout" : command.id === "document_appearance" ? "themes" : command.id === "pdf_advanced_appearance" ? "advanced-appearance" : "commands");
       setCommandQuery("");
       setCommandIndex(0);
       return;
     }
-    if (commandTheme(command.id) || command.id === "toggle_recolor" || command.id.startsWith("recolor_toggle_")) {
+    if (paletteMode === "page-layout" && ["single_page_view", "two_page_spread", "toggle_continuous_scrolling"].includes(command.id) || commandTheme(command.id) || command.id === "toggle_recolor" || command.id.startsWith("recolor_toggle_")) {
       runReaderCommand(command.id);
       return;
     }
@@ -1160,14 +1178,21 @@ export function PdfReader({
     if (command.id !== "open_document" && command.id !== "search" && command.id !== "goto_page_with_page_number" && command.id !== "recolor_set_lightcolor" && command.id !== "recolor_set_darkcolor") {
       requestAnimationFrame(() => viewerRef.current?.focus());
     }
-  }, [runReaderCommand]);
+  }, [runReaderCommand, paletteMode, commandQuery, visibleCommands, index]);
 
   const closeOverlay = useCallback(() => {
+    index.reset();
+    setCommandQuery("");
     setOverlay(null);
     setPaletteMode("commands");
     requestAnimationFrame(() => viewerRef.current?.focus());
   }, []);
 
+  const backIndex = (closeRoot = true) => {
+    const parent = index.history.current.pop();
+    if (!parent) { if (closeRoot) closeOverlay(); return; }
+    setPaletteMode(parent.screen as typeof paletteMode); setCommandQuery(parent.query); setCommandIndex(parent.index); index.setMode(parent.mode);
+  };
   const searchReady = normalizeSearchQuery(searchQuery) === searchedQuery;
   useReaderKeyboard(
     {
@@ -1182,6 +1207,7 @@ export function PdfReader({
       commandIndex,
     },
     {
+      paletteKey: event => index.key(event, visibleCommands, commandIndex, commandQuery, setCommandQuery, setCommandIndex, executePaletteCommand, backIndex),
       closeOverlay,
       moveMatch: search.moveMatch,
       runSearch: search.runSearch,
@@ -1199,7 +1225,7 @@ export function PdfReader({
       setCommandQuery,
       setCommandIndex,
       setOverlay: (next) => {
-        if (next === "commands") setPaletteMode("commands");
+        if (next === "commands") { index.reset(); setPaletteMode("commands"); }
         setOverlay(next);
       },
     },
@@ -1337,6 +1363,7 @@ export function PdfReader({
             </>}
             {loading && <span className="status-loading">Opening PDF…</span>}
             {overlay === null && <button className="status-commands" aria-label="Open reader commands (:)" onClick={() => {
+              index.reset();
               setPaletteMode("commands");
               setCommandQuery("");
               setCommandIndex(0);
@@ -1344,13 +1371,14 @@ export function PdfReader({
             }}>Commands :</button>}
           </footer>
           {overlay === "commands" && <ReaderCommandPalette
+            mode={index.mode} screen={paletteMode} onBack={paletteMode === "commands" ? undefined : backIndex} onDismiss={closeOverlay} onVisibleRows={rows => { index.visibleRows.current = rows; }}
             commands={visibleCommands}
             commandStates={commandStates}
             commandIndex={commandIndex}
             query={commandQuery}
             placeholder={paletteMode === "themes" ? "Filter document themes" : paletteMode === "advanced-appearance" ? "Filter advanced PDF appearance" : "Filter commands"}
             ariaLabel={paletteMode === "themes" ? "Document themes" : paletteMode === "advanced-appearance" ? "Advanced PDF appearance" : "Reader commands"}
-            onQueryChange={setCommandQuery}
+            onQueryChange={query => { index.selectedExplicitly.current = false; setCommandQuery(query); }}
             onCommandIndexChange={setCommandIndex}
             onExecute={executePaletteCommand}
           />}

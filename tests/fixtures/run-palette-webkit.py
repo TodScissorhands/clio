@@ -1,6 +1,8 @@
 """Run the shared React palette integration fixture in an offscreen WebKitGTK view."""
 import json
 import sys
+import os
+import subprocess
 
 import gi
 
@@ -20,7 +22,34 @@ window.add(view)
 def receive(_manager, message):
     global result
     payload = json.loads(message.get_js_value().to_string())
-    if "resize" in payload:
+    if "nativeKey" in payload:
+        native = Gtk.Window()
+        native.set_default_size(800, 600)
+        window.remove(view)
+        native.add(view)
+        native.show_all()
+        view.grab_focus()
+        def deliver():
+            subprocess.run(["xdotool", "windowfocus", "--sync", str(native.get_window().get_xid()), "key", "--clearmodifiers", payload["nativeKey"]], check=True)
+            def acknowledge():
+                native.remove(view)
+                window.add(view)
+                window.show_all()
+                native.destroy()
+                view.evaluate_javascript("window.__snapshotDone=true", -1, None, None, None, None, None)
+                return GLib.SOURCE_REMOVE
+            GLib.timeout_add(100, acknowledge)
+            return GLib.SOURCE_REMOVE
+        GLib.timeout_add(100, deliver)
+    elif "snapshot" in payload:
+        directory = "/tmp/clio-index-evidence"
+        os.makedirs(directory, exist_ok=True)
+        def captured(widget, result, _data=None):
+            surface = widget.get_snapshot_finish(result)
+            surface.write_to_png(os.path.join(directory, payload["snapshot"]))
+            widget.evaluate_javascript("window.__snapshotDone=true", -1, None, None, None, None, None)
+        view.get_snapshot(WebKit2.SnapshotRegion.VISIBLE, WebKit2.SnapshotOptions.NONE, None, captured, None)
+    elif "resize" in payload:
         width, height = payload["resize"]
         window.set_size_request(round(width * payload["scale"]), round(height * payload["scale"]))
         window.set_default_size(round(width * payload["scale"]), round(height * payload["scale"]))

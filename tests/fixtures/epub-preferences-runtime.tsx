@@ -1,3 +1,4 @@
+import { indexFilter, indexClose, indexBack } from "./index-driver";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import type { View } from "foliate-js/view.js";
@@ -59,6 +60,7 @@ async function key(value: string, init: KeyboardEventInit = {}) {
   await settle();
 }
 async function filter(query: string) {
+  await indexFilter();
   const input = document.querySelector<HTMLInputElement>(".command-filter")!;
   check(input, "chooser disappeared");
   Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, query);
@@ -66,6 +68,7 @@ async function filter(query: string) {
   await settle();
 }
 async function choose(query: string) {
+  if (query.startsWith("Back to")) { await indexBack(); return; }
   await filter(query);
   const rows = document.querySelectorAll<HTMLElement>('[role="option"]');
   check(rows.length === 1, `ambiguous choice ${query}: ${[...rows].map((row) => row.textContent)}`);
@@ -73,14 +76,16 @@ async function choose(query: string) {
   await key("Enter");
 }
 async function palette() {
-  if (document.querySelector(".command-filter")) await key("Escape");
+  if (document.querySelector(".command-palette")) await indexClose();
   document.querySelector<HTMLElement>('[aria-label="EPUB reading area"],.document-viewport')!.focus();
   await key(":", { code: "Semicolon", shiftKey: true });
+  await until(() => document.querySelector(".command-palette"), "Index did not open");
+  await indexFilter();
   await until(() => document.querySelector(".command-filter"), "commands did not open");
 }
 async function command(query: string) { await palette(); await choose(query); }
 async function dismiss() {
-  if (document.querySelector(".command-filter")) await key("Escape");
+  if (document.querySelector(".command-palette")) await indexClose();
   check(document.activeElement?.getAttribute("aria-label") === "EPUB reading area", "Escape lost reader focus");
 }
 async function ready() {
@@ -179,8 +184,8 @@ async function run() {
     check(document.activeElement === input && input.value === choice && stored()[savedField] === expected,
       `${field} did not apply immediately while preserving its filter`);
     await choose("Back to Reading preferences");
-    check(input.value === "" && document.querySelector('[aria-selected="true"]')?.textContent?.includes("Back to commands"),
-      `${field} Back failed to clear its local query and select the first parent row`);
+    check(input.value === `${field}…` && document.querySelector('[aria-selected="true"]')?.textContent?.includes(field),
+      `${field} Back failed to restore the parent query and selection`);
   }
   await until(() => bodyFont() === "22px" && first().doc.defaultView!.getComputedStyle(first().doc.body).fontFamily === "sans-serif" &&
     view.renderer.getAttribute("max-inline-size") === "720", "field chooser preferences did not reach the real renderer");

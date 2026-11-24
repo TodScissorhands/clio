@@ -1,3 +1,4 @@
+import { commandLineMatches, useClioIndex } from "../reader/clioIndex";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { loadEpubReadingPosition, saveEpubReadingPosition } from "../platform/readingPosition";
@@ -36,6 +37,7 @@ export function FoliateReader({ sessionId, canonicalPath, prepared, onClose, onO
   const [preferences, setPreferences] = useState(loadEpubPreferences);
   const [mode, setMode] = useState<"paged" | "continuous">("paged");
   const [overlay, setOverlay] = useState<ReaderOverlay>(null);
+  const index = useClioIndex();
   const [menu, setMenu] = useState<"root" | "toc" | "appearance" | "preferences" | "preference-field">("root");
   const [preferenceField, setPreferenceField] = useState<EpubPreferenceField>("fontScale");
   const [query, setQuery] = useState("");
@@ -138,10 +140,13 @@ export function FoliateReader({ sessionId, canonicalPath, prepared, onClose, onO
     finally { if (generation === searchGeneration.current) setSearching(false); }
   };
   const closeOverlay = () => {
-    setOverlay(null); setQuery(""); setMenu("root");
+    index.reset(); setOverlay(null); setQuery(""); setMenu("root");
     restoreHostFocus.current = true;
   };
-  const openMenu = (next: typeof menu) => {
+  const openMenu = (next: typeof menu, selectedIndex = commandIndex) => {
+    index.clearSequence();
+    if (overlay === "commands" && next !== "root") index.history.current.push({ screen: menu === "preference-field" ? `field:${preferenceField}` : menu, query, index: selectedIndex, mode: index.mode });
+    else if (next === "root") index.reset();
     setMenu(next); setQuery(""); setCommandIndex(0); setOverlay("commands");
   };
   const runCommand = (id: ReaderCommandId) => {
@@ -184,7 +189,7 @@ export function FoliateReader({ sessionId, canonicalPath, prepared, onClose, onO
   const tocCommands: ReaderCommand[] = [];
   const flatten = (items: TOCItem[], depth = 0) => {
     for (const item of items) {
-      tocCommands.push({ id: "select_chapter", key: `chapter:${tocCommands.length}`, scope: "epub", shortcut: "", label: item.label, targetHref: item.href, depth });
+      tocCommands.push({ id: "select_chapter", key: `chapter:${tocCommands.length}`, scope: "epub", shortcut: "", label: item.label, targetHref: item.href, disabled: !item.href, depth });
       flatten(item.subitems ?? [], depth + 1);
     }
   };
@@ -199,33 +204,54 @@ export function FoliateReader({ sessionId, canonicalPath, prepared, onClose, onO
   if (matches.length) root.splice(3, 0,
     { id: "next_item", scope: "epub", label: "Next search match", shortcut: "Enter in search" },
     { id: "previous_item", scope: "epub", label: "Previous search match", shortcut: "Shift+Enter in search" });
-  const catalog = menu === "toc" ? [{ id: "back_to_commands" as const, scope: "epub" as const, label: "Back to commands", shortcut: "" }, ...tocCommands]
+  const defaults: ReaderCommand[] = [
+    { ...root.find(c => c.id === "open_document")!, label: "open" },
+    { ...root.find(c => c.id === "search")!, label: "search" },
+    { ...root.find(c => c.id === "go_to_chapter")!, label: "chapter" },
+    { id: mode === "paged" ? "continuous_layout" : "paged_layout", key: "index-layout", scope: "epub", shortcut: "", label: "layout", state: { active: false, text: mode === "paged" ? "Paged" : "Continuous" } },
+    { ...root.find(c => c.id === "document_appearance")!, label: "theme", state: { active: false, text: DOCUMENT_THEMES.find(t => t.id === applied.theme)?.label ?? "Original" } },
+    { ...root.find(c => c.id === "epub_reading_preferences")!, label: "typography" },
+  ];
+  const catalog = index.mode === "command" ? searchableReaderCommands([...root, defaults[3]!], [themes, preferenceChoices], "*") : menu === "toc" ? tocCommands
     : menu === "appearance" ? themes : menu === "preferences" ? epubPreferenceMenuCommands(preferences, applied, retained)
     : menu === "preference-field" ? epubPreferenceCommands(preferences, applied, retained, preferenceField)
-    : searchableReaderCommands(root, [themes, preferenceChoices], query);
-  const commands = filterReaderCommands(query, !!book, "epub", catalog);
+    : index.mode === "normal" ? defaults
+    : searchableReaderCommands([...root, defaults[3]!], [themes, preferenceChoices], "*");
+  const availableCommands = filterReaderCommands("", !!book, "epub", catalog).filter(c => !["back_to_commands", "back_to_preferences"].includes(c.id) && (index.mode !== "filter" || c.key !== "index-layout"));
+  const commands = index.mode === "command" ? commandLineMatches(query, availableCommands) : filterReaderCommands(query, !!book, "epub", availableCommands);
   const execute = (command: ReaderCommand) => {
     if (command.disabled) return;
     if (command.id === "back_to_commands") { openMenu("root"); return; }
     if (command.id === "back_to_preferences") { openMenu("preferences"); return; }
     if (command.id === "epub_preference_field") {
       setPreferenceField(command.value as EpubPreferenceField);
-      openMenu("preference-field"); return;
+      openMenu("preference-field", Math.max(0, commands.indexOf(command))); return;
     }
+    if (command.key === "index-layout") { runCommand(command.id); return; }
     const theme = commandTheme(command.id);
     const updated = applyEpubPreferenceCommand(preferences, command);
     if (theme) { setPreferences({ ...preferences, theme }); return; }
     if (updated) { setPreferences(updated); return; }
-    if (["go_to_chapter", "document_appearance", "epub_reading_preferences"].includes(command.id)) { runCommand(command.id); return; }
+    if (["go_to_chapter", "document_appearance", "epub_reading_preferences"].includes(command.id)) {
+      openMenu(command.id === "go_to_chapter" ? "toc" : command.id === "document_appearance" ? "appearance" : "preferences", Math.max(0, commands.indexOf(command))); return;
+    }
     if (command.id === "close_document") { setOverlay(null); runCommand(command.id); return; }
     closeOverlay();
     if (command.id === "select_chapter" && command.targetHref) void navigate(command.targetHref);
     else runCommand(command.id);
   };
+  const backIndex = (closeRoot = true) => {
+    const parent = index.history.current.pop();
+    if (!parent) { if (closeRoot) closeOverlay(); return; }
+    if (parent.screen.startsWith("field:")) { setPreferenceField(parent.screen.slice(6) as EpubPreferenceField); setMenu("preference-field"); }
+    else setMenu(parent.screen as typeof menu);
+    setQuery(parent.query); setCommandIndex(parent.index); index.setMode(parent.mode);
+  };
   const register = useReaderKeyboard({ readerKind: "epub", overlay, commands, searchReady: !searching, matchCount: matches.length, jumpInput: "", pageCount: 0, commandIndex, epubLayoutMode: mode }, {
+    paletteKey: event => index.key(event, commands, commandIndex, query, setQuery, setCommandIndex, execute, backIndex),
     closeOverlay, moveMatch, runSearch: () => void runSearch(), goToPage: () => {}, executePaletteCommand: execute,
     runCommand, scrollContinuous: (direction, amount, repeat) => { void scrollContinuous(direction, amount, repeat); },
-    setCommandQuery: setQuery, setCommandIndex, setOverlay,
+    setCommandQuery: setQuery, setCommandIndex, setOverlay: next => { if (next === "commands") { index.reset(); setMenu("root"); } setOverlay(next); },
   });
   registerRef.current = register;
   useLayoutEffect(() => {
@@ -441,8 +467,8 @@ export function FoliateReader({ sessionId, canonicalPath, prepared, onClose, onO
       {overlay === null && <button className="status-commands" aria-label="Open reader commands (:)" onClick={() => openMenu("root")}>Commands :</button>}
     </footer>
     {overlay === "search" && snippet && <div className="visually-hidden" role="status">{snippet}</div>}
-    {overlay === "commands" && <ReaderCommandPalette commands={commands} commandStates={menu === "root" ? { ...getEpubCommandStates(mode), toggle_night_mode: { active: effectiveNightMode, text: effectiveNightMode ? "On" : "Off" } } : undefined}
-      commandIndex={commandIndex} query={query} onQueryChange={setQuery} onCommandIndexChange={setCommandIndex} onExecute={execute}
+    {overlay === "commands" && <ReaderCommandPalette mode={index.mode} screen={menu === "preference-field" ? `field:${preferenceField}` : menu} onBack={menu === "root" ? undefined : backIndex} onDismiss={closeOverlay} onVisibleRows={rows => { index.visibleRows.current = rows; }} commands={commands} commandStates={menu === "root" ? { ...getEpubCommandStates(mode), toggle_night_mode: { active: effectiveNightMode, text: effectiveNightMode ? "On" : "Off" } } : undefined}
+      commandIndex={commandIndex} query={query} onQueryChange={query => { index.selectedExplicitly.current = false; setQuery(query); }} onCommandIndexChange={setCommandIndex} onExecute={execute}
       placeholder={menu === "toc" ? "Filter chapters" : menu === "preferences" || menu === "preference-field" ? "Filter reading preferences" : menu === "appearance" ? "Filter document themes" : "Filter commands"}
       ariaLabel={menu === "toc" ? "Choose a chapter" : menu === "preferences" || menu === "preference-field" ? "Reading preferences" : menu === "appearance" ? "Document themes" : "Reader commands"} />}
   </>, mounted.chrome);

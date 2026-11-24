@@ -1,3 +1,4 @@
+import { indexFilter, indexClose } from "./index-driver";
 import { useRef } from "react";
 import { createRoot } from "react-dom/client";
 import App from "../../src/App";
@@ -194,6 +195,8 @@ async function command(id: ReaderCommandId) {
   const target = document.activeElement ?? document.body;
   target.dispatchEvent(new KeyboardEvent("keydown", { key: ":", code: "Semicolon", shiftKey: true, bubbles: true, cancelable: true }));
   target.dispatchEvent(new KeyboardEvent("keyup", { key: ":", code: "Semicolon", shiftKey: true, bubbles: true }));
+  await until(() => document.querySelector(".command-palette"), "Index did not open");
+  await indexFilter();
   await until(() => document.querySelector(".command-filter"), "App palette did not open");
   const input = document.querySelector<HTMLInputElement>(".command-filter")!;
   Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, id);
@@ -202,7 +205,7 @@ async function command(id: ReaderCommandId) {
   const option = [...document.querySelectorAll<HTMLElement>('.command-list [role="option"]')].find((entry) => entry.querySelector(".command-label")?.textContent === label);
   check(option, `App command unavailable: ${id}`); option.click();
   if (id === "toggle_recolor" || id.startsWith("recolor_toggle_")) {
-    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    await indexClose();
   }
   await until(() => !document.querySelector(".command-palette"), `${id} did not execute`);
 }

@@ -1,3 +1,4 @@
+import { indexFilter, indexClose } from "./index-driver";
 import { useRef } from "react";
 import { createRoot } from "react-dom/client";
 import App from "../../src/App";
@@ -137,6 +138,8 @@ async function key(key: string, init: KeyboardEventInit = {}) {
 }
 async function command(id: ReaderCommandId) {
   await key(":", { shiftKey: true, code: "Semicolon" });
+  await until(() => document.querySelector(".command-palette"), "Index did not open");
+  await indexFilter();
   await until(() => document.querySelector(".command-filter"), "production palette did not open");
   const input = document.querySelector<HTMLInputElement>(".command-filter")!;
   Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, id);
@@ -147,7 +150,7 @@ async function command(id: ReaderCommandId) {
     .find((entry) => entry.querySelector(".command-label")?.textContent === label);
   check(option, `production command unavailable: ${id}`);
   option.click();
-  if (id === "toggle_recolor" || id.startsWith("recolor_toggle_")) await key("Escape");
+  if (id === "toggle_recolor" || id.startsWith("recolor_toggle_")) await indexClose();
   await until(() => !document.querySelector(".command-palette"), `${id} did not execute`);
 }
 async function openFile(name: string) {

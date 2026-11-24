@@ -1,3 +1,4 @@
+import { useClioIndex } from "../../src/reader/clioIndex";
 import { StrictMode, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { ReaderCommandPalette } from "../../src/reader/ReaderCommandPalette";
@@ -29,6 +30,7 @@ const preferenceChoices = epubPreferenceCommands(
   DEFAULT_EPUB_PREFERENCES,
 );
 const themes = themeCommands("epub", "original");
+let enableIndex: (enabled: boolean) => void;
 let updateReader: (kind: ReaderKind) => void;
 let replaceQuery: (query: string) => void;
 let replaceIndex: (index: number) => void;
@@ -38,6 +40,9 @@ let updateOverlay: (overlay: ReaderOverlay) => void;
 const routed: string[] = [];
 
 function TestReader() {
+  const clio = useClioIndex();
+  const [indexEnabled, setIndexEnabled] = useState(false);
+  enableIndex = setIndexEnabled;
   const [kind, setKind] = useState<ReaderKind>("pdf");
   const [dark, setDark] = useState(false);
   const [continuous, setContinuous] = useState(false);
@@ -78,6 +83,7 @@ function TestReader() {
     searchReady: false, matchCount: 0, jumpInput: "", pageCount: 120,
     epubLayoutMode: continuous ? "continuous" : "paged", continuousScrolling: continuous,
   }, {
+    paletteKey: indexEnabled ? event => clio.key(event, commands, index, query, setQuery, setIndex, execute, closeOverlay) : undefined,
     closeOverlay, executePaletteCommand: execute,
     moveMatch: () => {}, runSearch: () => {}, goToPage: () => {},
     runCommand: (command) => { routed.push(command); },
@@ -95,6 +101,7 @@ function TestReader() {
     <textarea id="ordinary-textarea" aria-label="Ordinary textarea" />
     <output id="destination">{destination}</output>
     {overlay === "commands" && <ReaderCommandPalette
+      mode={indexEnabled ? clio.mode : "filter"} onDismiss={closeOverlay} onVisibleRows={rows => { clio.visibleRows.current = rows; }}
       commands={commands} commandIndex={index} query={query}
       placeholder={mode === "chapters" ? "Filter chapters" : mode === "themes" ? "Filter document themes"
         : mode === "preferences" ? "Filter reading preferences" : "Filter commands"}
@@ -120,10 +127,11 @@ const check = (condition: unknown, message: string) => {
 };
 const filter = () => document.querySelector<HTMLInputElement>(".command-filter")!;
 const selected = () => document.querySelector<HTMLElement>('.command-row[aria-selected="true"]')!;
-async function key(key: string, shiftKey = false) {
-  const event = new KeyboardEvent("keydown", { key, shiftKey, bubbles: true, cancelable: true });
+async function key(key: string, modifiers: boolean | KeyboardEventInit = false) {
+  const init = typeof modifiers === "boolean" ? { shiftKey: modifiers } : modifiers;
+  const event = new KeyboardEvent("keydown", { key, ...init, bubbles: true, cancelable: true });
   document.activeElement!.dispatchEvent(event);
-  document.activeElement!.dispatchEvent(new KeyboardEvent("keyup", { key, shiftKey, bubbles: true }));
+  document.activeElement!.dispatchEvent(new KeyboardEvent("keyup", { key, ...init, bubbles: true }));
   await settle();
   return event;
 }
@@ -135,8 +143,8 @@ async function query(value: string) {
 }
 async function open(value = "") {
   await key(":", true);
-  await query(value);
-  check(document.activeElement === filter(), "palette entry must focus the filter");
+  if (filter()) { await query(value); check(document.activeElement === filter(), "palette entry must focus the filter"); }
+  else check(document.activeElement?.classList.contains("command-list"), "Normal entry must focus list");
 }
 function checkActive() {
   const input = filter();
@@ -144,6 +152,11 @@ function checkActive() {
   const list = document.getElementById(input.getAttribute("aria-controls")!);
   check(list?.getAttribute("role") === "listbox", "combobox must control its listbox");
   const option = selected();
+  if ([...document.querySelectorAll('[role="option"]')].every(row => row.getAttribute("aria-disabled") === "true")) {
+    check(!option && !input.hasAttribute("aria-activedescendant"), "disabled-only results acquired selection");
+    check(document.activeElement === input, "disabled-only results lost filter focus");
+    return;
+  }
   check(option && input.getAttribute("aria-activedescendant") === option.id, "active descendant must match selection");
   check(option.getAttribute("role") === "option", "selected row must expose an option");
   check(document.activeElement === input, "option navigation must not transfer DOM focus");
@@ -158,7 +171,7 @@ function checkVisible() {
 function checkShortcutClearance() {
   const list = document.querySelector<HTMLElement>(".command-list")!;
   const bounds = list.getBoundingClientRect();
-  check(list.scrollWidth <= list.clientWidth, "palette shortcuts create horizontal overflow");
+  check(list.scrollWidth <= list.clientWidth, `palette shortcuts create horizontal overflow: ${list.scrollWidth}/${list.clientWidth}; ${JSON.stringify([...list.children].map(e => ({w:e.getBoundingClientRect().width, s:e.scrollWidth, t:e.textContent}))) }`);
   for (const shortcut of list.querySelectorAll<HTMLElement>(".command-shortcut")) {
     const rect = shortcut.getBoundingClientRect();
     const y = (rect.top + rect.bottom) / 2;
@@ -376,10 +389,10 @@ async function run() {
     check(pending.getAttribute("aria-selected") === "true" && !pending.hasAttribute("aria-checked"),
       "keyboard selection was conflated with applied preference state");
     await query("Font: Publisher");
-    check(!!selected().querySelector('.command-state [aria-hidden="true"]'), "applied preference has no non-color current mark");
+    check(selected().hasAttribute("data-applied") && selected().querySelector(".command-state")?.textContent?.startsWith("Applied."), "applied preference lacks distinct applied semantics");
     await query("epub_text_larger");
     checkActive();
-    const disabled = selected();
+    const disabled = document.querySelector<HTMLElement>('[role="option"][aria-disabled="true"]')!;
     check(disabled.getAttribute("aria-disabled") === "true", "bounded text-size action lacks disabled option semantics");
     const description = document.getElementById(disabled.getAttribute("aria-describedby")!);
     check(description?.textContent?.includes("200%"), "disabled size action does not describe the saved size");
@@ -415,7 +428,7 @@ async function run() {
     const tallScroll = chapterList.scrollTop;
     updateAppearance(true); await settle();
     updateAppearance(false); await settle();
-    check(chapterList.scrollTop === tallScroll, "oversized row oscillated between its edges on rerender");
+    check(chapterList.scrollTop === tallScroll, `oversized row oscillated between its edges on rerender: ${tallScroll} -> ${chapterList.scrollTop}, row ${JSON.stringify(selected().getBoundingClientRect())}, list ${JSON.stringify(chapterList.getBoundingClientRect())}`);
     const tall = selected().getBoundingClientRect();
     const chapterBounds = chapterList.getBoundingClientRect();
     check(tall.top <= chapterBounds.top + 1 && tall.bottom >= chapterBounds.bottom - 1,
@@ -450,8 +463,9 @@ async function run() {
       check(normalRatio >= 4.5 && selectedRatio >= 4.5, "shortcut text fails WCAG AA contrast");
       check(ratio(palette.color, palette.backgroundColor) >= 4.5 && ratio(palette.color, active.backgroundColor) >= 4.5,
         "command label text fails WCAG AA contrast");
-      check(active.boxShadow !== "none", "active option relies on fill alone");
-      const indicator = active.boxShadow.match(/rgb\([^)]+\)/)![0];
+      const marker = getComputedStyle(selected(), "::before");
+      check(marker.content.includes("›"), "active option relies on fill alone");
+      const indicator = marker.color;
       check(ratio(indicator, active.backgroundColor) >= 3, "active-state indicator fails non-text contrast");
       results.push({ width, height, dark, normalRatio, selectedRatio });
       await key("Escape");
@@ -463,6 +477,37 @@ async function run() {
       check(document.activeElement?.id === "reading-area", "repeated close left stale focus");
     }
   }
+  enableIndex(true); updateReader("pdf"); await settle(); await open();
+  check(document.activeElement?.classList.contains("command-list"), "Normal mode lacks genuine list focus");
+  await key("k"); check(selected().id.endsWith(`option-${document.querySelectorAll(".command-row").length - 1}`), "Normal mode did not wrap backwards");
+  await key("g"); await key("g"); check(selected().id.endsWith("option-0"), "gg failed");
+  (window as unknown as { __snapshotDone: boolean }).__snapshotDone = false;
+  bridge({ nativeKey: "j" });
+  for (let n = 0; !(window as unknown as { __snapshotDone: boolean }).__snapshotDone; n++) { check(n < 240, "native input timed out"); await settle(); }
+  check(selected().id.endsWith("option-1"), "native XTEST j did not reach the focused Index");
+  await key("G"); checkVisible();
+  await key("u", { ctrlKey: true }); checkVisible();
+  await key("d", { ctrlKey: true }); checkVisible();
+  await key("/"); check(document.activeElement === filter(), "filter mode did not focus the input");
+  await query("jkh l"); check(filter().value === "jkh l", "input letters were consumed as navigation");
+  await key("Escape"); check(!document.querySelector(".command-filter"), "input Escape did not return to Normal");
+  await key(":"); check(document.activeElement === filter(), "command mode did not focus input");
+  await key("Escape"); await key("Escape");
+  await open();
+  for (const [width, height] of [[420, 600], [1000, 700], [1440, 800]]) {
+    await resize(width!, height!);
+    for (const dark of [false, true]) {
+      updateAppearance(dark); await settle();
+      const panel = document.querySelector(".command-palette")!.getBoundingClientRect();
+      check(panel.width <= 441 && panel.height <= height! * .55 + 1, "Index exceeds compact bounds");
+      (window as unknown as { __snapshotDone: boolean }).__snapshotDone = false;
+      bridge({ snapshot: `index-${width}-${height}-${dark ? "dark" : "light"}.png` });
+      for (let n = 0; !(window as unknown as { __snapshotDone: boolean }).__snapshotDone; n++) { check(n < 240, "native snapshot timed out"); await settle(); }
+    }
+  }
+  document.querySelector(".command-dismiss")!.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true }));
+  document.querySelector(".command-dismiss")!.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+  await settle(); check(!document.querySelector(".command-palette"), "outside pointer failed to dismiss");
   bridge({ passed: true, results, modifierResults });
 }
 void run().catch((error: unknown) => bridge({

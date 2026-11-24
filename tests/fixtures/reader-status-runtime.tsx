@@ -1,3 +1,4 @@
+import { indexFilter, indexClose } from "./index-driver";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import type { View } from "foliate-js/view.js";
@@ -117,6 +118,8 @@ async function inputValue(input: HTMLInputElement, text: string) {
 }
 async function palette() {
   focusReader(); await key(":", { shiftKey: true, code: "Semicolon" });
+  await until(() => document.querySelector(".command-palette"), "Index did not open");
+  await indexFilter();
   await until(() => document.querySelector(".command-filter"), "palette did not open");
 }
 async function choose(query: string) {
@@ -127,6 +130,8 @@ async function choose(query: string) {
 async function command(query: string) { await palette(); await choose(query); }
 async function chapter(query: string, paged = true) {
   await command("Go to chapter");
+  await until(() => document.querySelector(".command-palette"), "Index did not open");
+  await indexFilter();
   await until(() => document.querySelector(".command-filter"), "chapter palette did not open");
   const original = view.goTo;
   let navigation: ReturnType<View["goTo"]> | undefined;
@@ -844,7 +849,8 @@ async function run() {
     const rows = document.querySelectorAll<HTMLElement>('.command-list [role="option"]');
     check(rows.length === 1, "malformed TOC label was discarded");
     rows[0]!.click();
-    await until(() => !document.querySelector(".command-palette"), "invalid TOC activation did not close the palette");
+    check(rows[0]!.getAttribute("aria-disabled") === "true" && !!document.querySelector(".command-palette"), "invalid TOC heading did not remain disabled");
+    await indexClose();
     check(invalidNavigations === 0 && location()!.start.cfi === beforeInvalid,
       "malformed TOC destination caused navigation");
     await readyEpub();
@@ -1057,6 +1063,8 @@ async function run() {
       assertStatus(true); const measured = geometry();
       const before = document.querySelector<HTMLElement>(".foliate-reader")!.getBoundingClientRect().height;
       bar()!.querySelector<HTMLButtonElement>(".status-commands")!.click();
+      await until(() => document.querySelector(".command-palette"), "Index did not open");
+      await indexFilter();
       await until(() => document.querySelector(".command-filter"), "commands entry did not open the real palette");
       check(!bar()!.querySelector(".status-commands"), "commands entry remains focusable behind the palette");
       check(bar()?.getBoundingClientRect().height === 24, "palette did not reserve the external status bar");
@@ -1064,7 +1072,7 @@ async function run() {
       await key("Tab"); await key("Tab", { shiftKey: true });
       check(document.activeElement === document.querySelector(".command-filter"), "palette focus model regressed");
       check(document.querySelector<HTMLElement>(".foliate-reader")!.getBoundingClientRect().height === before, "palette returned footer space to publication layout");
-      await key("Escape"); await readyEpub();
+      await indexClose(); await readyEpub();
       check(document.activeElement?.getAttribute("aria-label") === "EPUB reading area", "palette Escape did not restore host reader focus");
       cases.push({ width: innerWidth, height: innerHeight, dark, ...measured });
     }
@@ -1113,7 +1121,7 @@ async function run() {
   await until(() => document.querySelector(".status-page")?.textContent?.includes("Page 2 / 3"), "PDF physical-page navigation regressed");
   await command("theme_sepia");
   check(document.activeElement === document.querySelector(".command-filter"), "PDF theme selection lost filter focus");
-  await key("Escape");
+  await indexClose();
   check(document.activeElement?.getAttribute("aria-label") === "PDF reading area", "PDF theme chooser Escape did not restore reader focus");
   check(document.querySelector(".status-preset")?.textContent, "PDF preset status disappeared");
   focusReader(); await key("g");

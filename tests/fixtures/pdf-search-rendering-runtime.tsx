@@ -1,3 +1,4 @@
+import { indexFilter, indexClose } from "./index-driver";
 import { createRoot } from "react-dom/client";
 import App from "../../src/App";
 import type { PdfViewerHandle } from "../../src/pdf/PdfViewerSurface";
@@ -45,12 +46,14 @@ async function key(key: string, init: KeyboardEventInit = {}) {
 }
 async function command(id: ReaderCommandId) {
   await key(":", { shiftKey: true, code: "Semicolon" });
+  await until(() => document.querySelector(".command-palette"), "Index did not open");
+  await indexFilter();
   await until(() => document.querySelector(".command-filter"), "Palette did not open");
   const entry = [...READER_COMMANDS, ...pdfAdvancedAppearanceCommands(), ...themeCommands("pdf", "original")].find((candidate) => candidate.id === id)!;
   value(document.querySelector<HTMLInputElement>(".command-filter")!, entry.label); await settle();
   const option = [...document.querySelectorAll<HTMLElement>('.command-list [role="option"]')].find((candidate) => candidate.querySelector(".command-label")?.textContent?.endsWith(entry.label));
   check(option, `Command unavailable: ${id}`); option.click(); await settle();
-  if (document.querySelector(".command-palette")) await key("Escape");
+  if (document.querySelector(".command-palette")) await indexClose();
   await until(() => !document.querySelector(".command-palette"), `Command did not execute: ${id}`);
 }
 async function openFile(name: string) {
