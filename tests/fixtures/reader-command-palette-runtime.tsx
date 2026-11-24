@@ -508,6 +508,50 @@ async function run() {
   document.querySelector(".command-dismiss")!.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true }));
   document.querySelector(".command-dismiss")!.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
   await settle(); check(!document.querySelector(".command-palette"), "outside pointer failed to dismiss");
+
+  await open();
+  const panel = () => document.querySelector<HTMLElement>(".command-palette")!;
+  const header = () => document.querySelector<HTMLElement>(".command-prompt")!;
+  const rect = () => panel().getBoundingClientRect();
+  const drag = (dx: number, dy: number, target: HTMLElement = header()) => {
+    const r = rect(), x = r.right - 6, y = r.top + 12;
+    const init = { bubbles: true, cancelable: true, pointerId: 7, isPrimary: true, button: 0, clientX: x, clientY: y };
+    // Synthetic events cannot acquire native capture; real capture is verified by the native drag probe.
+    const capture = header().setPointerCapture;
+    header().setPointerCapture = () => {};
+    target.dispatchEvent(new PointerEvent("pointerdown", init));
+    header().dispatchEvent(new PointerEvent("pointermove", { ...init, clientX: x + dx, clientY: y + dy }));
+    header().dispatchEvent(new PointerEvent("pointerup", init));
+    header().setPointerCapture = capture;
+  };
+  const focusBeforeDrag = document.activeElement;
+  const initial = rect();
+  drag(-50, 70); await settle();
+  check(Math.abs(rect().left - initial.left + 50) < 1 && Math.abs(rect().top - initial.top - 70) < 1, "prompt drag failed");
+  check(document.activeElement === focusBeforeDrag, "drag stole keyboard focus");
+  const moved = rect();
+  await key(":"); await settle();
+  check(Math.abs(rect().left - moved.left) < 1 && Math.abs(rect().top - moved.top) < 1, "mode transition reset drag position");
+  drag(60, 60, filter()); await settle();
+  check(Math.abs(rect().left - moved.left) < 1, "input became a drag handle");
+  await query("document_appearance"); await key("Enter");
+  check(Math.abs(rect().left - moved.left) < 1 && Math.abs(rect().top - moved.top) < 1, "chooser transition reset drag position");
+  await query("back_to_commands"); await key("Enter"); await key("Escape");
+  drag(5000, 5000); await settle();
+  check(rect().right <= innerWidth - 3 && rect().bottom <= innerHeight - 3, "drag exceeded viewport");
+  await resize(420, 600);
+  check(rect().right <= innerWidth - 3 && rect().bottom <= innerHeight - 3, "resize did not clamp drag position");
+  drag(-5000, -5000); await settle();
+  check(Math.abs(rect().left - 4) < 1 && Math.abs(rect().top - 4) < 1, "leading edge clamp failed");
+  await key("Escape"); await open();
+  check(Math.abs(rect().left - (innerWidth - rect().width) / 2) < 1 && Math.abs(rect().top - innerHeight * .09) < 1, "reopening did not reset drag position");
+  (window as unknown as { __snapshotDone: boolean }).__snapshotDone = false;
+  bridge({ nativeDrag: true });
+  for (let n = 0; !(window as unknown as { __snapshotDone: boolean }).__snapshotDone; n++) { check(n < 240, "native drag timed out"); await settle(); }
+  const nativeDrag = (window as unknown as { __nativeDragResult: { before: number; after: number; focus: string; delta: number } }).__nativeDragResult;
+  check(nativeDrag.delta > 0 && Math.abs(nativeDrag.after - nativeDrag.before - nativeDrag.delta) < 2, `native pointer drag/capture did not move Index: ${JSON.stringify(nativeDrag)}`);
+  check(document.activeElement?.classList.contains("command-list"), "native drag lost list focus");
+  await key("Escape");
   bridge({ passed: true, results, modifierResults });
 }
 void run().catch((error: unknown) => bridge({

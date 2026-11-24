@@ -22,7 +22,37 @@ window.add(view)
 def receive(_manager, message):
     global result
     payload = json.loads(message.get_js_value().to_string())
-    if "nativeKey" in payload:
+    if "nativeDrag" in payload:
+        native = Gtk.Window()
+        native.set_default_size(*window.get_size())
+        window.remove(view)
+        native.add(view)
+        native.show_all()
+        view.grab_focus()
+        def drag_ready(widget, response, _data=None):
+            point = json.loads(widget.evaluate_javascript_finish(response).to_string())
+            xid = str(native.get_window().get_xid())
+            x, y, dy = map(lambda value: str(round(value)), point[:3])
+            subprocess.run(["xdotool", "windowfocus", "--sync", xid, "mousemove", "--window", xid, x, y,
+                "mousedown", "1", "sleep", "0.1", "mousemove", "--window", xid, x, dy,
+                "sleep", "0.1", "mouseup", "1"], check=True)
+            def drag_observed(widget, response, _data=None):
+                widget.evaluate_javascript_finish(response)
+                native.remove(view)
+                window.add(view)
+                window.show_all()
+                native.destroy()
+                view.evaluate_javascript("window.__snapshotDone=true", -1, None, None, None, None, None)
+                return GLib.SOURCE_REMOVE
+            def finish_drag():
+                view.evaluate_javascript("window.__nativeDragResult={before:" + str(point[3]) + ",after:document.querySelector('.command-palette').getBoundingClientRect().top,focus:document.activeElement.className,delta:window.__dragLast-window.__dragStart}", -1, None, None, None, drag_observed, None)
+                return GLib.SOURCE_REMOVE
+            GLib.timeout_add(150, finish_drag)
+        def begin_drag():
+            view.evaluate_javascript("(()=>{const h=document.querySelector('.command-prompt');h.addEventListener('pointerdown',e=>window.__dragStart=e.clientY,{once:true});h.addEventListener('pointermove',e=>window.__dragLast=e.clientY);let r=h.getBoundingClientRect();return JSON.stringify([(r.right-3)*devicePixelRatio,(r.top+8)*devicePixelRatio,(r.top+68)*devicePixelRatio,document.querySelector('.command-palette').getBoundingClientRect().top])})()", -1, None, None, None, drag_ready, None)
+            return GLib.SOURCE_REMOVE
+        GLib.timeout_add(150, begin_drag)
+    elif "nativeKey" in payload:
         native = Gtk.Window()
         native.set_default_size(800, 600)
         window.remove(view)

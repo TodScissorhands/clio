@@ -1,3 +1,4 @@
+import { usePaletteDrag } from "./usePaletteDrag";
 import type { IndexMode } from "./clioIndex";
 import { useId, useLayoutEffect, useRef } from "react";
 import { clampCommandIndex } from "./interactions";
@@ -37,6 +38,7 @@ export function ReaderCommandPalette({
 }: ReaderCommandPaletteProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
+  const drag = usePaletteDrag(dialogRef);
   const listRef = useRef<HTMLDivElement>(null);
   const pointerSelectionRef = useRef(false);
   const chooserRef = useRef(placeholder);
@@ -135,7 +137,7 @@ export function ReaderCommandPalette({
         }
       }}
     >
-      <div className="command-prompt">
+      <div className="command-prompt" {...drag}>
       {onBack && <button type="button" aria-label="Return to parent chooser" onClick={onBack}>‹</button>}
       <span className="command-prefix" aria-hidden="true">{mode === "filter" ? "/" : ":"}</span>
       {mode === "normal" ? <span className="command-context">{screen === "root" || screen === "commands" ? "Clio Index" : ariaLabel}</span> : <input
