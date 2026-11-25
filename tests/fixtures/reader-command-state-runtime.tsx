@@ -329,11 +329,32 @@ async function indexRoot(format: "pdf" | "epub", width: number, height: number) 
   check(JSON.stringify(labels) === JSON.stringify(format === "epub"
     ? ["open", "search", "chapter", "layout", "theme", "typography"]
     : ["open", "search", "page", "page layout", "theme", "fit width"]), "Index contextual six-command root changed");
-  await key(":"); await value(filter(), "th"); await key("Enter");
+  const capture = async (name: string) => {
+    (window as any).__snapshotDone = false; bridge({ snapshot: name });
+    await until(() => (window as any).__snapshotDone, "Index snapshot timed out");
+  };
+  const native = async (nativeKey: string) => {
+    (window as any).__snapshotDone = false; bridge({ nativeKey });
+    await until(() => (window as any).__snapshotDone, "Native App key timed out"); await settle(); await settle();
+  };
+  if (format === "epub" && width === 1000) await capture("correction-normal.png");
+  await key(":"); await value(filter(), "th");
+  if (format === "epub" && width === 1000) await capture("correction-command.png");
+  await key("Enter");
   check(filter().value === "th", "ambiguous command executed unexpectedly");
-  await value(filter(), "theme gru"); await key("Tab");
-  check(filter().value === "theme gruvbox", "command completion did not expand unique theme alias");
+  if (format === "epub" && width === 1000) {
+    const before = selectedVisible().id;
+    await native("Down"); check(document.activeElement === filter() && selectedVisible().id !== before, "Native App Down did not select results in input focus");
+    await native("ctrl+p"); check(document.activeElement === filter() && selectedVisible().id === before, "Native App Ctrl+P did not return selection");
+  }
+  await value(filter(), "theme gru");
+  check(rows().length === 1, "automatic command suggestions lost unique theme alias");
   await key("Escape");
+  if (format === "epub" && width === 1000) {
+    await key("/"); await value(filter(), "theme"); await native("Tab");
+    check(document.activeElement?.classList.contains("command-list"), "Filter result focus missing");
+    await capture("correction-filter-results.png"); await key("Escape");
+  }
   if (format === "epub") {
     await key("j"); await key("j"); await key("j");
     const selected = selectedVisible();

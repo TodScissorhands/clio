@@ -5,6 +5,7 @@
   "windows": ["epub-*"],
   "permissions": [
     "allow-read-epub-session",
+    "allow-epub-bookmarks",
     "allow-ready-epub-session",
     "allow-request-epub-open",
     "allow-load-epub-session-position",

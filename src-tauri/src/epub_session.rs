@@ -22,6 +22,7 @@ fn cancel_pending(state: &mut HashMap<String, Session>) -> Vec<String> {
 }
 
 pub(crate) fn shutdown_sessions(app: &AppHandle) {
+    if let Ok(mut undo) = app.state::<super::bookmarks::Bookmarks>().0.lock() { undo.clear(); }
     OPEN_GENERATION.fetch_add(1, Ordering::SeqCst);
     if let Ok(mut sessions) = app.state::<Sessions>().0.lock() { sessions.clear(); }
     for (label, reader) in app.webview_windows() {
@@ -98,6 +99,7 @@ pub async fn create_epub_session(app: AppHandle, window: WebviewWindow, sessions
             reader.on_window_event(move |event| {
                 if matches!(event, tauri::WindowEvent::Destroyed) {
                     if let Ok(mut sessions) = app_on_close.state::<Sessions>().0.lock() { sessions.remove(&id_on_close); }
+                    if let Ok(mut undo) = app_on_close.state::<super::bookmarks::Bookmarks>().0.lock() { undo.remove(&id_on_close); }
                     let _ = app_on_close.emit_to("main", "epub-session-closed", &id_on_close);
                 }
             });
@@ -147,6 +149,7 @@ pub fn commit_epub_session(app: AppHandle, window: WebviewWindow, sessions: Stat
 pub fn retire_epub_session(app: AppHandle, window: WebviewWindow, sessions: State<'_, Sessions>, session_id: String) -> Result<(), String> {
     if window.label() != "main" { return Err("Only the shell may retire publications".into()); }
     sessions.0.lock().map_err(|e| e.to_string())?.remove(&session_id);
+    app.state::<super::bookmarks::Bookmarks>().0.lock().map_err(|e|e.to_string())?.remove(&session_id);
     if let Some(reader) = app.get_webview_window(&format!("epub-{session_id}")) {
         reader.close().map_err(|e| e.to_string())?;
     }
@@ -195,6 +198,7 @@ pub async fn save_epub_session_position(app: AppHandle, window: WebviewWindow, s
 #[tauri::command]
 pub fn close_epub_session(window: WebviewWindow, sessions: State<'_, Sessions>, session_id: String) -> Result<(), String> {
     authorized_sessions(&sessions, window.label(), &session_id)?.remove(&session_id);
+    window.app_handle().state::<super::bookmarks::Bookmarks>().0.lock().map_err(|e|e.to_string())?.remove(&session_id);
     window.close().map_err(|e| e.to_string())
 }
 
@@ -307,5 +311,49 @@ mod tests {
         assert!(matches!(receiver.try_recv(), Err(std::sync::mpsc::TryRecvError::Disconnected)));
         drop(state);
         assert!(authorized_sessions(&sessions, "epub-candidate", "candidate").is_err());
+    }
+}
+
+#[tauri::command]
+pub async fn epub_bookmarks(app: AppHandle, window: WebviewWindow, sessions: State<'_, Sessions>, session_id: String, action: String, cfi: Option<String>, label: Option<String>, ids: Vec<String>) -> Result<serde_json::Value, String> {
+    let state = Arc::clone(&sessions.0);
+    let caller = window.label().to_owned();
+    super::blocking_io(move || {
+        let path = app.path().app_data_dir().map_err(|e|e.to_string())?.join("bookmarks.json");
+        session_bookmarks(&Sessions(state), &caller, &session_id, &app.state::<super::bookmarks::Bookmarks>(), &path, &action, cfi, label, ids)
+    }).await
+}
+
+fn session_bookmarks(sessions: &Sessions, caller: &str, id: &str, bookmarks: &super::bookmarks::Bookmarks, path: &std::path::Path, action: &str, cfi: Option<String>, label: Option<String>, ids: Vec<String>) -> Result<serde_json::Value, String> {
+    let live = authorized_sessions(sessions, caller, id)?;
+    let session = live.get(id).ok_or("Closed EPUB session")?;
+    if !session.committed { return Err("Uncommitted EPUB session".into()); }
+    bookmarks.0.lock().map_err(|e|e.to_string())?.retain(|id, _| live.contains_key(id));
+    super::bookmarks::transaction(bookmarks, path, &session.path, id, action, cfi, label, ids)
+}
+
+#[cfg(test)]
+mod bookmark_security_tests {
+    use super::*;
+    #[test]
+    fn bookmark_transactions_reject_wrong_uncommitted_and_retired_callers() {
+        let sessions = Sessions::default();
+        let marks = super::super::bookmarks::Bookmarks::default();
+        let directory = std::env::temp_dir().join(format!("clio-bookmark-session-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("bookmarks.json");
+        sessions.0.lock().unwrap().insert("1".into(), Session { path: "/canonical/book.epub".into(), bytes: Arc::from([]), ready: None, generation: 1, committed: false });
+        let run = |caller: &str| session_bookmarks(&sessions, caller, "1", &marks, &path, "add", Some("epubcfi(/6/2!/4/1:0)".into()), Some("Chapter".into()), vec![]);
+        assert!(run("main").is_err());
+        assert!(run("epub-2").is_err());
+        assert!(run("epub-1").is_err());
+        assert!(!path.exists());
+        sessions.0.lock().unwrap().get_mut("1").unwrap().committed = true;
+        run("epub-1").unwrap();
+        let before = std::fs::read(&path).unwrap();
+        sessions.0.lock().unwrap().remove("1");
+        assert!(run("epub-1").is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        std::fs::remove_dir_all(directory).unwrap();
     }
 }

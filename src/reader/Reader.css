@@ -317,11 +317,11 @@
   cursor: pointer;
 }
 
-.command-row[aria-selected="true"] {
+.command-row[data-focused="true"] {
   background: #292b2d;
 }
 
-.command-row[aria-selected="true"]::before {
+.command-row[data-focused="true"]::before {
   content: "\203a";
   position: absolute;
   inset-inline-start: 8px;
@@ -444,3 +444,11 @@
     display: none;
   }
 }
+
+.command-selection-count { margin-inline-start: auto; font-size: 11px; color: #aaa; white-space: nowrap; }
+
+/* Keep the global control focus rule; Index input focus uses its prompt and caret. */
+.command-filter:focus-visible { outline: none; outline-offset: 0; caret-color: #D8B78B; }
+.command-prompt:has(.command-filter:focus-visible) .command-prefix { color: #D8B78B; text-shadow: 0 0 1px currentColor; }
+
+.command-prompt [data-prompt-activation]:focus-visible { outline: none; color: #D8B78B; }

@@ -101,7 +101,7 @@ function TestReader() {
     <textarea id="ordinary-textarea" aria-label="Ordinary textarea" />
     <output id="destination">{destination}</output>
     {overlay === "commands" && <ReaderCommandPalette
-      mode={indexEnabled ? clio.mode : "filter"} onDismiss={closeOverlay} onVisibleRows={rows => { clio.visibleRows.current = rows; }}
+      onInputMode={clio.setMode} mode={indexEnabled ? clio.mode : "filter"} onDismiss={closeOverlay} onVisibleRows={rows => { clio.visibleRows.current = rows; }}
       commands={commands} commandIndex={index} query={query}
       placeholder={mode === "chapters" ? "Filter chapters" : mode === "themes" ? "Filter document themes"
         : mode === "preferences" ? "Filter reading preferences" : "Filter commands"}
@@ -146,7 +146,7 @@ async function open(value = "") {
   if (filter()) { await query(value); check(document.activeElement === filter(), "palette entry must focus the filter"); }
   else check(document.activeElement?.classList.contains("command-list"), "Normal entry must focus list");
 }
-function checkActive() {
+function checkActive(owner: Element | null = filter()) {
   const input = filter();
   check(input.getAttribute("role") === "combobox", "filter must expose a combobox");
   const list = document.getElementById(input.getAttribute("aria-controls")!);
@@ -159,7 +159,7 @@ function checkActive() {
   }
   check(option && input.getAttribute("aria-activedescendant") === option.id, "active descendant must match selection");
   check(option.getAttribute("role") === "option", "selected row must expose an option");
-  check(document.activeElement === input, "option navigation must not transfer DOM focus");
+  check(document.activeElement === owner, "option navigation changed the expected focus owner");
 }
 function checkVisible() {
   const list = document.querySelector<HTMLElement>(".command-list")!;
@@ -307,7 +307,7 @@ async function run() {
     check((await key("Tab")).defaultPrevented, "Tab must be contained");
     document.getElementById("background-file")!.focus();
     document.getElementById("background-button")!.focus();
-    checkActive();
+    checkActive(document.querySelector(".command-list"));
     await key("Enter");
     check(document.getElementById("destination")!.textContent === "zoom_in", "Enter executed a contradictory command");
     check(document.activeElement?.id === "reading-area", "execution must restore reader focus");
@@ -492,6 +492,32 @@ async function run() {
   await query("jkh l"); check(filter().value === "jkh l", "input letters were consumed as navigation");
   await key("Escape"); check(!document.querySelector(".command-filter"), "input Escape did not return to Normal");
   await key(":"); check(document.activeElement === filter(), "command mode did not focus input");
+  const evidence = async (snapshot: string) => {
+    (window as any).__snapshotDone = false; bridge({ snapshot });
+    for (let n = 0; !(window as any).__snapshotDone; n++) { check(n < 240, "snapshot timeout"); await settle(); }
+  };
+  const native = async (nativeKey: string) => {
+    (window as any).__snapshotDone = false; bridge({ nativeKey });
+    for (let n = 0; !(window as any).__snapshotDone; n++) { check(n < 240, "native focus transition timeout"); await settle(); }
+    await settle(); await settle();
+  };
+  check(getComputedStyle(filter()).outlineStyle === "none", "Index input inherited global focus outline");
+  await query("page"); await evidence("correct-command.png");
+  await query(""); check(document.querySelectorAll(".command-row").length > 12, "native navigation needs a long catalog");
+  for (let pass = 0; pass < 3; pass++) {
+    const count = document.querySelectorAll(".command-row").length;
+    const before = selected().id;
+    await native("Down"); check(document.activeElement === filter(), "Down stole input focus");
+    check(count < 2 || selected().id !== before, "native Down did not change result");
+    await native("ctrl+n"); check(document.activeElement === filter(), "Ctrl+N stole input focus");
+    await native("Tab"); check(document.activeElement?.classList.contains("command-list"), "Tab failed to focus results");
+    check(filter().value === "" && document.querySelectorAll(".command-row").length === count, "Tab altered query/catalog");
+    await native("G"); checkVisible(); await native("g"); await native("g"); checkVisible();
+    await native("shift+Tab"); check(document.activeElement === filter() && filter().value === "", "Shift+Tab lost input/query");
+  }
+  await key("Escape"); await evidence("correct-normal.png");
+  await key("/"); await query("page"); await native("Tab"); await evidence("correct-filter-results.png");
+
   await key("Escape"); await key("Escape");
   await open();
   for (const [width, height] of [[420, 600], [1000, 700], [1440, 800]]) {
@@ -510,6 +536,27 @@ async function run() {
   await settle(); check(!document.querySelector(".command-palette"), "outside pointer failed to dismiss");
 
   await open();
+  const promptPointer = async (target: string | undefined, click: boolean) => {
+    (window as any).__snapshotDone = false; bridge({ nativeDrag: true, promptTarget: target, promptClick: click });
+    for (let n = 0; !(window as any).__snapshotDone; n++) { check(n < 240, "native prompt pointer timed out"); await settle(); }
+    await settle(); await settle();
+  };
+  await promptPointer(".command-context", true);
+  check(filter() && document.activeElement === filter() && document.querySelector(".command-prefix")?.textContent === "/", "native context click failed to enter filter input");
+  await native("j"); check(filter().value === "j", "clicked prompt input did not accept native typing");
+  await promptPointer(".command-prefix", true);
+  check(document.activeElement === filter() && filter().value === "j" && document.querySelector(".command-prefix")?.textContent === "/", "editing prompt click changed query or mode");
+  await native("Tab"); await promptPointer(undefined, true);
+  check(document.activeElement === filter() && filter().value === "j", "blank editing prompt click did not preserve/focus input");
+  await key("Escape");
+  await promptPointer(".command-prefix", true);
+  check(filter() && document.activeElement === filter() && document.querySelector(".command-prefix")?.textContent === ":", "native prefix click failed to enter command input");
+  await key("Escape");
+  await promptPointer(".command-context", false);
+  check(!filter() && document.activeElement?.classList.contains("command-list"), "native label drag activated input");
+  const labelDrag = (window as any).__nativeDragResult;
+  check(labelDrag.delta > 0 && Math.abs(labelDrag.after - labelDrag.before - labelDrag.delta) < 2, "label drag did not move palette");
+  await key("Escape"); await open();
   const panel = () => document.querySelector<HTMLElement>(".command-palette")!;
   const header = () => document.querySelector<HTMLElement>(".command-prompt")!;
   const rect = () => panel().getBoundingClientRect();

@@ -6,6 +6,9 @@ import type { ReaderCommand } from "./interactions";
 import type { ReaderCommandStates } from "./commandState";
 
 type ReaderCommandPaletteProps = {
+  selectedKeys?: ReadonlySet<string>;
+  feedback?: string;
+  onInputMode?: (mode: "filter" | "command") => void;
   mode?: IndexMode;
   screen?: string;
   onBack?: () => void;
@@ -24,6 +27,7 @@ type ReaderCommandPaletteProps = {
 };
 
 export function ReaderCommandPalette({
+  selectedKeys, feedback, onInputMode,
   mode = "filter", screen = "root", onBack, onDismiss, onVisibleRows,
   commands,
   commandStates,
@@ -38,7 +42,7 @@ export function ReaderCommandPalette({
 }: ReaderCommandPaletteProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
-  const drag = usePaletteDrag(dialogRef);
+  const drag = usePaletteDrag(dialogRef, target => activateInput(target.dataset.promptActivation === "command" ? "command" : "filter"));
   const listRef = useRef<HTMLDivElement>(null);
   const pointerSelectionRef = useRef(false);
   const chooserRef = useRef(placeholder);
@@ -93,7 +97,7 @@ export function ReaderCommandPalette({
       pointerSelectionRef.current = false;
     }
     const revealActiveOption = () => {
-      const option = list.querySelector<HTMLElement>('[aria-selected="true"]');
+      const option = list.querySelector<HTMLElement>('[data-focused="true"]');
       if (!option) return;
       const row = option.getBoundingClientRect();
       const top = list.getBoundingClientRect().top + list.clientTop;
@@ -118,6 +122,13 @@ export function ReaderCommandPalette({
     return () => observer.disconnect();
   }, [activeIndex, commands, placeholder]);
 
+  const activateInput = (next: "filter" | "command") => {
+    if (mode === "normal") { onQueryChange(""); onCommandIndexChange(0); onInputMode?.(next); }
+    else inputRef.current?.focus({ preventScroll: true });
+  };
+  const promptKey = (event: React.KeyboardEvent, next: "filter" | "command") => {
+    if (event.key === "Enter" || event.key === " ") { event.preventDefault(); activateInput(next); }
+  };
   return (
     <div className="command-dismiss" onPointerDown={(event) => { if (event.target === event.currentTarget) { event.preventDefault(); event.stopPropagation(); } }} onClick={(event) => { if (event.target === event.currentTarget) { event.preventDefault(); event.stopPropagation(); onDismiss?.(); } }}>
     <div
@@ -127,20 +138,22 @@ export function ReaderCommandPalette({
       aria-modal="true"
       aria-label={ariaLabel}
       onKeyDownCapture={(event) => {
-        if (event.key === "Tab" && mode !== "command") {
+        if (event.nativeEvent.isComposing || event.keyCode === 229) return;
+        if (event.key === "Tab") {
           event.preventDefault();
-          const target = document.activeElement === (inputRef.current ?? listRef.current)
-            ? dialogRef.current?.querySelector<HTMLButtonElement>("button") : inputRef.current ?? listRef.current;
+          const controls = [inputRef.current, listRef.current, ...Array.from(dialogRef.current?.querySelectorAll<HTMLElement>('[data-prompt-activation][tabindex="0"], button') ?? [])].filter((node): node is HTMLElement => !!node);
+          const current = controls.indexOf(document.activeElement as HTMLInputElement);
+          const target = controls[(current + (event.shiftKey ? -1 : 1) + controls.length) % controls.length];
           (target ?? inputRef.current ?? listRef.current)?.focus({ preventScroll: true });
-        } else if (["ArrowDown", "ArrowUp"].includes(event.key) || mode === "normal" && ["j", "k", "g", "G", "d", "u"].includes(event.key)) {
+        } else if (["ArrowDown", "ArrowUp"].includes(event.key) || (event.target === listRef.current || mode === "normal") && ["j", "k", "g", "G", "d", "u"].includes(event.key) || event.ctrlKey && ["n", "p"].includes(event.key.toLowerCase())) {
           pointerSelectionRef.current = false;
         }
       }}
     >
-      <div className="command-prompt" {...drag}>
+      <div className="command-prompt" {...drag} onClick={event => { if (mode !== "normal" && event.target === event.currentTarget) inputRef.current?.focus({ preventScroll: true }); }}>
       {onBack && <button type="button" aria-label="Return to parent chooser" onClick={onBack}>‹</button>}
-      <span className="command-prefix" aria-hidden="true">{mode === "filter" ? "/" : ":"}</span>
-      {mode === "normal" ? <span className="command-context">{screen === "root" || screen === "commands" ? "Clio Index" : ariaLabel}</span> : <input
+      <span className="command-prefix" data-prompt-activation="command" role="button" tabIndex={mode === "normal" ? 0 : -1} aria-label={mode === "normal" ? "Enter command mode" : "Focus command input"} onClick={() => activateInput("command")} onKeyDown={event => promptKey(event, "command")}>{mode === "filter" ? "/" : ":"}</span>
+      {mode === "normal" ? <span className="command-context" data-prompt-activation="filter" role="button" tabIndex={0} aria-label="Filter reader commands" onClick={() => activateInput("filter")} onKeyDown={event => promptKey(event, "filter")}>{feedback || (screen === "root" || screen === "commands" ? "Clio Index" : ariaLabel)}</span> : <input
         ref={inputRef}
         className="command-filter"
         role="combobox"
@@ -157,8 +170,10 @@ export function ReaderCommandPalette({
           onCommandIndexChange(0);
         }}
       />}
+      {selectedKeys && selectedKeys.size > 0 && <span className="command-selection-count" role="status">{selectedKeys.size} selected</span>}
+      {feedback && <span className="visually-hidden" role="status">{feedback}</span>}
       </div>
-      <div ref={listRef} id={listId} className="command-list" onScroll={event => { scrollPositions.current.set(screen, event.currentTarget.scrollTop); }} role="listbox" tabIndex={mode === "normal" ? 0 : -1} aria-activedescendant={mode === "normal" ? activeId : undefined} aria-label={ariaLabel}>
+      <div ref={listRef} id={listId} className="command-list" onScroll={event => { scrollPositions.current.set(screen, event.currentTarget.scrollTop); }} role="listbox" aria-multiselectable={selectedKeys ? true : undefined} tabIndex={0} aria-activedescendant={activeId} aria-label={ariaLabel}>
         {commands.map((command, index) => {
           const state = command.state ?? commandStates?.[command.id];
           const rowId = `${listId}-option-${index}`;
@@ -166,7 +181,8 @@ export function ReaderCommandPalette({
           key={command.key ?? command.id}
           id={rowId}
           role="option"
-          aria-selected={activeIndex === index && !command.disabled}
+          aria-selected={selectedKeys ? selectedKeys.has(command.key ?? command.id) : activeIndex === index && !command.disabled}
+          data-focused={activeIndex === index && !command.disabled || undefined}
           aria-disabled={command.disabled || undefined}
           aria-labelledby={`${rowId}-label ${rowId}-shortcut`}
           aria-describedby={state ? `${rowId}-state` : undefined}
@@ -188,7 +204,7 @@ export function ReaderCommandPalette({
           }}
         >
           <span className="command-content">
-            <span id={`${rowId}-label`} className="command-label">{command.label ?? command.id}</span>
+            <span id={`${rowId}-label`} className="command-label">{selectedKeys?.has(command.key ?? command.id) && <span aria-hidden="true">✓ </span>}{command.label ?? command.id}</span>
             {state && <span id={`${rowId}-state`} className="command-state">{state.active ? "Applied. " : ""}<span className="command-state-text">{state.text}</span></span>}
           </span>
           <span id={`${rowId}-shortcut`} className="command-shortcut">{state && !/^(Current|Not current)/.test(state.text) ? state.text.split(" — ")[0] : command.shortcut}</span>

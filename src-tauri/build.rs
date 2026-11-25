@@ -7,7 +7,7 @@ fn main() {
             "load_epub_session_position", "save_epub_session_position", "close_epub_session",
             "ready_epub_session", "commit_epub_session", "retire_epub_session",
             "request_epub_open",
-            "begin_epub_acquisition",
+            "begin_epub_acquisition", "epub_bookmarks",
         ]),
     )).expect("build native command permissions");
 }

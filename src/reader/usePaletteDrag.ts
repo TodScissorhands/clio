@@ -1,12 +1,14 @@
 import { useLayoutEffect, useRef } from "react";
-import type { PointerEvent, RefObject } from "react";
+import type { MouseEvent, PointerEvent, RefObject } from "react";
 
 type Point = { x: number; y: number };
 
 /** Coordinates belong to this overlay mount, never to the document or preferences. */
-export function usePaletteDrag(panelRef: RefObject<HTMLDivElement | null>) {
+export function usePaletteDrag(panelRef: RefObject<HTMLDivElement | null>, onPromptClick?: (target: HTMLElement) => void) {
+  const suppressClick = useRef(false);
+  const clickTarget = useRef<HTMLElement | null>(null);
   const position = useRef<Point | null>(null);
-  const pointer = useRef<{ id: number; handle: HTMLElement; start: Point; origin: Point } | null>(null);
+  const pointer = useRef<{ id: number; handle: HTMLElement; start: Point; origin: Point; moved: boolean } | null>(null);
   const place = (point: Point) => {
     const panel = panelRef.current;
     const viewport = panel?.parentElement;
@@ -44,15 +46,19 @@ export function usePaletteDrag(panelRef: RefObject<HTMLDivElement | null>) {
 
   return {
     onPointerDown(event: PointerEvent<HTMLDivElement>) {
-      // Only blank header space is a handle; controls and selectable text retain their defaults.
-      if (event.target !== event.currentTarget || !event.isPrimary || event.button !== 0) return;
+      // Blank header space and prompt labels are handles; editable input and Back retain their defaults.
+      suppressClick.current = false;
+      const target = event.target as HTMLElement;
+      clickTarget.current = target.closest<HTMLElement>("[data-prompt-activation]");
+      if (event.target !== event.currentTarget && !target.closest("[data-prompt-activation]")) return;
+      if (!event.isPrimary || event.button !== 0) return;
       const panel = panelRef.current;
       if (!panel?.parentElement) return;
       const rect = panel.getBoundingClientRect();
       const viewport = panel.parentElement.getBoundingClientRect();
       event.preventDefault();
       pointer.current = { id: event.pointerId, handle: event.currentTarget,
-        start: { x: event.clientX, y: event.clientY }, origin: { x: rect.left - viewport.left, y: rect.top - viewport.top } };
+        start: { x: event.clientX, y: event.clientY }, origin: { x: rect.left - viewport.left, y: rect.top - viewport.top }, moved: false };
       event.currentTarget.setPointerCapture(event.pointerId);
     },
     onPointerMove(event: PointerEvent<HTMLDivElement>) {
@@ -60,11 +66,21 @@ export function usePaletteDrag(panelRef: RefObject<HTMLDivElement | null>) {
       if (!drag || drag.id !== event.pointerId) return;
       const dx = event.clientX - drag.start.x;
       const dy = event.clientY - drag.start.y;
-      if (!position.current && Math.hypot(dx, dy) < 3) return;
+      if (!drag.moved && Math.hypot(dx, dy) < 3) return;
+      drag.moved = true; suppressClick.current = true;
       place({ x: drag.origin.x + dx, y: drag.origin.y + dy });
     },
+    onClickCapture(event: MouseEvent<HTMLDivElement>) {
+      if (event.detail === 0) return;
+      const target = clickTarget.current; clickTarget.current = null;
+      if (suppressClick.current || target) {
+        event.preventDefault(); event.stopPropagation();
+        if (!suppressClick.current && target) onPromptClick?.(target);
+        suppressClick.current = false;
+      }
+    },
     onPointerUp: release,
-    onPointerCancel: release,
+    onPointerCancel() { suppressClick.current = true; clickTarget.current = null; release(); },
     onLostPointerCapture: release,
   };
 }

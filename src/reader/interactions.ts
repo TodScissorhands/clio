@@ -28,6 +28,9 @@ export type ReaderCommandId =
   | "go_to_chapter"
   | "paged_layout"
   | "continuous_layout"
+  | "mark_location"
+  | "show_bookmarks"
+  | "select_bookmark"
   | "select_chapter"
   | "document_appearance"
   | "epub_reading_preferences"
@@ -96,6 +99,7 @@ export const READER_COMMANDS: ReaderCommand[] = [
 ];
 
 export const EPUB_READER_COMMANDS: ReaderCommand[] = [
+  { id: "show_bookmarks", shortcut: "", scope: "epub", label: "Bookmarks…" },
   { id: "open_document", shortcut: "o · Ctrl+O", scope: "epub", label: "Open document" },
   { id: "close_document", shortcut: "Ctrl+W", scope: "epub", label: "Close document" },
   { id: "go_to_chapter", shortcut: "", scope: "epub", label: "Go to chapter…" },
@@ -467,6 +471,7 @@ export function useReaderKeyboard(state: ReaderKeyboardState, actions: ReaderKey
         if (typing || !unmodified) return;
 
         const key = event.key.toLowerCase();
+        if (key === "m" && !event.shiftKey) { event.preventDefault(); runCommand("mark_location"); return; }
         if (key === "n") {
           event.preventDefault();
           runCommand(event.shiftKey ? "previous_chapter" : "next_chapter");

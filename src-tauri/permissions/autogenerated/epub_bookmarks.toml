@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-epub-bookmarks"
+description = "Enables the epub_bookmarks command without any pre-configured scope."
+commands.allow = ["epub_bookmarks"]
+
+[[permission]]
+identifier = "deny-epub-bookmarks"
+description = "Denies the epub_bookmarks command without any pre-configured scope."
+commands.deny = ["epub_bookmarks"]

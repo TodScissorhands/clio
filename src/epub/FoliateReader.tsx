@@ -1,4 +1,5 @@
-import { commandLineMatches, useClioIndex } from "../reader/clioIndex";
+import { bookmarkRows } from "./bookmarks";
+import { moveIndex, commandLineMatches, useClioIndex } from "../reader/clioIndex";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { loadEpubReadingPosition, saveEpubReadingPosition } from "../platform/readingPosition";
@@ -38,10 +39,39 @@ export function FoliateReader({ sessionId, canonicalPath, prepared, onClose, onO
   const [mode, setMode] = useState<"paged" | "continuous">("paged");
   const [overlay, setOverlay] = useState<ReaderOverlay>(null);
   const index = useClioIndex();
-  const [menu, setMenu] = useState<"root" | "toc" | "appearance" | "preferences" | "preference-field">("root");
+  const [menu, setMenu] = useState<"root" | "marks" | "toc" | "appearance" | "preferences" | "preference-field">("root");
   const [preferenceField, setPreferenceField] = useState<EpubPreferenceField>("fontScale");
   const [query, setQuery] = useState("");
   const [commandIndex, setCommandIndex] = useState(0);
+  const [bookmarkRecords, setBookmarkRecords] = useState<unknown[]>([]);
+  const [selectedMarks, setSelectedMarks] = useState<Set<string>>(new Set());
+  const [bookmarkFeedback, setBookmarkFeedback] = useState("");
+  const bookmarkBusy = useRef(false);
+  const bookmarkGeneration = useRef(0);
+  const bookmarkOverlayGeneration = useRef(0);
+  const statusLabelRef = useRef<(cfi: string) => string>(() => "EPUB");
+  const bookmarkAction = async (action: string) => {
+    if (!sessionId || bookmarkBusy.current) return;
+    const view = viewRef.current;
+    const generation = bookmarkGeneration.current;
+    const cfi = action === "add" ? view?.lastLocation?.cfi : undefined;
+    if (action === "add" && !cfi) return;
+    bookmarkBusy.current = true;
+    try {
+      const result = await invoke<{records: unknown[]; changed: boolean; warning?: string}>("epub_bookmarks", { sessionId, action, cfi: cfi ?? null, label: cfi ? statusLabelRef.current(cfi) : null, ids: [...selectedMarks] });
+      if (generation !== bookmarkGeneration.current || view !== viewRef.current) return;
+      setBookmarkRecords(result.records); if (action !== "add") setSelectedMarks(new Set());
+      const text = result.warning ?? (action === "add" ? result.changed ? "Bookmark saved" : "Already bookmarked" : action === "delete" ? "Bookmarks removed" : action === "undo" ? result.changed ? "Bookmarks restored" : "Nothing to undo" : "");
+      setBookmarkFeedback(text); setMessage(text);
+
+    } catch (error) { if (generation === bookmarkGeneration.current) { setBookmarkFeedback(String(error)); setMessage(String(error)); } }
+    finally { bookmarkBusy.current = false; }
+  };
+  useEffect(() => {
+    if (!/^(Bookmark saved|Already bookmarked)$/.test(message)) return;
+    const timer = window.setTimeout(() => { setMessage(current => current === message ? "" : current); setBookmarkFeedback(current => current === message ? "" : current); }, 3000);
+    return () => window.clearTimeout(timer);
+  }, [message]);
   const [searchQuery, setSearchQuery] = useState("");
   const [matches, setMatches] = useState<SearchMatch[]>([]);
   const [activeMatch, setActiveMatch] = useState(-1);
@@ -140,10 +170,12 @@ export function FoliateReader({ sessionId, canonicalPath, prepared, onClose, onO
     finally { if (generation === searchGeneration.current) setSearching(false); }
   };
   const closeOverlay = () => {
-    index.reset(); setOverlay(null); setQuery(""); setMenu("root");
+    bookmarkOverlayGeneration.current++; setBookmarkFeedback(""); setSelectedMarks(new Set()); index.reset(); setOverlay(null); setQuery(""); setMenu("root");
     restoreHostFocus.current = true;
   };
   const openMenu = (next: typeof menu, selectedIndex = commandIndex) => {
+    setSelectedMarks(new Set());
+    if (next !== "root") setBookmarkFeedback("");
     index.clearSequence();
     if (overlay === "commands" && next !== "root") index.history.current.push({ screen: menu === "preference-field" ? `field:${preferenceField}` : menu, query, index: selectedIndex, mode: index.mode });
     else if (next === "root") index.reset();
@@ -168,6 +200,8 @@ export function FoliateReader({ sessionId, canonicalPath, prepared, onClose, onO
         if (book && next >= 0 && next < book.sections.length) void navigate(next);
         break;
       }
+      case "mark_location": void bookmarkAction("add"); break;
+      case "show_bookmarks": openMenu("marks"); void bookmarkAction("list"); break;
       case "go_to_chapter": openMenu("toc"); break;
       case "document_appearance": openMenu("appearance"); break;
       case "epub_reading_preferences": openMenu("preferences"); break;
@@ -212,7 +246,7 @@ export function FoliateReader({ sessionId, canonicalPath, prepared, onClose, onO
     { ...root.find(c => c.id === "document_appearance")!, label: "theme", state: { active: false, text: DOCUMENT_THEMES.find(t => t.id === applied.theme)?.label ?? "Original" } },
     { ...root.find(c => c.id === "epub_reading_preferences")!, label: "typography" },
   ];
-  const catalog = index.mode === "command" ? searchableReaderCommands([...root, defaults[3]!], [themes, preferenceChoices], "*") : menu === "toc" ? tocCommands
+  const catalog = index.mode === "command" ? searchableReaderCommands([...root, defaults[3]!], [themes, preferenceChoices], "*") : menu === "marks" ? bookmarkRows(bookmarkRecords).map(row => ({ id: "select_bookmark" as const, scope: "epub" as const, key: row.key, label: row.label, value: row.cfi, shortcut: row.cfi ? "" : "Unavailable" })) : menu === "toc" ? tocCommands
     : menu === "appearance" ? themes : menu === "preferences" ? epubPreferenceMenuCommands(preferences, applied, retained)
     : menu === "preference-field" ? epubPreferenceCommands(preferences, applied, retained, preferenceField)
     : index.mode === "normal" ? defaults
@@ -221,6 +255,21 @@ export function FoliateReader({ sessionId, canonicalPath, prepared, onClose, onO
   const commands = index.mode === "command" ? commandLineMatches(query, availableCommands) : filterReaderCommands(query, !!book, "epub", availableCommands);
   const execute = (command: ReaderCommand) => {
     if (command.disabled) return;
+    if (command.id === "mark_location") { void bookmarkAction("add"); return; }
+    if (command.id === "show_bookmarks") { openMenu("marks", Math.max(0, commands.indexOf(command))); index.setMode("normal"); void bookmarkAction("list"); return; }
+    if (command.id === "select_bookmark") {
+      const view = viewRef.current;
+      if (!view || !command.value) { setBookmarkFeedback("Bookmark location unavailable; record retained"); return; }
+      void view.goTo(command.value).then(resolved => {
+        if (view !== viewRef.current) return;
+        if (!resolved) throw Error("Bookmark location could not be resolved");
+        const doc = view.renderer.getContents().find(c => c.index === resolved.index)?.doc;
+        const anchor = doc && resolved.anchor?.(doc);
+        if (!doc || !anchor || !(doc.body ?? doc.documentElement).contains("startContainer" in anchor ? anchor.startContainer : anchor)) throw Error("Bookmark passage unavailable");
+        permitSave.current = true; queuePosition(view); closeOverlay();
+      }).catch(error => { if (view === viewRef.current) setBookmarkFeedback(String(error)); });
+      return;
+    }
     if (command.id === "back_to_commands") { openMenu("root"); return; }
     if (command.id === "back_to_preferences") { openMenu("preferences"); return; }
     if (command.id === "epub_preference_field") {
@@ -241,6 +290,7 @@ export function FoliateReader({ sessionId, canonicalPath, prepared, onClose, onO
     else runCommand(command.id);
   };
   const backIndex = (closeRoot = true) => {
+    setSelectedMarks(new Set());
     const parent = index.history.current.pop();
     if (!parent) { if (closeRoot) closeOverlay(); return; }
     if (parent.screen.startsWith("field:")) { setPreferenceField(parent.screen.slice(6) as EpubPreferenceField); setMenu("preference-field"); }
@@ -248,7 +298,23 @@ export function FoliateReader({ sessionId, canonicalPath, prepared, onClose, onO
     setQuery(parent.query); setCommandIndex(parent.index); index.setMode(parent.mode);
   };
   const register = useReaderKeyboard({ readerKind: "epub", overlay, commands, searchReady: !searching, matchCount: matches.length, jumpInput: "", pageCount: 0, commandIndex, epubLayoutMode: mode }, {
-    paletteKey: event => index.key(event, commands, commandIndex, query, setQuery, setCommandIndex, execute, backIndex),
+    paletteKey: event => {
+      if (menu === "marks" && (index.mode === "normal" || event.target instanceof HTMLElement && !!event.target.closest(".command-list")) && !event.altKey && !event.metaKey) {
+        const focused = commands[commandIndex];
+        if (event.key === "Escape" && selectedMarks.size) { event.preventDefault(); setSelectedMarks(new Set()); return; }
+        if (event.key === " " && !event.ctrlKey && focused?.key) {
+          event.preventDefault(); setSelectedMarks(current => { const next = new Set(current); if (next.has(focused.key!)) next.delete(focused.key!); else next.add(focused.key!); return next; });
+          setCommandIndex(moveIndex(commands, commandIndex, 1)); return;
+        }
+        if (event.ctrlKey && event.key.toLowerCase() === "a") { event.preventDefault(); if (index.mode === "normal" && !query) setSelectedMarks(new Set(commands.map(c => c.key!))); return; }
+        if (!event.ctrlKey && event.key === "a") { event.preventDefault(); void bookmarkAction("add"); return; }
+        if (!event.ctrlKey && event.key === "d") { event.preventDefault(); if (selectedMarks.size) void bookmarkAction("delete"); return; }
+        if (!event.ctrlKey && event.key === "u") { event.preventDefault(); void bookmarkAction("undo"); return; }
+        if (!event.ctrlKey && (event.key === "/" || event.key === ":")) setSelectedMarks(new Set());
+        if (!event.ctrlKey && (event.key === "l" || event.key === "ArrowRight") && focused) { event.preventDefault(); execute(focused); return; }
+      }
+      index.key(event, commands, commandIndex, query, setQuery, setCommandIndex, execute, backIndex);
+    },
     closeOverlay, moveMatch, runSearch: () => void runSearch(), goToPage: () => {}, executePaletteCommand: execute,
     runCommand, scrollContinuous: (direction, amount, repeat) => { void scrollContinuous(direction, amount, repeat); },
     setCommandQuery: setQuery, setCommandIndex, setOverlay: next => { if (next === "commands") { index.reset(); setMenu("root"); } setOverlay(next); },
@@ -333,6 +399,7 @@ export function FoliateReader({ sessionId, canonicalPath, prepared, onClose, onO
         void navigate((event as CustomEvent<{ href: string }>).detail.href);
       }, { signal: listeners.signal });
       const statusLabel = createFoliateStatusLabeler(view);
+      statusLabelRef.current = statusLabel;
       const updateLocation = (event?: Event) => {
         if (retired || !view?.lastLocation) return;
         const current = view.lastLocation;
@@ -406,6 +473,7 @@ export function FoliateReader({ sessionId, canonicalPath, prepared, onClose, onO
     });
     return () => {
       retired = true;
+      bookmarkGeneration.current++;
       searchGeneration.current++;
       listeners.abort();
       void searchIterator.current?.return("done");
@@ -467,9 +535,9 @@ export function FoliateReader({ sessionId, canonicalPath, prepared, onClose, onO
       {overlay === null && <button className="status-commands" aria-label="Open reader commands (:)" onClick={() => openMenu("root")}>Commands :</button>}
     </footer>
     {overlay === "search" && snippet && <div className="visually-hidden" role="status">{snippet}</div>}
-    {overlay === "commands" && <ReaderCommandPalette mode={index.mode} screen={menu === "preference-field" ? `field:${preferenceField}` : menu} onBack={menu === "root" ? undefined : backIndex} onDismiss={closeOverlay} onVisibleRows={rows => { index.visibleRows.current = rows; }} commands={commands} commandStates={menu === "root" ? { ...getEpubCommandStates(mode), toggle_night_mode: { active: effectiveNightMode, text: effectiveNightMode ? "On" : "Off" } } : undefined}
-      commandIndex={commandIndex} query={query} onQueryChange={query => { index.selectedExplicitly.current = false; setQuery(query); }} onCommandIndexChange={setCommandIndex} onExecute={execute}
-      placeholder={menu === "toc" ? "Filter chapters" : menu === "preferences" || menu === "preference-field" ? "Filter reading preferences" : menu === "appearance" ? "Filter document themes" : "Filter commands"}
-      ariaLabel={menu === "toc" ? "Choose a chapter" : menu === "preferences" || menu === "preference-field" ? "Reading preferences" : menu === "appearance" ? "Document themes" : "Reader commands"} />}
+    {overlay === "commands" && <ReaderCommandPalette onInputMode={mode => { index.clearSequence(); index.selectedExplicitly.current = false; index.setMode(mode); }} selectedKeys={menu === "marks" ? selectedMarks : undefined} feedback={bookmarkFeedback} mode={index.mode} screen={menu === "preference-field" ? `field:${preferenceField}` : menu} onBack={menu === "root" ? undefined : backIndex} onDismiss={closeOverlay} onVisibleRows={rows => { index.visibleRows.current = rows; }} commands={commands} commandStates={menu === "root" ? { ...getEpubCommandStates(mode), toggle_night_mode: { active: effectiveNightMode, text: effectiveNightMode ? "On" : "Off" } } : undefined}
+      commandIndex={commandIndex} query={query} onQueryChange={query => { setSelectedMarks(new Set()); index.selectedExplicitly.current = false; setQuery(query); }} onCommandIndexChange={setCommandIndex} onExecute={execute}
+      placeholder={menu === "marks" ? "Filter bookmarks" : menu === "toc" ? "Filter chapters" : menu === "preferences" || menu === "preference-field" ? "Filter reading preferences" : menu === "appearance" ? "Filter document themes" : "Filter commands"}
+      ariaLabel={menu === "marks" ? "Bookmarks" : menu === "toc" ? "Choose a chapter" : menu === "preferences" || menu === "preference-field" ? "Reading preferences" : menu === "appearance" ? "Document themes" : "Reader commands"} />}
   </>, mounted.chrome);
 }

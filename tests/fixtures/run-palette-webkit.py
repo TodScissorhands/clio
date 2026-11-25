@@ -33,6 +33,8 @@ def receive(_manager, message):
             point = json.loads(widget.evaluate_javascript_finish(response).to_string())
             xid = str(native.get_window().get_xid())
             x, y, dy = map(lambda value: str(round(value)), point[:3])
+            if payload.get("promptClick"):
+                dy = y
             subprocess.run(["xdotool", "windowfocus", "--sync", xid, "mousemove", "--window", xid, x, y,
                 "mousedown", "1", "sleep", "0.1", "mousemove", "--window", xid, x, dy,
                 "sleep", "0.1", "mouseup", "1"], check=True)
@@ -49,7 +51,8 @@ def receive(_manager, message):
                 return GLib.SOURCE_REMOVE
             GLib.timeout_add(150, finish_drag)
         def begin_drag():
-            view.evaluate_javascript("(()=>{const h=document.querySelector('.command-prompt');h.addEventListener('pointerdown',e=>window.__dragStart=e.clientY,{once:true});h.addEventListener('pointermove',e=>window.__dragLast=e.clientY);let r=h.getBoundingClientRect();return JSON.stringify([(r.right-3)*devicePixelRatio,(r.top+8)*devicePixelRatio,(r.top+68)*devicePixelRatio,document.querySelector('.command-palette').getBoundingClientRect().top])})()", -1, None, None, None, drag_ready, None)
+            selector = json.dumps(payload.get("promptTarget", ".command-prompt"))
+            view.evaluate_javascript("(()=>{const target=document.querySelector(" + selector + ");const h=document.querySelector('.command-prompt');h.addEventListener('pointerdown',e=>window.__dragStart=e.clientY,{once:true});h.addEventListener('pointermove',e=>window.__dragLast=e.clientY);let r=target.getBoundingClientRect();return JSON.stringify([" + ("(r.left+r.width/2)" if payload.get("promptTarget") else "(r.right-3)") + "*devicePixelRatio,(r.top+8)*devicePixelRatio,(r.top+68)*devicePixelRatio,document.querySelector('.command-palette').getBoundingClientRect().top])})()", -1, None, None, None, drag_ready, None)
             return GLib.SOURCE_REMOVE
         GLib.timeout_add(150, begin_drag)
     elif "nativeKey" in payload:

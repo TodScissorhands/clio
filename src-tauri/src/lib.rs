@@ -1,4 +1,5 @@
 mod epub_session;
+mod bookmarks;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -395,12 +396,14 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(Arc::new(Mutex::new(())))
         .manage(epub_session::Sessions::default())
+        .manage(bookmarks::Bookmarks::default())
         .on_window_event(|window, event| {
             if window.label() == "main" && matches!(event, tauri::WindowEvent::Destroyed) {
                 epub_session::shutdown_sessions(window.app_handle());
             }
         })
         .invoke_handler(tauri::generate_handler![
+            epub_session::epub_bookmarks,
             epub_session::create_epub_session,
             epub_session::read_epub_session,
             epub_session::load_epub_session_position,
