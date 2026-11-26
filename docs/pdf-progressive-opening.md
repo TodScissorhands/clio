@@ -121,3 +121,9 @@ S4A.1's only lasting repository edit is this acceptance record. The progressive 
 | Baseline internal phases / exact native paint instant | UNVERIFIED | Saved baseline has no internal instrumentation; no estimated phase baseline |
 
 Performance acceptance is demonstrated for the specified generated mixed-geometry workloads and the documented native visible-text/footer endpoint. This is not a claim about image-heavy/complex PDFs, true OS-cache-cold opening, full-lifetime physical memory, or other platforms. No production tuning was needed in S4A.1.
+
+## Initial worker-transfer cancellation
+
+Initial PDF opens are deferred by one microtask so effect replay, unmount, or source replacement can cancel them before PDF.js transfers the source buffer to its worker. React StrictMode and PDF.js workers remain enabled; active loading tasks retain the existing generation checks and teardown.
+
+Run `bun test tests/pdf-open-lifecycle.test.ts` to verify replay and cancellation with real transferable PDF buffers.

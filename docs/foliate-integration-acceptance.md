@@ -541,3 +541,33 @@ The original Chapter 48 publication remains unavailable and **unverified**; the 
 Proposed separate commit: `fix(epub): preserve passage anchors across mode round trips`. No commit or push is authorized or performed.
 
 Task-owned native applications, registries, buses and compositor are stopped. Disposable instrumentation scripts/configuration are removed; original evidence, final screenshots/JSON/logs, fixture publications, verified real books and the fresh native executable are retained.
+
+## Reader keyboard registration contract
+
+Embedded keyboard registrations belong to the current Foliate reader's live publication Documents, including retained neighboring sections. Foliate load/relocate notifications register current Documents and retire detached or same-frame-replaced Documents. Close, replacement and effect cleanup remove each registration; effect replay seeds still-live content without duplicate handlers.
+
+The shared command router remains the sole keyboard/repeat owner. Publication scripts are removed and blocked by CSP; publication frames remain separate from the privileged shell's native capability set. The legacy epub.js keyboard/link limitations are documented in the [historical investigation](epub-keyboard-focus.md); they are not current Foliate implementation instructions.
+
+## Local verification prerequisites
+
+Use `bun install --frozen-lockfile` to install the committed frontend dependency versions. The full verification gates are `bunx tsc --noEmit`, `bun run build`, `bun test`, and `cargo test --manifest-path src-tauri/Cargo.toml`.
+
+The complete Bun suite requires real WebKitGTK 4.1, Python GObject bindings and an X11 display. Some runtime runners skip when prerequisites are unavailable; Foliate acceptance runners fail instead. On a configured Linux desktop, run `bash scripts/test-webkit-required.sh` to require that environment and execute the complete Bun suite. For headless Linux use `xvfb-run -a bash scripts/test-webkit-required.sh`. A missing native prerequisite is an error, not a passing-but-skipped run.
+
+Historical CFI compatibility also requires `CLIO_FOLIATE_REAL_BOOKS` containing `gutenberg-11.epub` and `gutenberg-1342.epub`. CI provisions checksum-pinned historical releases into runner-temporary storage; no publication archives enter the application bundle. See [fixture provenance and rights](../tests/fixtures/foliate-real-books.md), including the Pride edition's noncommercial cover restriction. To use the same corpus locally:
+
+```sh
+export CLIO_FOLIATE_REAL_BOOKS="$(mktemp -d)"
+bash scripts/provision-foliate-real-books.sh "$CLIO_FOLIATE_REAL_BOOKS"
+xvfb-run -a bash scripts/test-webkit-required.sh
+```
+
+Native geometry checks follow renderer semantics: PDF resize coverage crosses the active fit constraint; EPUB typography coverage preserves the pre-reflow visible-start CFI, not every passage on the old page. EPUB checks await visible text fragments and tolerate temporarily absent views during reflow without extending deadlines.
+
+GitHub Actions runs these checks on Ubuntu with WebKitGTK and Xvfb, plus locked Rust tests. This covers automated native WebKit integration; it does not replace physical input, Tauri window, or assistive-technology acceptance.
+
+## EPUB preference implementation
+
+Preferences are global to EPUBs, stored in `clio:epub-reading-preferences`, separately from canonical-path CFIs and PDF settings. Foliate applies geometry to its attached session-owned renderer. Typography changes retain the first-visible reading anchor across successive choices until navigation replaces it. Unavailable preference storage does not prevent reading. Fixed/mixed-fixed publications retain Publisher presentation; vertical writing retains Publisher typography/geometry. Saved choices remain available for other books.
+
+Text-size percentages use each section's original body size. An explicit size sets ordinary paragraphs to that reading size, including pixel/em/rem declarations; Publisher restores their original differences. Foliate owns layout and styles; Clio keeps one bounded prose stylesheet and restores the body font properties it owns. Code, tables, media, declared verse and manual-break/preserved-whitespace blocks are excluded from the paragraph rule. The real WebKit preference regression exercises reflow, repeated choices and exact Publisher reset. Arbitrary publisher CSS is not universally normalized.
