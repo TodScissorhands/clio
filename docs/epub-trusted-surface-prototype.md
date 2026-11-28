@@ -1,8 +1,8 @@
-# 09C trusted-surface prototype — stopped at acquisition
+# 09C trusted-surface work — acquisition corrected; interaction blocked
 
-The initial stop report below is historical. **09C-A1 subsequently authorized the acquisition-only dependency correction recorded at the end of this document. The trusted-surface prototype remains stopped.**
+The acquisition stop report below is historical. **09C-A1 corrected acquisition and retirement. 09C-A2 resumed one opaque-origin trusted-shell candidate and stopped at the renderer-origin integration gate recorded at the end of this document.**
 
-The approved bounded prototype hit its explicit acquisition stop condition before a trusted rendering surface could be accepted. No prototype or production correction is shipped. Production 09C remains unresolved.
+No trusted-surface production implementation is shipped. Production EPUB interaction acceptance remains unresolved; acquisition acceptance is separate.
 
 ## Executed observation
 
@@ -154,3 +154,71 @@ The ordinary App run used PID 48698/window 6291459. Native screenshots show Chap
 Because the demonstrated visibility correction changes production dependency code, focused checks and the normal gate were rerun: **15 focused tests passed; 1,291 complete Bun tests passed with zero failures and native suites executed; frozen installation, TypeScript, frontend build, all 9 Rust tests and whitespace checks passed.** No complete suite was repeated before that production change.
 
 Final native evidence is retained outside `/tmp` as the session artifact `local://09c-a1-final-native-evidence/native-evidence.tar.gz`, alongside `manifest.json`. Archive SHA-256: `a0d9a57f53a0a8c5ee519f37ddcb5d179e577533dad9b210eac983dfe9722640`; integrity verification passed. It contains native before/after screenshots, canonical CFI records, the baseline geometry observations and the temporary comparison sources. Physical-input/IME/accessibility and other native platforms remain unverified. The trusted-surface prototype is not resumed.
+
+## 09C-A2 — stopped at the isolated renderer integration gate
+
+### Scope and candidate
+
+Base: `4885b57abddcf60833282a69700bf9dea9d161ca`, fetched and fast-forwarded before implementation. Dedicated branch: `task/09c-a2-trusted-epub`.
+
+One candidate was attempted: a trusted epub.js shell in a `srcdoc` iframe with `sandbox="allow-scripts"` **without** `allow-same-origin`. A SHA-256 CSP hash permits only the bundled trusted shell script; default/network/form/base policies deny other activity. Publication views retain `allowScriptedContent: false` and their existing sandbox. No publication script, native capability, global input interceptor, focus workaround or pointer overlay was added.
+
+The disposable integration gate runs the existing patched `openEpubBook()` inside that shell, using bytes transferred over a single task-owned MessageChannel. It then calls the existing continuous-manager rendition with paginated flow. The channel carries integration observations, not keyboard commands or native requests. This is a prerequisite gate, **not an integrated replacement for App's committed-Book ownership or a production interaction protocol**. The existing shared command router was not changed or bypassed as an interaction implementation.
+
+### Actual native result
+
+A task-owned Tauri debug application was compiled from this worktree and launched with a CLI-only dev-URL override to the gate at `http://localhost:15440`, isolated XDG directories, `GDK_BACKEND=x11`, `GDK_SCALE=1` and `GDK_DPI_SCALE=1`. GTK 3/WebKitGTK 2.52.6 executed the real patched epub.js and a generated three-section EPUB with archived CSS and PNG. No source/configuration overlay changed the sandbox or native permissions.
+
+Binary SHA-256: `80cf0867ce102b9facf13657d0fdf1fa47cbe790184d0fa8fd50375420c6e442`. The final observed window was XID `4194307`, PID `219254`; the captured native surface was 952 × 1037 pixels.
+
+| Gate | Observed result |
+| --- | --- |
+| Trusted host | Tauri internals present in the host |
+| Opaque shell | Origin `null`; access to `parent.document` throws `SecurityError`; `__TAURI_INTERNALS__` and `ipc` are undefined |
+| Real EPUB acquisition | `isOpen: true`, spine length 3 |
+| Default `srcdoc` publication view | Sandbox remains `allow-same-origin`; `contentDocument` is null; document access throws `SecurityError`; rendering errors |
+| Explicit `write` publication loading | Acquisition succeeds; immediately before the real `IframeView.onLoad()` constructs `Contents`, `contentDocument` is again null and document access throws `SecurityError` |
+
+The continuous manager rebuilds `viewSettings` without forwarding its `method` option. The final disposable `write` check explicitly sets that existing view loading setting after `rendition.started`, then observes the real `onLoad()` boundary through a temporary View subclass. Neither change is shipped. Merely passing `method: "write"` at the rendition level was not counted as exercising that loader.
+
+Early gate setup failures (HTML charset/CSP-hash mismatch and a Bun-bundled `__require` bootstrap error) were corrected before the authoritative results. The accepted observations use Vite's browser IIFE bundle with explicit UTF-8 delivery. These bootstrap failures are not architecture evidence.
+
+### Precise blocker and stop decision
+
+The outer shell's sandboxed-origin restriction also applies to its descendant publication frames. A nested `allow-same-origin` token cannot undo the inherited restriction. The shell therefore cannot obtain the publication Document required by epub.js `IframeView.onLoad()`/`Contents`. This fails before CFI mapping, layout, live-Document keyboard/style registration or usable internal-link handling.
+
+This is **not** another acquisition/cancellation failure and does not repeat the established sandboxed-keyboard-delivery investigation. Acquisition completes; the new integration boundary prevents rendering.
+
+Adding `allow-same-origin` to this same-origin `srcdoc` shell is not an acceptable correction: combined with script execution, it would remove the isolation from Clio's trusted origin. Retaining script-disabled descendant views also leaves the previously established listener boundary unresolved even if Document access could be supplied.
+
+Continuing would require a different origin/deployment boundary with independently denied native privileges and an explicit cross-origin Book/rendition, position and preference ownership protocol, or a renderer/view integration change. Those are architectural changes, not an iframe-loading-option correction. No alternative renderer design, dependency patch, origin/capability relaxation or engine migration was developed. Work stopped under the task's explicit architecture boundary; this result does not establish that all separately authorized trusted-surface architectures are impossible.
+
+### Acceptance and preservation
+
+- **Keyboard and palette:** no passing-after result. No renderable isolated candidate; no native content-focused input acceptance is claimed.
+- **Selection and copy:** not exercised on a candidate publication surface. No focus theft or replacement clipboard mechanism was added.
+- **Chapter/fragment links:** not exercised on a candidate publication surface; unresolved.
+- **Security:** the gate observed parent-DOM denial and absent shell Tauri globals. This is not a complete malicious-publication or native-IPC security certification; no accepted production boundary exists.
+- **Close/reopen, CFI restoration and A → B → PDF:** not accepted for the candidate. Production App acquisition, renderer, persistence, preferences, PDF interaction and teardown code are unchanged.
+- **Paged/continuous:** failure is at publication Document construction, before either layout can be accepted. Neither mode's A–H interaction acceptance is claimed.
+- **Physical input, clipboard, IME, accessibility and other native platforms:** no new acceptance.
+
+### Verification and retained evidence
+
+`bun install --frozen-lockfile` succeeded without manifest or lockfile changes. Focused preservation checks ran with real WebKit suites enabled:
+
+```sh
+GDK_BACKEND=x11 GDK_SCALE=1 GDK_DPI_SCALE=1 bun test \
+  tests/epub-acquisition-runtime.test.ts \
+  tests/epub-keyboard-lifecycle-runtime.test.ts \
+  tests/epub-paginated-visibility.test.ts \
+  tests/epub-reading-position.test.ts
+```
+
+Result: **16 passed, zero failed**, 80 expectations. Acquisition source and compiled entrypoints each reported 24 created / 24 revoked URLs and no runtime errors. The lifecycle suite executed its 13 scenarios, including trim, replacement and replay. These preserve existing assertions; they do not substitute for native input acceptance.
+
+No complete suite, TypeScript/frontend release build or Rust test gate was rerun: there is no production implementation past the integration stop. The native debug application itself compiled and ran. `git diff --check` passed; staged whitespace verification is part of the documentation-only handoff.
+
+Retained session evidence: `local://09c-a2-native-evidence/native-evidence.tar.gz` and its `manifest.json`. Archive SHA-256: `94e948f77137ee274fdcfdced244cc8ab6104c137e1dec1c6858e793740ff87d`; `gzip -t` passed. The archive contains the exact default-loading and explicit-write shell bundles, gate sources, generated publication inputs, native observations, screenshot and provenance. The manifest distinguishes authoritative native runs from bootstrap diagnostics. It contains no authentication material or user files.
+
+Only this existing document is changed for the stop-report handoff. No production code, permanent test, roadmap, README, package manifest, lockfile, Tauri configuration or capability is changed. `report.txt`, the original checkout and other worktrees remain untouched.
